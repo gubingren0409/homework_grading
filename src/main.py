@@ -1,0 +1,61 @@
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+
+from src.api.routes import router as grading_router
+from src.core.exceptions import PerceptionShortCircuitError, GradingSystemError
+
+# Initialize Limiter
+limiter = Limiter(key_func=get_remote_address)
+app = FastAPI(
+    title="AI Homework Grader API",
+    description="Scalable API for AI-driven homework evaluation using decoupled Perception and Cognition layers.",
+    version="0.1.0"
+)
+
+# Setup Limiter state and handlers
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# Register Routes
+app.include_router(grading_router)
+
+
+@app.exception_handler(PerceptionShortCircuitError)
+async def perception_short_circuit_handler(request: Request, exc: PerceptionShortCircuitError):
+    """
+    Handles hardware-level circuit breaking due to low image quality.
+    Returns 422 Unprocessable Entity.
+    """
+    return JSONResponse(
+        status_code=422,
+        content={
+            "error": "PerceptionShortCircuit",
+            "message": exc.message,
+            "readability_status": exc.readability_status,
+            "suggestion": "Please ensure the image is clear and well-lit before re-uploading."
+        }
+    )
+
+
+@app.exception_handler(GradingSystemError)
+async def grading_system_error_handler(request: Request, exc: GradingSystemError):
+    """
+    Handles general business logic errors within the grading system.
+    Returns 400 Bad Request.
+    """
+    return JSONResponse(
+        status_code=400,
+        content={
+            "error": "GradingSystemError",
+            "message": str(exc)
+        }
+    )
+
+
+@app.get("/")
+async def health_check():
+    """Service health check endpoint."""
+    return {"status": "healthy", "service": "homework-grader-core"}

@@ -1,0 +1,19 @@
+{
+  "readability_status": "CLEAR",
+  "elements": [
+    {
+      "element_id": "elem_001",
+      "content_type": "latex_formula",
+      "raw_content": "\\int_{0}^{1} x^2 dx = \\frac{1}{2}",
+      "confidence_score": 0.98,
+      "bbox": {
+        "x_min": 0.1,
+        "y_min": 0.1,
+        "x_max": 0.5,
+        "y_max": 0.2
+      }
+    }
+  ],
+  "global_confidence": 0.95,
+  "trigger_short_circuit": false
+}

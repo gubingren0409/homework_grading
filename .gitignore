@@ -1,0 +1,96 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Environment Variables
+.env
+.env.local
+.env.*.local
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+*.cover
+.hypothesis/
+.tox/
+
+# Logs
+*.log
+logs/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Outputs (保留结构但忽略批量结果)
+outputs/*.db
+outputs/batch_results/
+outputs/audit_*/
+outputs/diagnostics_*/
+outputs/*.csv
+outputs/*.log
+
+# 但保留 rubric 文件
+!outputs/*_rubric.json
+
+# Data (保护学生隐私)
+data/*/students/*
+data/*/chaos_test_students/*
+
+# 但保留标准答案
+!data/*/standard/
+
+# Temporary files
+temp_*.py
+*.tmp
+*.bak
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Docker
+.dockerignore
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
+
+# Distribution
+*.tar.gz
+*.zip
