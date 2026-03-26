@@ -9,7 +9,7 @@ Usage:
 """
 import asyncio
 import logging
-from typing import List, Tuple
+from typing import List, Tuple, Dict, Any
 
 from celery import Celery
 
@@ -61,7 +61,7 @@ def _build_workflow() -> GradingWorkflow:
 def grade_homework_task(
     self,
     task_id: str,
-    files_data: List[Tuple[List[int], str]],  # JSON-serialized bytes as int list
+    files_data: List[Dict[str, Any]],  # Phase 30: Structured dict payloads
     db_path: str,
 ) -> dict:
     """
@@ -69,7 +69,7 @@ def grade_homework_task(
 
     Args:
         task_id: Business task UUID
-        files_data: List of (byte_array_as_ints, filename) tuples
+        files_data: List of dicts with 'content' (int list) and 'filename' (str)
         db_path: SQLite database path
 
     Returns:
@@ -80,29 +80,30 @@ def grade_homework_task(
         - 10s delay between retries
         - Permanent failure marked as FAILED in DB
     """
-    # Phase 29: Create event loop for async operations in sync Celery task
+    # Phase 30: Explicit event loop creation/disposal (no nest-asyncio pollution)
     def run_async(coro):
-        """Helper to run async code in sync Celery task context."""
+        """
+        Standard async bridge for Celery sync context.
+        Creates isolated event loop per invocation.
+        """
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                # If loop already running (pytest), use nest_asyncio
-                import nest_asyncio
-                nest_asyncio.apply()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        return loop.run_until_complete(coro)
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
     
     try:
         # Step 1: Mark task as processing
         run_async(update_task_status(db_path, task_id, "PROCESSING"))
         logger.info(f"[Worker] Task {task_id} started processing")
 
-        # Step 2: Deserialize file bytes (Redis stores as int arrays)
-        reconstructed_files = [
-            (bytes(byte_list), filename) for byte_list, filename in files_data
-        ]
+        # Step 2: Deserialize file bytes (Phase 30: Structured dict input)
+        reconstructed_files = []
+        for file_dict in files_data:
+            file_bytes = bytes(file_dict["content"])  # int list -> bytes
+            filename = file_dict["filename"]          # Already string
+            reconstructed_files.append((file_bytes, filename))
 
         # Step 3: Initialize workflow (worker-local instance)
         workflow = _build_workflow()

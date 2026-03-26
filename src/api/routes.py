@@ -11,6 +11,7 @@ from slowapi.util import get_remote_address
 from src.api.dependencies import get_db_path
 from src.db.client import create_task, update_task_celery_id, get_task, fetch_results
 from src.worker.main import grade_homework_task
+from src.core.serialization import prepare_file_payload
 
 
 logger = logging.getLogger(__name__)
@@ -60,25 +61,22 @@ async def submit_grading_job(
     # 1. Generate business task UUID
     task_id = str(uuid.uuid4())
     
-    # 2. Serialize uploaded files (Phase 29: Strict scalarization for Celery JSON transport)
+    # 2. Serialize uploaded files (Phase 30: Robust JSON serialization)
     files_data = []
     for file in files:
         content = await file.read()
-        # Convert bytes to int list for JSON serialization
-        files_data.append((list(content), str(file.filename)))  # Force str() to prevent Path objects
+        # Use safe serialization helper (no destructive str() coercion)
+        file_payload = prepare_file_payload(content, file.filename)
+        files_data.append(file_payload)
     
     # 3. Pre-persist task state (PENDING) BEFORE queueing
     await create_task(db_path, task_id)
     
     # 4. Dispatch to Celery worker queue (non-blocking)
-    # CRITICAL: All args must be JSON-serializable primitives (str, int, list, dict)
+    # Payload is guaranteed JSON-serializable dict structure
     celery_result = grade_homework_task.apply_async(
-        args=[
-            str(task_id),  # Ensure string UUID
-            files_data,    # List of (int_list, str) tuples
-            str(db_path),  # Force string path
-        ],
-        task_id=task_id,  # Force business UUID as Celery task ID
+        args=[task_id, files_data, db_path],
+        task_id=task_id,
     )
     
     # 5. Track Celery task ID for potential revocation
