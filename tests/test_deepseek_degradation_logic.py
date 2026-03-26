@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from src.cognitive.engines.deepseek_engine import DeepSeekCognitiveEngine
+from src.core.config import settings
 from src.schemas.perception_ir import PerceptionOutput, PerceptionNode
 
 
@@ -88,6 +89,9 @@ def _valid_eval_wrapped_json() -> str:
 
 @pytest.mark.asyncio
 async def test_parse_failure_triggers_v3_fallback():
+    original_use_stream = settings.deepseek_use_stream
+    settings.deepseek_use_stream = True
+
     def stream_bad_json(_kwargs):
         return _FakeStream(chunks=["```json\n", "not-json", "\n```"])
 
@@ -95,18 +99,24 @@ async def test_parse_failure_triggers_v3_fallback():
         text = _valid_eval_wrapped_json()
         return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=text))])
 
-    engine, completions = _make_engine_with_behaviors([stream_bad_json, fallback_ok])
-    report = await engine.evaluate_logic(_sample_perception())
+    try:
+        engine, completions = _make_engine_with_behaviors([stream_bad_json, fallback_ok])
+        report = await engine.evaluate_logic(_sample_perception())
 
-    assert report.is_fully_correct is True
-    assert len(completions.calls) == 2
-    assert completions.calls[0]["stream"] is True
-    assert completions.calls[1]["stream"] is False
-    assert completions.calls[1]["model"] == "deepseek-chat"
+        assert report.is_fully_correct is True
+        assert len(completions.calls) == 2
+        assert completions.calls[0]["stream"] is True
+        assert completions.calls[1]["stream"] is False
+        assert completions.calls[1]["model"] == "deepseek-chat"
+    finally:
+        settings.deepseek_use_stream = original_use_stream
 
 
 @pytest.mark.asyncio
 async def test_incomplete_chunked_read_triggers_v3_fallback():
+    original_use_stream = settings.deepseek_use_stream
+    settings.deepseek_use_stream = True
+
     err = RuntimeError("peer closed connection without sending complete message body (incomplete chunked read)")
 
     def stream_broken(_kwargs):
@@ -116,12 +126,14 @@ async def test_incomplete_chunked_read_triggers_v3_fallback():
         text = _valid_eval_wrapped_json()
         return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=text))])
 
-    engine, completions = _make_engine_with_behaviors([stream_broken, stream_broken, fallback_ok])
-    report = await engine.evaluate_logic(_sample_perception())
+    try:
+        engine, completions = _make_engine_with_behaviors([stream_broken, fallback_ok])
+        report = await engine.evaluate_logic(_sample_perception())
 
-    assert report.is_fully_correct is True
-    assert len(completions.calls) == 3
-    assert completions.calls[0]["stream"] is True
-    assert completions.calls[1]["stream"] is True
-    assert completions.calls[2]["stream"] is False
-    assert completions.calls[2]["model"] == "deepseek-chat"
+        assert report.is_fully_correct is True
+        assert len(completions.calls) == 2
+        assert completions.calls[0]["stream"] is True
+        assert completions.calls[1]["stream"] is False
+        assert completions.calls[1]["model"] == "deepseek-chat"
+    finally:
+        settings.deepseek_use_stream = original_use_stream

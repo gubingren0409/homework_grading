@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     deepseek_api_key: str | None = None # Legacy support
     deepseek_api_keys: str | None = None # Comma-separated keys
     deepseek_model_name: str = "deepseek-reasoner"
+    deepseek_use_stream: bool = False
 
     # Internal Parsed Lists (Computed)
     @property

@@ -92,6 +92,7 @@ DEEPSEEK_API_KEYS=sk-aaa,sk-bbb,sk-ccc,sk-ddd
 # 模型配置（可选）
 QWEN_MODEL_NAME=qwen-vl-max
 DEEPSEEK_MODEL_NAME=deepseek-reasoner
+DEEPSEEK_USE_STREAM=false  # 推荐 false：缓存命中率更高
 ```
 
 **⚠️ 重要：代理环境优化**
@@ -211,6 +212,16 @@ export NO_PROXY=localhost,127.0.0.1,*.aliyuncs.com,*.deepseek.com,*.cn
 QWEN_API_KEYS=key1,key2,key3       # 逗号分隔
 DEEPSEEK_API_KEYS=key1,key2,key3,key4
 ```
+
+### DeepSeek 流式开关（性能建议）
+
+```bash
+# .env 配置
+DEEPSEEK_USE_STREAM=false
+```
+
+- `false`（推荐）：非流式，缓存命中率更高，响应更稳定，避免流式 JSON 截断。
+- `true`：流式，适合需要实时 token 输出的场景，但缓存收益通常较低。
 
 **特性**：
 - 🔄 Round-Robin 轮询

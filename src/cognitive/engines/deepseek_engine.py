@@ -100,7 +100,7 @@ class DeepSeekCognitiveEngine(BaseCognitiveAgent):
         perception_data: PerceptionOutput, 
         rubric: TeacherRubric | None = None
     ) -> EvaluationReport:
-        """Evaluate student work with stream-first strategy and deterministic fallback."""
+        """Evaluate student work with configurable stream strategy and deterministic fallback."""
         ir_json_input = perception_data.model_dump_json()
         user_content = f"Evaluate the following Perception IR data:\n{ir_json_input}"
         if rubric:
@@ -122,7 +122,8 @@ class DeepSeekCognitiveEngine(BaseCognitiveAgent):
                 current_key = key_meta["key"]
                 client = self._clients[current_key]
 
-                # 2. Phase 26.3: once any connection/parse failure is observed, force V3 fallback.
+                # 2. Primary model path + deterministic fallback.
+                # Stream mode is configurable to balance latency/caching vs token streaming.
                 should_degrade = connection_error_count >= MAX_CONNECTION_ERRORS
                 if should_degrade:
                     logger.warning(
@@ -134,7 +135,7 @@ class DeepSeekCognitiveEngine(BaseCognitiveAgent):
                     use_stream = False
                 else:
                     model_to_use = settings.deepseek_model_name
-                    use_stream = True
+                    use_stream = settings.deepseek_use_stream
 
                 # 3. Execute request
                 if use_stream:
