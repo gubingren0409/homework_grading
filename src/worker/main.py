@@ -8,7 +8,6 @@ Usage:
     celery -A src.worker.main worker --loglevel=info --concurrency=4
 """
 import asyncio
-import base64
 import logging
 from typing import List, Tuple, Dict, Any
 
@@ -16,6 +15,7 @@ from celery import Celery
 
 from src.core.config import settings
 from src.core.exceptions import PerceptionShortCircuitError
+from src.core.storage import retrieve_files, cleanup_task_files
 from src.db.client import update_task_status, save_grading_result
 from src.orchestration.workflow import GradingWorkflow
 from src.perception.engines.qwen_engine import QwenVLMPerceptionEngine
@@ -62,7 +62,7 @@ def _build_workflow() -> GradingWorkflow:
 def grade_homework_task(
     self,
     task_id: str,
-    files_data: List[Dict[str, Any]],  # Phase 30: Structured dict payloads
+    payload: Dict[str, Any],  # Phase 31: Claim Check payload with file references
     db_path: str,
 ) -> dict:
     """
@@ -70,7 +70,7 @@ def grade_homework_task(
 
     Args:
         task_id: Business task UUID
-        files_data: List of dicts with 'content' (int list) and 'filename' (str)
+        payload: Claim Check payload with {"file_paths": ["/path/to/file", ...]}
         db_path: SQLite database path
 
     Returns:
@@ -99,13 +99,9 @@ def grade_homework_task(
         run_async(update_task_status(db_path, task_id, "PROCESSING"))
         logger.info(f"[Worker] Task {task_id} started processing")
 
-        # Step 2: Deserialize file bytes (Phase 30.1: Base64 decoding)
-        reconstructed_files = []
-        for file_dict in files_data:
-            # Base64 string → bytes (efficient decompression)
-            file_bytes = base64.b64decode(file_dict["content"])
-            filename = file_dict["filename"]
-            reconstructed_files.append((file_bytes, filename))
+        # Step 2: Retrieve files from disk (Phase 31: Claim Check retrieval)
+        file_paths = payload.get("file_paths", [])
+        reconstructed_files = retrieve_files(file_paths)
 
         # Step 3: Initialize workflow (worker-local instance)
         workflow = _build_workflow()
@@ -117,6 +113,9 @@ def grade_homework_task(
         student_id = reconstructed_files[0][1] if reconstructed_files else task_id
         run_async(save_grading_result(db_path, task_id, student_id, report))
         run_async(update_task_status(db_path, task_id, "COMPLETED"))
+
+        # Step 6: Cleanup temp files (Phase 31: Garbage collection)
+        cleanup_task_files(task_id)
 
         logger.info(f"[Worker] Task {task_id} completed successfully")
         return {"status": "success", "task_id": task_id}
@@ -132,12 +131,18 @@ def grade_homework_task(
                 error=f"Perception short-circuit: {e.readability_status}",
             )
         )
+        # Cleanup on rejection
+        cleanup_task_files(task_id)
         return {"status": "rejected", "reason": str(e)}
 
     except Exception as e:
         # Transient failure: Retry logic
         logger.error(f"[Worker] Task {task_id} failed (attempt {self.request.retries + 1}): {e}")
         run_async(update_task_status(db_path, task_id, "FAILED", error=str(e)))
+
+        # Cleanup on permanent failure (after max retries)
+        if self.request.retries >= self.max_retries:
+            cleanup_task_files(task_id)
 
         # Retry if attempts remain
         if self.request.retries < self.max_retries:

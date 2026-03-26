@@ -11,7 +11,7 @@ from slowapi.util import get_remote_address
 from src.api.dependencies import get_db_path
 from src.db.client import create_task, update_task_celery_id, get_task, fetch_results
 from src.worker.main import grade_homework_task
-from src.core.serialization import prepare_file_payload
+from src.core.storage import store_uploaded_file, prepare_claim_check_payload
 
 
 logger = logging.getLogger(__name__)
@@ -50,32 +50,36 @@ async def submit_grading_job(
     db_path: str = Depends(get_db_path)
 ):
     """
-    Phase 28: Asynchronous submission with Celery physical decoupling.
-    Returns HTTP 202 immediately after queueing task to Redis.
+    Phase 31: Claim Check Pattern - Reference-based file passing.
+    
+    Returns HTTP 202 immediately after queueing task reference to Redis.
+    File content stored on disk, NOT in message broker.
     
     Contract Guarantees:
     - Response time < 50ms (no AI computation in HTTP lifecycle)
     - Task persisted to DB before queueing
-    - Worker processes execute grading in isolated processes
+    - Files written to disk before queueing
+    - Worker receives file paths (NOT file content)
     """
     # 1. Generate business task UUID
     task_id = str(uuid.uuid4())
     
-    # 2. Serialize uploaded files (Phase 30: Robust JSON serialization)
-    files_data = []
+    # 2. Store uploaded files to disk (Phase 31: Gateway persistence)
+    file_paths = []
     for file in files:
         content = await file.read()
-        # Use safe serialization helper (no destructive str() coercion)
-        file_payload = prepare_file_payload(content, file.filename)
-        files_data.append(file_payload)
+        # Write to disk, get absolute path reference
+        file_path = store_uploaded_file(task_id, content, file.filename)
+        file_paths.append(file_path)
     
     # 3. Pre-persist task state (PENDING) BEFORE queueing
     await create_task(db_path, task_id)
     
     # 4. Dispatch to Celery worker queue (non-blocking)
-    # Payload is guaranteed JSON-serializable dict structure
+    # Phase 31: Claim Check - enqueue file references (NOT content)
+    payload = prepare_claim_check_payload(file_paths)
     celery_result = grade_homework_task.apply_async(
-        args=[task_id, files_data, db_path],
+        args=[task_id, payload, db_path],
         task_id=task_id,
     )
     

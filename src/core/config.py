@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 from typing import List
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import field_validator
@@ -25,6 +26,16 @@ class Settings(BaseSettings):
     redis_host: str = "localhost"
     redis_port: int = 6379
     redis_db: int = 0
+    
+    # File Storage Configuration (Phase 31: Claim Check Pattern)
+    uploads_dir: str = "data/uploads"  # Temporary file storage
+    
+    @property
+    def uploads_path(self) -> Path:
+        """Absolute path to uploads directory."""
+        path = Path(self.uploads_dir)
+        path.mkdir(parents=True, exist_ok=True)
+        return path.resolve()
 
     @property
     def redis_url(self) -> str:
