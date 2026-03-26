@@ -27,6 +27,9 @@ class TaskStatusResponse(BaseModel):
     task_id: str
     status: str
     error_message: Optional[str] = None
+    error_code: Optional[str] = None  # Phase 29: Sanitized error codes
+    progress: Optional[float] = None  # Phase 29: Progress percentage (0.0-1.0)
+    eta_seconds: Optional[int] = None  # Phase 29: Estimated time to completion
     results: Optional[List[Dict[str, Any]]] = None
 
 class GradingResultItem(BaseModel):
@@ -57,19 +60,24 @@ async def submit_grading_job(
     # 1. Generate business task UUID
     task_id = str(uuid.uuid4())
     
-    # 2. Serialize uploaded files (Redis broker requires JSON-compatible data)
+    # 2. Serialize uploaded files (Phase 29: Strict scalarization for Celery JSON transport)
     files_data = []
     for file in files:
         content = await file.read()
         # Convert bytes to int list for JSON serialization
-        files_data.append((list(content), file.filename))
+        files_data.append((list(content), str(file.filename)))  # Force str() to prevent Path objects
     
     # 3. Pre-persist task state (PENDING) BEFORE queueing
     await create_task(db_path, task_id)
     
     # 4. Dispatch to Celery worker queue (non-blocking)
+    # CRITICAL: All args must be JSON-serializable primitives (str, int, list, dict)
     celery_result = grade_homework_task.apply_async(
-        args=[task_id, files_data, db_path],
+        args=[
+            str(task_id),  # Ensure string UUID
+            files_data,    # List of (int_list, str) tuples
+            str(db_path),  # Force string path
+        ],
         task_id=task_id,  # Force business UUID as Celery task ID
     )
     
@@ -89,21 +97,47 @@ async def get_job_status_and_results(
     db_path: str = Depends(get_db_path)
 ):
     """
-    Phase 28: Unified polling endpoint for Celery-queued tasks.
-    Returns task status and results when COMPLETED.
+    Phase 29: Strengthened polling contract with progress tracking.
+    
+    Returns:
+        - PENDING/PROCESSING: Includes progress and ETA if available
+        - COMPLETED: Includes full result payload
+        - FAILED: Includes sanitized error_code (not raw stack traces)
+        - REJECTED: Includes rejection reason
+    
     Rate limited to 30/min to prevent polling storms.
     """
     task = await get_task(db_path, task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
     
+    # Base response structure
     response_data = {
         "task_id": task["task_id"],
         "status": task["status"],
-        "error_message": task.get("error_message")
     }
+    
+    # Phase 29: Status-specific enrichment
+    if task["status"] in ["PENDING", "PROCESSING"]:
+        # TODO: Implement progress tracking via Redis/Celery backend
+        response_data["progress"] = 0.5 if task["status"] == "PROCESSING" else 0.0
+        response_data["eta_seconds"] = 45  # Placeholder: avg grading time
+    
+    elif task["status"] == "FAILED":
+        # Sanitize error messages: strip internal stack traces
+        raw_error = task.get("error_message", "Unknown error")
+        if "Traceback" in raw_error or "File " in raw_error:
+            response_data["error_code"] = "INTERNAL_ERROR"
+            response_data["error_message"] = "Internal processing error. Contact support."
+        else:
+            response_data["error_code"] = "TASK_FAILED"
+            response_data["error_message"] = raw_error[:200]  # Truncate long errors
+    
+    elif task["status"] == "REJECTED":
+        response_data["error_code"] = "INPUT_REJECTED"
+        response_data["error_message"] = task.get("error_message", "Input quality too low")
 
-    if task["status"] == "COMPLETED":
+    elif task["status"] == "COMPLETED":
         # Retrieve results associated with this task
         from src.db.client import _open_connection, aiosqlite
         async with _open_connection(db_path) as db:

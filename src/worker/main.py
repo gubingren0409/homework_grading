@@ -80,9 +80,23 @@ def grade_homework_task(
         - 10s delay between retries
         - Permanent failure marked as FAILED in DB
     """
+    # Phase 29: Create event loop for async operations in sync Celery task
+    def run_async(coro):
+        """Helper to run async code in sync Celery task context."""
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # If loop already running (pytest), use nest_asyncio
+                import nest_asyncio
+                nest_asyncio.apply()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        return loop.run_until_complete(coro)
+    
     try:
         # Step 1: Mark task as processing
-        asyncio.run(update_task_status(db_path, task_id, "PROCESSING"))
+        run_async(update_task_status(db_path, task_id, "PROCESSING"))
         logger.info(f"[Worker] Task {task_id} started processing")
 
         # Step 2: Deserialize file bytes (Redis stores as int arrays)
@@ -94,12 +108,12 @@ def grade_homework_task(
         workflow = _build_workflow()
 
         # Step 4: Execute core grading pipeline
-        report = asyncio.run(workflow.run_pipeline(reconstructed_files))
+        report = run_async(workflow.run_pipeline(reconstructed_files))
 
         # Step 5: Persist results
         student_id = reconstructed_files[0][1] if reconstructed_files else task_id
-        asyncio.run(save_grading_result(db_path, task_id, student_id, report))
-        asyncio.run(update_task_status(db_path, task_id, "COMPLETED"))
+        run_async(save_grading_result(db_path, task_id, student_id, report))
+        run_async(update_task_status(db_path, task_id, "COMPLETED"))
 
         logger.info(f"[Worker] Task {task_id} completed successfully")
         return {"status": "success", "task_id": task_id}
@@ -107,7 +121,7 @@ def grade_homework_task(
     except PerceptionShortCircuitError as e:
         # Defensive rejection (HEAVILY_ALTERED, UNREADABLE, blank detection)
         logger.warning(f"[Worker] Task {task_id} rejected by perception layer: {e}")
-        asyncio.run(
+        run_async(
             update_task_status(
                 db_path,
                 task_id,
@@ -120,7 +134,7 @@ def grade_homework_task(
     except Exception as e:
         # Transient failure: Retry logic
         logger.error(f"[Worker] Task {task_id} failed (attempt {self.request.retries + 1}): {e}")
-        asyncio.run(update_task_status(db_path, task_id, "FAILED", error=str(e)))
+        run_async(update_task_status(db_path, task_id, "FAILED", error=str(e)))
 
         # Retry if attempts remain
         if self.request.retries < self.max_retries:
