@@ -94,6 +94,21 @@ QWEN_MODEL_NAME=qwen-vl-max
 DEEPSEEK_MODEL_NAME=deepseek-reasoner
 ```
 
+**⚠️ 重要：代理环境优化**
+
+如果你的系统使用了代理（如 Clash、V2Ray），强烈建议设置 `NO_PROXY` 让国内 API 直连：
+
+```bash
+# Windows PowerShell（推荐）
+$env:NO_PROXY = "localhost,127.0.0.1,*.aliyuncs.com,*.deepseek.com,*.cn"
+[System.Environment]::SetEnvironmentVariable("NO_PROXY", "localhost,127.0.0.1,*.aliyuncs.com,*.deepseek.com,*.cn", "User")
+
+# Linux/macOS
+export NO_PROXY=localhost,127.0.0.1,*.aliyuncs.com,*.deepseek.com,*.cn
+```
+
+**效果**：响应速度提升 30-50%，稳定性显著改善。详见 [代理优化文档](docs/handoffs/proxy_optimization_2026-03-26.md)。
+
 ### 运行批量批改
 
 ```bash
@@ -164,6 +179,28 @@ python scripts/grade_student.py \
 ---
 
 ## 🔧 核心配置
+
+### 🌐 代理环境优化（重要！）
+
+如果系统使用了全局代理（Clash、V2Ray），**务必配置 NO_PROXY 让国内 API 直连**：
+
+```powershell
+# Windows - 永久设置
+$no_proxy = "localhost,127.0.0.1,*.aliyuncs.com,*.deepseek.com,*.cn"
+[System.Environment]::SetEnvironmentVariable("NO_PROXY", $no_proxy, "User")
+```
+
+```bash
+# Linux/macOS - 添加到 ~/.bashrc
+export NO_PROXY=localhost,127.0.0.1,*.aliyuncs.com,*.deepseek.com,*.cn
+```
+
+**为什么？**
+- 国内 API 走代理会降速 30-50% 并增加错误率
+- 之前的并发速率问题可能部分由此引起
+- 详见：[代理优化文档](docs/handoffs/proxy_optimization_2026-03-26.md)
+
+---
 
 ### API Key 池化（高并发）
 
