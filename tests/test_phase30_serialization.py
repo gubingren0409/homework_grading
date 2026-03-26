@@ -2,8 +2,10 @@
 Phase 30: Worker Deserialization Type Validation Tests
 
 Ensures worker receives native Python types (dict/list), not stringified versions.
+Uses Base64 encoding for efficient binary transport (Phase 30.1).
 """
 import asyncio
+import base64
 import json
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -29,9 +31,9 @@ def test_db_path(tmp_path):
 
 def test_prepare_file_payload_returns_dict_not_tuple():
     """
-    Phase 30 Critical Test: Verify payload is dict (not tuple).
+    Phase 30.1: Verify payload is dict with Base64-encoded content.
     
-    Ensures worker receives structured data, not positional tuples.
+    Ensures worker receives structured data with efficient Base64 encoding.
     """
     content = b"\x89PNG\r\n\x1a\n"
     filename = "test.png"
@@ -41,9 +43,12 @@ def test_prepare_file_payload_returns_dict_not_tuple():
     assert isinstance(payload, dict), "Payload must be dict"
     assert "content" in payload, "Must have 'content' key"
     assert "filename" in payload, "Must have 'filename' key"
-    assert isinstance(payload["content"], list), "Content must be int list"
+    assert isinstance(payload["content"], str), "Content must be Base64 string"
     assert isinstance(payload["filename"], str), "Filename must be str"
-    assert payload["content"] == [137, 80, 78, 71, 13, 10, 26, 10]
+    
+    # Verify Base64 encoding (not int list)
+    decoded = base64.b64decode(payload["content"])
+    assert decoded == content, "Base64 round-trip must preserve bytes"
 
 
 def test_celery_encoder_handles_path_objects():

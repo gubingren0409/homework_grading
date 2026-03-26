@@ -4,6 +4,7 @@ Phase 30: Robust JSON Serialization Utilities
 Ensures all Celery payloads are JSON-compatible without destructive str() coercion.
 Handles Path objects, Pydantic models, and other non-primitive types gracefully.
 """
+import base64
 from pathlib import Path
 from typing import Any, Dict, List, Union
 import json
@@ -60,16 +61,24 @@ def serialize_for_celery(payload: Any) -> Any:
 
 def prepare_file_payload(file_bytes: bytes, filename: str) -> Dict[str, Any]:
     """
-    Phase 30: Safe file payload preparation for Celery transport.
+    Phase 30.1: Safe file payload preparation with Base64 encoding.
+    
+    Performance Optimization:
+    - bytes → Base64 string (33% overhead)
+    - NOT bytes → list[int] (1000% overhead for large files)
+    
+    Example:
+        1MB file → 1.33MB Base64 string (efficient)
+        1MB file → ~10MB int list JSON (catastrophic)
     
     Args:
         file_bytes: Raw uploaded file bytes
         filename: Original filename (may be Path object)
         
     Returns:
-        Dict with 'content' (int list) and 'filename' (str)
+        Dict with 'content' (Base64 string) and 'filename' (str)
     """
     return {
-        "content": list(file_bytes),  # bytes -> list[int]
-        "filename": str(filename),    # Ensure string (handles Path)
+        "content": base64.b64encode(file_bytes).decode('ascii'),  # Phase 30.1: Base64 encoding
+        "filename": str(filename),  # Ensure string (handles Path)
     }

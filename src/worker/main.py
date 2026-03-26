@@ -8,6 +8,7 @@ Usage:
     celery -A src.worker.main worker --loglevel=info --concurrency=4
 """
 import asyncio
+import base64
 import logging
 from typing import List, Tuple, Dict, Any
 
@@ -98,11 +99,12 @@ def grade_homework_task(
         run_async(update_task_status(db_path, task_id, "PROCESSING"))
         logger.info(f"[Worker] Task {task_id} started processing")
 
-        # Step 2: Deserialize file bytes (Phase 30: Structured dict input)
+        # Step 2: Deserialize file bytes (Phase 30.1: Base64 decoding)
         reconstructed_files = []
         for file_dict in files_data:
-            file_bytes = bytes(file_dict["content"])  # int list -> bytes
-            filename = file_dict["filename"]          # Already string
+            # Base64 string → bytes (efficient decompression)
+            file_bytes = base64.b64decode(file_dict["content"])
+            filename = file_dict["filename"]
             reconstructed_files.append((file_bytes, filename))
 
         # Step 3: Initialize workflow (worker-local instance)
