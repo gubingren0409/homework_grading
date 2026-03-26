@@ -1,0 +1,16 @@
+{
+  "question_id": "5",
+  "correct_answer": "a; clockwise",
+  "grading_points": [
+    {
+      "point_id": "switch_selection",
+      "description": "Correctly applies the LC frequency formula f = 1/(2π√LC) to determine that decreasing frequency requires increasing inductance L. Identifies that switching to position a increases coil turns, thus increasing L, and selects 'a'.",
+      "score": 2.0
+    },
+    {
+      "point_id": "rotation_direction",
+      "description": "Correctly applies the LC frequency formula to determine that increasing frequency requires decreasing capacitance C. Uses the capacitor formula C ∝ S to conclude that reducing plate area decreases C, and selects 'clockwise' rotation.",
+      "score": 2.0
+    }
+  ]
+}

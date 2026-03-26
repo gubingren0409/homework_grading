@@ -1,0 +1,164 @@
+{
+  "student_id": "stu_ans_03",
+  "question_id": "question_19",
+  "perception_output": {
+    "readability_status": "CLEAR",
+    "elements": [
+      {
+        "element_id": "p0_e1",
+        "content_type": "plain_text",
+        "raw_content": "19解：(1). E = \\frac{\\Delta \\phi}{\\Delta t} = \\frac{\\Delta BS}{\\Delta t} = \\frac{2T \\cdot x_0 \\cdot 0.5m}{0.5s} = 2x_0 V.",
+        "confidence_score": 0.98,
+        "bbox": {
+          "x_min": 0.02,
+          "y_min": 0.03,
+          "x_max": 0.74,
+          "y_max": 0.16
+        }
+      },
+      {
+        "element_id": "p0_e2",
+        "content_type": "latex_formula",
+        "raw_content": "I = \\frac{E}{R} = \\frac{2x_0 V}{1\\Omega} = 2x_0 A",
+        "confidence_score": 0.97,
+        "bbox": {
+          "x_min": 0.18,
+          "y_min": 0.17,
+          "x_max": 0.54,
+          "y_max": 0.25
+        }
+      },
+      {
+        "element_id": "p0_e3",
+        "content_type": "latex_formula",
+        "raw_content": "F_A = BIL = 2T \\cdot 2x_0 \\cdot 0.5m = \\boxed{2x_0} N.",
+        "confidence_score": 0.96,
+        "bbox": {
+          "x_min": 0.17,
+          "y_min": 0.26,
+          "x_max": 0.77,
+          "y_max": 0.34
+        }
+      },
+      {
+        "element_id": "p0_e4",
+        "content_type": "image_diagram",
+        "raw_content": "A free-body diagram showing two forces: F_parallel = mg sinθ and F_perpendicular = mg cosθ, with θ labeled as 37°.",
+        "confidence_score": 0.95,
+        "bbox": {
+          "x_min": 0.12,
+          "y_min": 0.35,
+          "x_max": 0.32,
+          "y_max": 0.45
+        }
+      },
+      {
+        "element_id": "p0_e5",
+        "content_type": "latex_formula",
+        "raw_content": "F_A = mg \\sin \\theta = 1kg \\cdot 10m/s^2 \\cdot \\sin 37^\\circ = 6N.",
+        "confidence_score": 0.97,
+        "bbox": {
+          "x_min": 0.38,
+          "y_min": 0.35,
+          "x_max": 0.92,
+          "y_max": 0.43
+        }
+      },
+      {
+        "element_id": "p0_e6",
+        "content_type": "latex_formula",
+        "raw_content": "\\therefore x_0 = 3m",
+        "confidence_score": 0.96,
+        "bbox": {
+          "x_min": 0.38,
+          "y_min": 0.44,
+          "x_max": 0.54,
+          "y_max": 0.51
+        }
+      },
+      {
+        "element_id": "p0_e7",
+        "content_type": "latex_formula",
+        "raw_content": "(2). P_a = \\frac{1}{40} P_b g.",
+        "confidence_score": 0.95,
+        "bbox": {
+          "x_min": 0.12,
+          "y_min": 0.52,
+          "x_max": 0.41,
+          "y_max": 0.61
+        }
+      },
+      {
+        "element_id": "p0_e8",
+        "content_type": "latex_formula",
+        "raw_content": "U_a I_a = \\frac{1}{40} m g x",
+        "confidence_score": 0.94,
+        "bbox": {
+          "x_min": 0.21,
+          "y_min": 0.62,
+          "x_max": 0.45,
+          "y_max": 0.71
+        }
+      }
+    ],
+    "global_confidence": 0.96,
+    "trigger_short_circuit": false
+  },
+  "evaluation_report": {
+    "is_fully_correct": false,
+    "total_score_deduction": 13.0,
+    "step_evaluations": [
+      {
+        "reference_element_id": "p0_e1",
+        "is_correct": true,
+        "error_type": null,
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_e2",
+        "is_correct": true,
+        "error_type": null,
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_e3",
+        "is_correct": true,
+        "error_type": null,
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_e4",
+        "is_correct": true,
+        "error_type": null,
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_e5",
+        "is_correct": true,
+        "error_type": null,
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_e6",
+        "is_correct": true,
+        "error_type": null,
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_e7",
+        "is_correct": false,
+        "error_type": "CONCEPTUAL",
+        "correction_suggestion": "P_a 应该是 rod a 中的功率，P_G 是 rod b 上的重力功率。正确方程为 P_a = (1/40) P_G，其中 P_a = I^2 R，P_G = mg sinα v。"
+      },
+      {
+        "reference_element_id": "p0_e8",
+        "is_correct": false,
+        "error_type": "CONCEPTUAL",
+        "correction_suggestion": "方程应关联功率，而非单独电压和电流。使用 P_a = I^2 R 和 P_G = mg sinα v 建立关系。"
+      }
+    ],
+    "overall_feedback": "学生正确完成了第一问，计算了感应电动势、电流、安培力，并通过力平衡解得 x0 = 3 m。但第二问的功率方程设置错误（如 P_b g 表述不清），未给出完整表达式或求解速度 v。第三问和第四问完全缺失。建议复习电磁感应中的能量守恒、功率计算及双棒动力学方程。",
+    "system_confidence": 0.95,
+    "requires_human_review": false
+  }
+}

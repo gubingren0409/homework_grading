@@ -1,0 +1,195 @@
+{
+  "is_fully_correct": false,
+  "total_score_deduction": 10.0,
+  "step_evaluations": [
+    {
+      "reference_element_id": "p0_3",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_4",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_5",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_6",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_7",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_8",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_9",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_10",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_11",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_12",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_13",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_14",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_15",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_16",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_17",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_18",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_19",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_20",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_21",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_22",
+      "is_correct": false,
+      "error_type": "LOGIC",
+      "correction_suggestion": "第三问解答不完整。需要首先写出杆a开始运动时的受力平衡方程 (BIL + mg sinα = μ mg cosα)，解出此时电流I和杆b的速度v。然后应用能量守恒：重力做功mg sinα * s = 杆b动能(1/2)mv^2 + 回路总焦耳热Q_total，其中Q_total = 2Q。最后解出距离s。"
+    },
+    {
+      "reference_element_id": "p0_23",
+      "is_correct": false,
+      "error_type": "LOGIC",
+      "correction_suggestion": "第三问解答不完整。需要首先写出杆a开始运动时的受力平衡方程 (BIL + mg sinα = μ mg cosα)，解出此时电流I和杆b的速度v。然后应用能量守恒：重力做功mg sinα * s = 杆b动能(1/2)mv^2 + 回路总焦耳热Q_total，其中Q_total = 2Q。最后解出距离s。"
+    },
+    {
+      "reference_element_id": "p0_24",
+      "is_correct": false,
+      "error_type": "LOGIC",
+      "correction_suggestion": "第三问解答不完整。需要首先写出杆a开始运动时的受力平衡方程 (BIL + mg sinα = μ mg cosα)，解出此时电流I和杆b的速度v。然后应用能量守恒：重力做功mg sinα * s = 杆b动能(1/2)mv^2 + 回路总焦耳热Q_total，其中Q_total = 2Q。最后解出距离s。"
+    },
+    {
+      "reference_element_id": "p0_25",
+      "is_correct": false,
+      "error_type": "CONCEPTUAL",
+      "correction_suggestion": "对于杆a和杆b都运动的情况，安培力的表达式不正确。正确方法是：1. 写出感应电动势 ε = B L (v_b - v_a)。2. 写出电流 I = ε / (2R)。3. 分别对两杆列牛顿第二定律方程：杆b: mg sinα - B I L = m a；杆a: mg sinα + B I L - μ mg cosα = m a。4. 在稳态（加速度相同）条件下，联立方程求解速度差 Δv = v_b - v_a。"
+    },
+    {
+      "reference_element_id": "p0_26",
+      "is_correct": false,
+      "error_type": "CONCEPTUAL",
+      "correction_suggestion": "对于杆a和杆b都运动的情况，安培力的表达式不正确。正确方法是：1. 写出感应电动势 ε = B L (v_b - v_a)。2. 写出电流 I = ε / (2R)。3. 分别对两杆列牛顿第二定律方程：杆b: mg sinα - B I L = m a；杆a: mg sinα + B I L - μ mg cosα = m a。4. 在稳态（加速度相同）条件下，联立方程求解速度差 Δv = v_b - v_a。"
+    },
+    {
+      "reference_element_id": "p0_27",
+      "is_correct": false,
+      "error_type": "CONCEPTUAL",
+      "correction_suggestion": "对于杆a和杆b都运动的情况，安培力的表达式不正确。正确方法是：1. 写出感应电动势 ε = B L (v_b - v_a)。2. 写出电流 I = ε / (2R)。3. 分别对两杆列牛顿第二定律方程：杆b: mg sinα - B I L = m a；杆a: mg sinα + B I L - μ mg cosα = m a。4. 在稳态（加速度相同）条件下，联立方程求解速度差 Δv = v_b - v_a。"
+    },
+    {
+      "reference_element_id": "p0_28",
+      "is_correct": false,
+      "error_type": "CONCEPTUAL",
+      "correction_suggestion": "对于杆a和杆b都运动的情况，安培力的表达式不正确。正确方法是：1. 写出感应电动势 ε = B L (v_b - v_a)。2. 写出电流 I = ε / (2R)。3. 分别对两杆列牛顿第二定律方程：杆b: mg sinα - B I L = m a；杆a: mg sinα + B I L - μ mg cosα = m a。4. 在稳态（加速度相同）条件下，联立方程求解速度差 Δv = v_b - v_a。"
+    },
+    {
+      "reference_element_id": "p0_29",
+      "is_correct": false,
+      "error_type": "CONCEPTUAL",
+      "correction_suggestion": "对于杆a和杆b都运动的情况，安培力的表达式不正确。正确方法是：1. 写出感应电动势 ε = B L (v_b - v_a)。2. 写出电流 I = ε / (2R)。3. 分别对两杆列牛顿第二定律方程：杆b: mg sinα - B I L = m a；杆a: mg sinα + B I L - μ mg cosα = m a。4. 在稳态（加速度相同）条件下，联立方程求解速度差 Δv = v_b - v_a。"
+    },
+    {
+      "reference_element_id": "p0_30",
+      "is_correct": false,
+      "error_type": "CONCEPTUAL",
+      "correction_suggestion": "对于杆a和杆b都运动的情况，安培力的表达式不正确。正确方法是：1. 写出感应电动势 ε = B L (v_b - v_a)。2. 写出电流 I = ε / (2R)。3. 分别对两杆列牛顿第二定律方程：杆b: mg sinα - B I L = m a；杆a: mg sinα + B I L - μ mg cosα = m a。4. 在稳态（加速度相同）条件下，联立方程求解速度差 Δv = v_b - v_a。"
+    },
+    {
+      "reference_element_id": "p0_31",
+      "is_correct": false,
+      "error_type": "LOGIC",
+      "correction_suggestion": "对于杆a和杆b都运动的情况，安培力的表达式不正确。正确方法是：1. 写出感应电动势 ε = B L (v_b - v_a)。2. 写出电流 I = ε / (2R)。3. 分别对两杆列牛顿第二定律方程：杆b: mg sinα - B I L = m a；杆a: mg sinα + B I L - μ mg cosα = m a。4. 在稳态（加速度相同）条件下，联立方程求解速度差 Δv = v_b - v_a。"
+    },
+    {
+      "reference_element_id": "p0_32",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_33",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    }
+  ],
+  "overall_feedback": "同学你好！你对第一问和第二问的解答是正确的，思路清晰，结果准确。第一问成功建立了受力平衡并解出x0，第二问正确应用了功率关系并解出速度。然而，第三问和第四问的解答不够完整。第三问需要建立杆a开始运动的临界条件方程，并应用能量守恒求解距离s。第四问需要正确写出两杆都运动时的感应电动势、电流和各自的牛顿第二定律方程，并在稳态条件下联立求解速度差。请重点关注多物体运动系统的受力分析与能量转化关系。",
+  "system_confidence": 0.95,
+  "requires_human_review": false
+}

@@ -1,0 +1,57 @@
+{
+  "is_fully_correct": false,
+  "total_score_deduction": 13.0,
+  "step_evaluations": [
+    {
+      "reference_element_id": "p0_e1",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_e2",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_e3",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_e4",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_e5",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_e6",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_e7",
+      "is_correct": false,
+      "error_type": "CONCEPTUAL",
+      "correction_suggestion": "P_a 应该是 rod a 中的功率，P_G 是 rod b 上的重力功率。正确方程为 P_a = (1/40) P_G，其中 P_a = I^2 R，P_G = mg sinα v。"
+    },
+    {
+      "reference_element_id": "p0_e8",
+      "is_correct": false,
+      "error_type": "CONCEPTUAL",
+      "correction_suggestion": "方程应关联功率，而非单独电压和电流。使用 P_a = I^2 R 和 P_G = mg sinα v 建立关系。"
+    }
+  ],
+  "overall_feedback": "学生正确完成了第一问，计算了感应电动势、电流、安培力，并通过力平衡解得 x0 = 3 m。但第二问的功率方程设置错误（如 P_b g 表述不清），未给出完整表达式或求解速度 v。第三问和第四问完全缺失。建议复习电磁感应中的能量守恒、功率计算及双棒动力学方程。",
+  "system_confidence": 0.95,
+  "requires_human_review": false
+}

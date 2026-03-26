@@ -1,0 +1,141 @@
+{
+  "student_id": "stu_ans_08",
+  "question_id": "question_19",
+  "perception_output": {
+    "readability_status": "CLEAR",
+    "elements": [
+      {
+        "element_id": "p0_1",
+        "content_type": "plain_text",
+        "raw_content": "19.",
+        "confidence_score": 0.99,
+        "bbox": {
+          "x_min": 0.02,
+          "y_min": 0.04,
+          "x_max": 0.06,
+          "y_max": 0.08
+        }
+      },
+      {
+        "element_id": "p0_2",
+        "content_type": "latex_formula",
+        "raw_content": "<student>\\begin{aligned} & (1) \\ E = \\frac{\\Delta \\varphi}{\\Delta t} \\\\\n& = \\frac{\\Delta B S}{\\Delta t} \\\\\n& = \\frac{\\Delta B \\times 0.2}{\\Delta t} \\\\\n& = 4 \\times 0.2 \\\\\n& \\therefore F = B I L = \\frac{B E L}{R_1 + R_2} \\\\\n& = \\frac{m g}{\\sin \\alpha} \\\\\n& = 10 \\sin 37^\\circ \\approx 6 N \\\\\n& \\Rightarrow x_0 = 5 \\sin 37^\\circ \\approx 3 m \\\\\n& (2) \\ P_{ab} = F \\cdot V = m g V' \\\\\n& R_a = \\frac{1}{40} P_{ab} \\\\\n& 0.5 s 后, B_1 = B_2 = B_3 = 2 T \\\\\n& 有 E = B L V \\\\\n& \\therefore I = \\frac{E}{R_1 + R_2} = \\frac{B L V}{R_1 + R_2} \\\\\n& \\therefore V_a = \\frac{1}{2} E \\end{aligned}</student>",
+        "confidence_score": 0.98,
+        "bbox": {
+          "x_min": 0.02,
+          "y_min": 0.04,
+          "x_max": 0.45,
+          "y_max": 0.94
+        }
+      },
+      {
+        "element_id": "p0_3",
+        "content_type": "latex_formula",
+        "raw_content": "<student>\\begin{aligned} & \\therefore P_{fa} = U_a \\cdot I = \\frac{1}{2} E I = \\frac{1}{2} V^2 \\\\\n& V' = V \\sin 37^\\circ \\\\\n& \\therefore V = \\frac{1}{2} \\sin 37^\\circ \\approx 0.3 m/s \\\\\n& (3) \\ h = S \\sin 37^\\circ \\\\\n& f_{max} = \\mu m g \\cos \\theta \\approx 6.4 N \\\\\n& F_1 = m g \\sin \\theta \\approx 6 N \\\\\n& a 4 恰开始动 \\therefore F_\\Sigma = 0.4 N \\\\\n& \\Rightarrow B I L = \\frac{B^2 L^2 V}{R_1 + R_2} \\\\\n& \\Rightarrow V = 0.4 m/s \\\\\n& \\therefore \\Delta E = E_p - E_k = m g h - \\frac{1}{2} m V^2 \\\\\n& = m g h - 0.08 J \\\\\n& Q_a = I^2 r t = \\frac{1}{2} Q_{总} = 0.02 J \\\\\n& \\therefore Q_{总} = \\Delta E = 0.04 J \\\\\n& \\therefore m g h = 0.12 J \\quad \\therefore h = 0.012 m \\\\\n& \\therefore S = \\frac{h}{\\sin 37^\\circ} \\approx 0.02 m \\quad \\text{动量守恒} \\\\\n& (4) \\ 先射运动量 \\ m_b V_b \\quad m_a V + m_b (V + \\Delta V) = m_b V_b \\\\\n& F = B I L = \\frac{B L \\cdot \\Delta V}{R_1 + R_2} = f_a \\quad \\Delta V = 6.4 m/s \\end{aligned}</student>",
+        "confidence_score": 0.97,
+        "bbox": {
+          "x_min": 0.47,
+          "y_min": 0.04,
+          "x_max": 0.98,
+          "y_max": 0.94
+        }
+      }
+    ],
+    "global_confidence": 0.97,
+    "is_blank": false,
+    "trigger_short_circuit": false
+  },
+  "evaluation_report": {
+    "is_fully_correct": false,
+    "total_score_deduction": 8.0,
+    "step_evaluations": [
+      {
+        "reference_element_id": "p0_2",
+        "is_correct": false,
+        "error_type": "CONCEPTUAL",
+        "correction_suggestion": "The force balance on rod b should be B3 I L = mg sinα, not mg/sinα."
+      },
+      {
+        "reference_element_id": "p0_2",
+        "is_correct": false,
+        "error_type": "CONCEPTUAL",
+        "correction_suggestion": "To find x0, you need to correctly set up the induced emf and force balance. The correct equation leads to x0 = 3.00 m."
+      },
+      {
+        "reference_element_id": "p0_2",
+        "is_correct": true,
+        "error_type": null,
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_2",
+        "is_correct": true,
+        "error_type": null,
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_2",
+        "is_correct": true,
+        "error_type": null,
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_3",
+        "is_correct": true,
+        "error_type": null,
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_3",
+        "is_correct": false,
+        "error_type": "LOGIC",
+        "correction_suggestion": "You found v=0.4 m/s, but also need to find the current I=0.4 A using the force balance equation."
+      },
+      {
+        "reference_element_id": "p0_3",
+        "is_correct": true,
+        "error_type": null,
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_3",
+        "is_correct": true,
+        "error_type": null,
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_3",
+        "is_correct": false,
+        "error_type": "CONCEPTUAL",
+        "correction_suggestion": "The induced emf should be ε = B L (v_b - v_a)."
+      },
+      {
+        "reference_element_id": "p0_3",
+        "is_correct": false,
+        "error_type": "CONCEPTUAL",
+        "correction_suggestion": "The equation of motion for rod b is: mg sinα - B I L = m a."
+      },
+      {
+        "reference_element_id": "p0_3",
+        "is_correct": false,
+        "error_type": "CONCEPTUAL",
+        "correction_suggestion": "The equation of motion for rod a is: mg sinα + B I L - μ mg cosα = m a."
+      },
+      {
+        "reference_element_id": "p0_3",
+        "is_correct": false,
+        "error_type": "CONCEPTUAL",
+        "correction_suggestion": "In steady state, both rods have the same acceleration."
+      },
+      {
+        "reference_element_id": "p0_3",
+        "is_correct": false,
+        "error_type": "CALCULATION",
+        "correction_suggestion": "The correct steady-state velocity difference is Δv = 3.2 m/s."
+      }
+    ],
+    "overall_feedback": "学生对部分(2)和(3)的能量守恒掌握较好，但在力平衡方程和电磁感应动力学分析上存在概念错误，导致部分(1)和(4)答案错误。需要加强对电磁感应中力与运动关系的理解。",
+    "system_confidence": 0.95,
+    "requires_human_review": false
+  }
+}

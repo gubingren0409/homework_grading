@@ -1,0 +1,3 @@
+﻿Student_ID,Total_Deduction,Is_Fully_Correct,Requires_Human_Review,Error_Status
+stu_ans_19,0.0,False,True,Cognitive evaluation error: peer closed connection without sending complete message body (incomplete chunked read)
+stu_ans_20,0.0,False,True,Workflow halted on page 0: Image quality too poor.

@@ -1,0 +1,81 @@
+{
+  "is_fully_correct": false,
+  "total_score_deduction": 15.0,
+  "step_evaluations": [
+    {
+      "reference_element_id": "p0_1",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_2",
+      "is_correct": false,
+      "error_type": "CONCEPTUAL",
+      "correction_suggestion": "公式 E = BLv 在部分 (3) 中不直接适用；应使用力平衡方程分析 rod a 的启动条件。"
+    },
+    {
+      "reference_element_id": "p0_3",
+      "is_correct": false,
+      "error_type": "TRANSCRIPTION_ERROR",
+      "correction_suggestion": "磁场符号应为 B3 而非 B₂，速度应为 v 而非 v₀；请核对题目给定符号。"
+    },
+    {
+      "reference_element_id": "p0_4",
+      "is_correct": false,
+      "error_type": "LOGIC",
+      "correction_suggestion": "变量 α 和 t 未在题目中定义，导致推导逻辑混乱；应使用已知物理量如 m, g, α, B, L, R 等。"
+    },
+    {
+      "reference_element_id": "p0_5",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_6",
+      "is_correct": false,
+      "error_type": "CONCEPTUAL",
+      "correction_suggestion": "阻力功率表达式 P_阻 不正确；在本题中，应计算电热功率 P_a = I²R 或重力功率 P_G = mg sinα v。"
+    },
+    {
+      "reference_element_id": "p0_7",
+      "is_correct": false,
+      "error_type": "CALCULATION",
+      "correction_suggestion": "P_a 表达式错误；根据给定参数 (R=0.5Ω, B3=1T, L=1m)，正确表达式应为 P_a = 0.5v² (单位：W)。"
+    },
+    {
+      "reference_element_id": "p0_8",
+      "is_correct": false,
+      "error_type": "CONCEPTUAL",
+      "correction_suggestion": "电流 I 表达式 I = 3mg/(BL) 不正确；I 应依赖于速度 v，即 I = v A（当 ε_b = B3 L v，总电阻 2R=1Ω）。"
+    },
+    {
+      "reference_element_id": "p0_9",
+      "is_correct": false,
+      "error_type": "CALCULATION",
+      "correction_suggestion": "功率 P_o 的推导混乱；应基于电动势和电流关系重新计算。"
+    },
+    {
+      "reference_element_id": "p0_10",
+      "is_correct": false,
+      "error_type": "LOGIC",
+      "correction_suggestion": "所建方程未基于正确的物理定律（如功率平衡 P_a = (1/40)P_G），导致无意义等式。"
+    },
+    {
+      "reference_element_id": "p0_11",
+      "is_correct": false,
+      "error_type": "CALCULATION",
+      "correction_suggestion": "解得 V=24 m/s 与标准答案 v=0.3 m/s 严重不符，表明前序推导存在根本错误。"
+    },
+    {
+      "reference_element_id": "p0_12",
+      "is_correct": false,
+      "error_type": "CALCULATION",
+      "correction_suggestion": "表达式 P_a = E²/(2R) 有误：对于两电阻串联总阻 2R，正确应为 P_a = I²R = (BLv)²/(4R)。"
+    }
+  ],
+  "overall_feedback": "学生的工作呈现严重逻辑混乱：引入未定义变量（如 α, t），公式与标准答案偏离极大，且关键步骤缺失。无法可靠映射到评分标准，建议人工复核以确认是否存在部分正确意图或上游提取错误。",
+  "system_confidence": 0.2,
+  "requires_human_review": true
+}

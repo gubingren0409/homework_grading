@@ -1,0 +1,111 @@
+{
+  "student_id": "stu_ans_05",
+  "question_id": "question_19",
+  "perception_output": {
+    "readability_status": "CLEAR",
+    "elements": [
+      {
+        "element_id": "p0_1",
+        "content_type": "plain_text",
+        "raw_content": "19.",
+        "confidence_score": 1.0,
+        "bbox": {
+          "x_min": 0.02,
+          "y_min": 0.15,
+          "x_max": 0.06,
+          "y_max": 0.2
+        }
+      },
+      {
+        "element_id": "p0_2",
+        "content_type": "latex_formula",
+        "raw_content": "<student>f=\\mu mg\\cos\\theta</student>",
+        "confidence_score": 1.0,
+        "bbox": {
+          "x_min": 0.07,
+          "y_min": 0.15,
+          "x_max": 0.28,
+          "y_max": 0.23
+        }
+      },
+      {
+        "element_id": "p0_3",
+        "content_type": "latex_formula",
+        "raw_content": "<student>E=\\frac{\\Delta \\phi}{\\Delta t}=4V</student>",
+        "confidence_score": 1.0,
+        "bbox": {
+          "x_min": 0.12,
+          "y_min": 0.25,
+          "x_max": 0.31,
+          "y_max": 0.32
+        }
+      },
+      {
+        "element_id": "p0_4",
+        "content_type": "latex_formula",
+        "raw_content": "<student>F_{A}=\\frac{BL\\cdot E}{R}=2B</student>",
+        "confidence_score": 1.0,
+        "bbox": {
+          "x_min": 0.12,
+          "y_min": 0.33,
+          "x_max": 0.37,
+          "y_max": 0.41
+        }
+      },
+      {
+        "element_id": "p0_5",
+        "content_type": "plain_text",
+        "raw_content": "<student>对于 a: m</student>",
+        "confidence_score": 1.0,
+        "bbox": {
+          "x_min": 0.12,
+          "y_min": 0.43,
+          "x_max": 0.28,
+          "y_max": 0.49
+        }
+      }
+    ],
+    "global_confidence": 1.0,
+    "is_blank": false,
+    "trigger_short_circuit": false
+  },
+  "evaluation_report": {
+    "is_fully_correct": false,
+    "total_score_deduction": 2.0,
+    "step_evaluations": [
+      {
+        "reference_element_id": "p0_1",
+        "is_correct": true,
+        "error_type": "NONE",
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_2",
+        "is_correct": true,
+        "error_type": "NONE",
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_3",
+        "is_correct": false,
+        "error_type": "LOGIC",
+        "correction_suggestion": "公式正确，但得出的具体数值 '4V' 可能来自特定条件（如 dB1/dt * L * x0）。然而，该步计算未与后续受力分析结合以完成第一问的求解，属于不完整解答。"
+      },
+      {
+        "reference_element_id": "p0_4",
+        "is_correct": false,
+        "error_type": "LOGIC",
+        "correction_suggestion": "安培力表达式不完整，'2B' 这一结果缺少物理意义。应正确写出安培力 F_A = BIL，并将电流 I 用感应电动势和总电阻表达，然后代入第一问中的受力平衡方程 B3IL = mg sinα。"
+      },
+      {
+        "reference_element_id": "p0_5",
+        "is_correct": false,
+        "error_type": "LOGIC",
+        "correction_suggestion": "表述不完整，仅为开头 '对于 a: m'。未对 rod a 进行有效的受力分析或建立任何方程，无法获得任何评分点。"
+      }
+    ],
+    "overall_feedback": "你的解答不完整。你正确写出了滑动摩擦力公式，并对感应电动势和安培力进行了尝试性表达，但未能系统地建立第一问中 rod b 的受力平衡方程（B3IL = mg sinα），也未能求解出 x0。后续的问题（2）、（3）、（4）均未涉及。建议按照标准答案的步骤，清晰地列出每个阶段的物理条件（磁场变化、运动状态），运用电磁感应定律和牛顿运动定律列方程，并逐步求解。",
+    "system_confidence": 0.7,
+    "requires_human_review": false
+  }
+}

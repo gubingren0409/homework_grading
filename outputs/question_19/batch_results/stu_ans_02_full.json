@@ -1,0 +1,146 @@
+{
+  "student_id": "stu_ans_02",
+  "question_id": "question_19",
+  "perception_output": {
+    "readability_status": "CLEAR",
+    "elements": [
+      {
+        "element_id": "p0_1",
+        "content_type": "plain_text",
+        "raw_content": "19. (1)",
+        "confidence_score": 0.98,
+        "bbox": {
+          "x_min": 0.02,
+          "y_min": 0.03,
+          "x_max": 0.12,
+          "y_max": 0.11
+        }
+      },
+      {
+        "element_id": "p0_2",
+        "content_type": "latex_formula",
+        "raw_content": "E=\\frac{n\\Delta \\varphi }{\\Delta t}=\\frac{nS\\Delta B}{\\Delta t}=0.5\\times 0\\times \\frac{2}{0.5}=2\\times 0 V",
+        "confidence_score": 0.97,
+        "bbox": {
+          "x_min": 0.14,
+          "y_min": 0.03,
+          "x_max": 0.68,
+          "y_max": 0.11
+        }
+      },
+      {
+        "element_id": "p0_3",
+        "content_type": "image_diagram",
+        "raw_content": "A hand-drawn diagram showing a triangular structure with an arrow pointing upward from the top vertex, labeled with 'B' and 'F'. The base of the triangle has a horizontal line with a right-angle symbol at one corner. A small circle is drawn near the top vertex.",
+        "confidence_score": 0.95,
+        "bbox": {
+          "x_min": 0.04,
+          "y_min": 0.12,
+          "x_max": 0.14,
+          "y_max": 0.22
+        }
+      },
+      {
+        "element_id": "p0_4",
+        "content_type": "plain_text",
+        "raw_content": "受力平衡",
+        "confidence_score": 0.96,
+        "bbox": {
+          "x_min": 0.18,
+          "y_min": 0.12,
+          "x_max": 0.28,
+          "y_max": 0.18
+        }
+      },
+      {
+        "element_id": "p0_5",
+        "content_type": "latex_formula",
+        "raw_content": "mg\\sin 37^{\\circ }=B\\cdot \\frac{2x_{0}}{1.2}\\cdot 0.5m",
+        "confidence_score": 0.96,
+        "bbox": {
+          "x_min": 0.32,
+          "y_min": 0.12,
+          "x_max": 0.58,
+          "y_max": 0.18
+        }
+      },
+      {
+        "element_id": "p0_6",
+        "content_type": "latex_formula",
+        "raw_content": "t=0.5s\\text{时},\\quad \\mu mg\\cos 37^{\\circ }=BIl=2\\times \\frac{2x_{0}}{1.2}\\times 0.5m\\quad x_{0}=3.2m",
+        "confidence_score": 0.95,
+        "bbox": {
+          "x_min": 0.08,
+          "y_min": 0.19,
+          "x_max": 0.95,
+          "y_max": 0.27
+        }
+      },
+      {
+        "element_id": "p0_7",
+        "content_type": "plain_text",
+        "raw_content": "(2)",
+        "confidence_score": 0.98,
+        "bbox": {
+          "x_min": 0.03,
+          "y_min": 0.32,
+          "x_max": 0.1,
+          "y_max": 0.38
+        }
+      }
+    ],
+    "global_confidence": 0.96,
+    "trigger_short_circuit": false
+  },
+  "evaluation_report": {
+    "is_fully_correct": false,
+    "total_score_deduction": 15.0,
+    "step_evaluations": [
+      {
+        "reference_element_id": "p0_1",
+        "is_correct": true,
+        "error_type": "NONE",
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_2",
+        "is_correct": false,
+        "error_type": "CONCEPTUAL",
+        "correction_suggestion": "感应电动势的计算公式应用错误。在第一个0.5秒内，只有B1变化，其空间范围固定为L乘以初始距离x0。正确公式应为 ε = (dB1/dt) * (L * x0) = 4Lx0。请重新审视法拉第电磁感应定律的应用条件。"
+      },
+      {
+        "reference_element_id": "p0_3",
+        "is_correct": true,
+        "error_type": "NONE",
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_4",
+        "is_correct": true,
+        "error_type": "NONE",
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_5",
+        "is_correct": false,
+        "error_type": "LOGIC",
+        "correction_suggestion": "力平衡方程建立错误。在t=0.5s时，只有b棒受力平衡。安培力应为B3 * I * L，其中电流I = ε / (2R) = 2x0 A。正确方程应为：mg sin37° = B3 * (2x0) * L。代入数值：0.6mg = 1 * (2x0) * 0.5。"
+      },
+      {
+        "reference_element_id": "p0_6",
+        "is_correct": false,
+        "error_type": "LOGIC",
+        "correction_suggestion": "此方程混淆了不同阶段的受力分析。在第一问中，a棒尚未运动，不应出现最大静摩擦力。应使用p0_5中修正后的方程求解x0。正确解为x0 = 3.00 m。"
+      },
+      {
+        "reference_element_id": "p0_7",
+        "is_correct": true,
+        "error_type": "NONE",
+        "correction_suggestion": null
+      }
+    ],
+    "overall_feedback": "同学你好，你的解答只完成了题目的一小部分，且关键步骤存在概念和逻辑错误。主要问题如下：1. 第（1）问中，感应电动势和力平衡方程建立不正确，导致答案错误。2. 第（2）、（3）、（4）问均未进行解答。请仔细复习法拉第电磁感应定律（感生电动势）和动生电动势的区别、闭合电路的欧姆定律、以及含有安培力的受力分析。解题时需明确不同阶段的物理过程，逐步分析。建议从建立正确的电动势和电流表达式开始，再对每根导轨进行受力分析或能量分析。",
+    "system_confidence": 0.95,
+    "requires_human_review": false
+  }
+}

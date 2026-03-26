@@ -1,7 +1,8 @@
 -- Core DDL for Homework Grader System
 CREATE TABLE IF NOT EXISTS tasks (
     task_id TEXT PRIMARY KEY,
-    status TEXT NOT NULL, -- PENDING, PROCESSING, COMPLETED, FAILED
+    status TEXT NOT NULL, -- PENDING, PROCESSING, COMPLETED, FAILED, REJECTED
+    celery_task_id TEXT, -- Phase 28: Track Celery async task ID for revocation
     error_message TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP

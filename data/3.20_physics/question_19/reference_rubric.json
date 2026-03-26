@@ -1,0 +1,76 @@
+{
+  "question_id": "Induction_on_Inclined_Rails_Problem",
+  "correct_answer": "(1) In the first 0.5s, both rods are stationary. The induced emf due to changing B1 is ε = (dB1/dt) L x0 = 4Lx0. The current is I = ε/(2R) = 2x0 A. The force balance on rod b gives B3 I L = mg sinα, which yields x0 = 3.00 m. \n(2) After 0.5s, the magnetic fields are constant. Rod b moves with speed v, producing motional emf ε_b = B3 L v = v V. The current is I = v A. The power in rod a is P_a = I^2 R = 0.5 v^2 W, and the gravitational power on rod b is P_G = mg sinα v = 6v W. Setting P_a = (1/40) P_G gives 0.5v^2 = 0.15v, so v = 0.300 m/s.\n(3) From the start of motion of rod b until rod a starts to move, rod a is stationary. At the moment rod a starts to move, the force balance on rod a is BIL + mg sinα = μ mg cosα, which gives I = 0.4 A and the speed of rod b is v = 0.4 m/s. Using energy conservation: mg sinα s = (1/2) m v^2 + Q_total, where Q_total = 2Q = 0.04 J, we find s = 0.02 m.\n(4) When both rods are moving, let their velocities be v_a and v_b. The induced emf is ε = B L (v_b - v_a). The equations of motion are: for rod b: mg sinα - B I L = m a; for rod a: mg sinα + B I L - μ mg cosα = m a. In steady state, both rods have the same acceleration. Solving these gives the steady-state velocity difference Δv = v_b - v_a = 3.2 m/s.",
+  "grading_points": [
+    {
+      "point_id": "1.1",
+      "description": "Set up the force balance equation for rod b: B3 * I * L = mg sinα.",
+      "score": 1.0
+    },
+    {
+      "point_id": "1.2",
+      "description": "Solve for x0 and obtain the correct value: x0 = 3.00 m.",
+      "score": 1.0
+    },
+    {
+      "point_id": "2.1",
+      "description": "Correct expression for the current power in rod a: P_a = I^2 R = 0.5 v^2.",
+      "score": 1.0
+    },
+    {
+      "point_id": "2.2",
+      "description": "Correct expression for the gravitational power on rod b: P_G = mg sinα v = 6v.",
+      "score": 1.0
+    },
+    {
+      "point_id": "2.3",
+      "description": "Set up the equation P_a = (1/40) P_G and solve for v, obtaining v = 0.3 m/s.",
+      "score": 2.0
+    },
+    {
+      "point_id": "3.1",
+      "description": "Force balance on rod a at the moment it starts to move: BIL + mg sinα = μ mg cosα.",
+      "score": 1.0
+    },
+    {
+      "point_id": "3.2",
+      "description": "Solve for the current and the speed of rod b at that moment: I = 0.4 A, v = 0.4 m/s.",
+      "score": 1.0
+    },
+    {
+      "point_id": "3.3",
+      "description": "Apply energy conservation: mg sinα * s = (1/2) m v^2 + Q_total, with Q_total = 2Q.",
+      "score": 1.0
+    },
+    {
+      "point_id": "3.4",
+      "description": "Solve for s and obtain the correct value: s = 0.02 m.",
+      "score": 1.0
+    },
+    {
+      "point_id": "4.1",
+      "description": "Expression for the induced emf due to relative motion: ε = B L (v_b - v_a).",
+      "score": 1.0
+    },
+    {
+      "point_id": "4.2",
+      "description": "Equation of motion for rod b: mg sinα - B I L = m a.",
+      "score": 1.0
+    },
+    {
+      "point_id": "4.3",
+      "description": "Equation of motion for rod a: mg sinα + B I L - μ mg cosα = m a.",
+      "score": 1.0
+    },
+    {
+      "point_id": "4.4",
+      "description": "Apply steady-state condition: both rods have the same acceleration.",
+      "score": 1.0
+    },
+    {
+      "point_id": "4.5",
+      "description": "Solve for the steady-state velocity difference Δv = v_b - v_a = 3.2 m/s.",
+      "score": 1.0
+    }
+  ]
+}

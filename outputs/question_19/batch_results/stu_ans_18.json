@@ -1,0 +1,129 @@
+{
+  "is_fully_correct": false,
+  "total_score_deduction": 12.0,
+  "step_evaluations": [
+    {
+      "reference_element_id": "p0_e1",
+      "is_correct": true,
+      "error_type": "NONE",
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_e2",
+      "is_correct": true,
+      "error_type": "NONE",
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_e3",
+      "is_correct": true,
+      "error_type": "NONE",
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_e4",
+      "is_correct": true,
+      "error_type": "NONE",
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_e5",
+      "is_correct": true,
+      "error_type": "NONE",
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_e6",
+      "is_correct": true,
+      "error_type": "NONE",
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_e7",
+      "is_correct": true,
+      "error_type": "NONE",
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_e8",
+      "is_correct": true,
+      "error_type": "NONE",
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_e9",
+      "is_correct": true,
+      "error_type": "TRANSCRIPTION_ERROR",
+      "correction_suggestion": "公式转录存在笔误（如π误识），但整体力平衡方程（BIL = mg sinα）的逻辑和最终结果正确。"
+    },
+    {
+      "reference_element_id": "p0_e10",
+      "is_correct": true,
+      "error_type": "NONE",
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_e11",
+      "is_correct": true,
+      "error_type": "NONE",
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_e12",
+      "is_correct": false,
+      "error_type": "CALCULATION",
+      "correction_suggestion": "在将功率方程转换为速度方程时，代入或代数运算出现错误。应得到方程 0.5v² = 0.15v，解得 v = 0.300 m/s。"
+    },
+    {
+      "reference_element_id": "p0_e13",
+      "is_correct": false,
+      "error_type": "CALCULATION",
+      "correction_suggestion": "速度计算结果错误，应为 v = 0.300 m/s。"
+    },
+    {
+      "reference_element_id": "p0_e14",
+      "is_correct": false,
+      "error_type": "LOGIC",
+      "correction_suggestion": "此部分推导（元素p0_e14-p0_e20）与题目第(3)、(4)问的逻辑关联性不强，推理链断裂严重，意图不明，需要人工复核确认。"
+    },
+    {
+      "reference_element_id": "p0_e15",
+      "is_correct": false,
+      "error_type": "LOGIC",
+      "correction_suggestion": "此部分推导（元素p0_e14-p0_e20）与题目第(3)、(4)问的逻辑关联性不强，推理链断裂严重，意图不明，需要人工复核确认。"
+    },
+    {
+      "reference_element_id": "p0_e16",
+      "is_correct": false,
+      "error_type": "LOGIC",
+      "correction_suggestion": "此部分推导（元素p0_e14-p0_e20）与题目第(3)、(4)问的逻辑关联性不强，推理链断裂严重，意图不明，需要人工复核确认。"
+    },
+    {
+      "reference_element_id": "p0_e17",
+      "is_correct": false,
+      "error_type": "LOGIC",
+      "correction_suggestion": "此部分推导（元素p0_e14-p0_e20）与题目第(3)、(4)问的逻辑关联性不强，推理链断裂严重，意图不明，需要人工复核确认。"
+    },
+    {
+      "reference_element_id": "p0_e18",
+      "is_correct": false,
+      "error_type": "LOGIC",
+      "correction_suggestion": "此部分推导（元素p0_e14-p0_e20）与题目第(3)、(4)问的逻辑关联性不强，推理链断裂严重，意图不明，需要人工复核确认。"
+    },
+    {
+      "reference_element_id": "p0_e19",
+      "is_correct": false,
+      "error_type": "LOGIC",
+      "correction_suggestion": "此部分推导（元素p0_e14-p0_e20）与题目第(3)、(4)问的逻辑关联性不强，推理链断裂严重，意图不明，需要人工复核确认。"
+    },
+    {
+      "reference_element_id": "p0_e20",
+      "is_correct": false,
+      "error_type": "LOGIC",
+      "correction_suggestion": "此部分推导（元素p0_e14-p0_e20）与题目第(3)、(4)问的逻辑关联性不强，推理链断裂严重，意图不明，需要人工复核确认。"
+    }
+  ],
+  "overall_feedback": "同学你好，你对第(1)问的解答思路和结果完全正确。在第(2)问中，你正确建立了功率平衡关系式，但在后续的代数计算中出现了错误，导致速度结果不正确。从你解答的后续部分（元素p0_e14之后）来看，推导逻辑出现了明显的断层，与题目的后续设问（(3)、(4)问）的关联性非常弱，且关键方程和求解步骤缺失。前半部分思路清晰，后半部分需要重新审题并建立正确的物理关系。",
+  "system_confidence": 0.7,
+  "requires_human_review": true
+}

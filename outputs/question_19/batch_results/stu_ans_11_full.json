@@ -1,0 +1,434 @@
+{
+  "student_id": "stu_ans_11",
+  "question_id": "question_19",
+  "perception_output": {
+    "readability_status": "CLEAR",
+    "elements": [
+      {
+        "element_id": "p0_1",
+        "content_type": "plain_text",
+        "raw_content": "9. (1) F = mgsinα",
+        "confidence_score": 0.98,
+        "bbox": {
+          "x_min": 0.01,
+          "y_min": 0.02,
+          "x_max": 0.35,
+          "y_max": 0.12
+        }
+      },
+      {
+        "element_id": "p0_2",
+        "content_type": "latex_formula",
+        "raw_content": "F = 1 \\times 10 \\times \\frac{3}{5} = 3N",
+        "confidence_score": 0.97,
+        "bbox": {
+          "x_min": 0.04,
+          "y_min": 0.12,
+          "x_max": 0.32,
+          "y_max": 0.26
+        }
+      },
+      {
+        "element_id": "p0_3",
+        "content_type": "latex_formula",
+        "raw_content": "F = BIL",
+        "confidence_score": 0.96,
+        "bbox": {
+          "x_min": 0.12,
+          "y_min": 0.26,
+          "x_max": 0.32,
+          "y_max": 0.34
+        }
+      },
+      {
+        "element_id": "p0_4",
+        "content_type": "latex_formula",
+        "raw_content": "I = \\frac{F}{BL}",
+        "confidence_score": 0.95,
+        "bbox": {
+          "x_min": 0.15,
+          "y_min": 0.34,
+          "x_max": 0.32,
+          "y_max": 0.44
+        }
+      },
+      {
+        "element_id": "p0_5",
+        "content_type": "latex_formula",
+        "raw_content": "I = \\frac{3N}{2 \\times 0.5} = 3A",
+        "confidence_score": 0.96,
+        "bbox": {
+          "x_min": 0.15,
+          "y_min": 0.44,
+          "x_max": 0.35,
+          "y_max": 0.58
+        }
+      },
+      {
+        "element_id": "p0_6",
+        "content_type": "latex_formula",
+        "raw_content": "I = \\frac{E}{2R} = \\frac{\\Delta \\phi}{2R} = \\frac{\\Delta B \\Delta S}{2R} = \\frac{2 \\times 0.02}{0.5 \\times 2 \\times 0.5} = 3A",
+        "confidence_score": 0.95,
+        "bbox": {
+          "x_min": 0.15,
+          "y_min": 0.58,
+          "x_max": 0.72,
+          "y_max": 0.72
+        }
+      },
+      {
+        "element_id": "p0_7",
+        "content_type": "latex_formula",
+        "raw_content": "x_0 = 1.5m",
+        "confidence_score": 0.94,
+        "bbox": {
+          "x_min": 0.25,
+          "y_min": 0.72,
+          "x_max": 0.35,
+          "y_max": 0.8
+        }
+      },
+      {
+        "element_id": "p0_8",
+        "content_type": "plain_text",
+        "raw_content": "(2) g_x = gsinα = \\frac{3}{5}g = 6m/s^2",
+        "confidence_score": 0.97,
+        "bbox": {
+          "x_min": 0.06,
+          "y_min": 0.7,
+          "x_max": 0.45,
+          "y_max": 0.82
+        }
+      },
+      {
+        "element_id": "p0_9",
+        "content_type": "latex_formula",
+        "raw_content": "F = mg_x = 6N",
+        "confidence_score": 0.95,
+        "bbox": {
+          "x_min": 0.15,
+          "y_min": 0.82,
+          "x_max": 0.45,
+          "y_max": 0.92
+        }
+      },
+      {
+        "element_id": "p0_10",
+        "content_type": "latex_formula",
+        "raw_content": "F = BLv",
+        "confidence_score": 0.94,
+        "bbox": {
+          "x_min": 0.15,
+          "y_min": 0.92,
+          "x_max": 0.35,
+          "y_max": 1.0
+        }
+      },
+      {
+        "element_id": "p0_11",
+        "content_type": "latex_formula",
+        "raw_content": "I = \\frac{BLv}{2R}",
+        "confidence_score": 0.95,
+        "bbox": {
+          "x_min": 0.25,
+          "y_min": 0.98,
+          "x_max": 0.45,
+          "y_max": 1.0
+        }
+      },
+      {
+        "element_id": "p0_12",
+        "content_type": "latex_formula",
+        "raw_content": "P_a = I^2 R = \\frac{B^2 L^2 v^2}{4R} = \\frac{1}{45} \\times 6 \\times v",
+        "confidence_score": 0.96,
+        "bbox": {
+          "x_min": 0.4,
+          "y_min": 0.88,
+          "x_max": 0.75,
+          "y_max": 0.98
+        }
+      },
+      {
+        "element_id": "p0_13",
+        "content_type": "latex_formula",
+        "raw_content": "\\frac{4 \\times 0.5^2 v^2}{4 \\times 0.5} = \\frac{6 \\times v}{45} \\Rightarrow V = 0.3m/s",
+        "confidence_score": 0.95,
+        "bbox": {
+          "x_min": 0.4,
+          "y_min": 0.98,
+          "x_max": 0.85,
+          "y_max": 1.0
+        }
+      },
+      {
+        "element_id": "p0_14",
+        "content_type": "plain_text",
+        "raw_content": "(3) Q = It = 3A × 2J",
+        "confidence_score": 0.97,
+        "bbox": {
+          "x_min": 0.45,
+          "y_min": 0.02,
+          "x_max": 0.75,
+          "y_max": 0.12
+        }
+      },
+      {
+        "element_id": "p0_15",
+        "content_type": "latex_formula",
+        "raw_content": "I = \\frac{E}{2R} = \\frac{BL\\Delta V}{2R}",
+        "confidence_score": 0.96,
+        "bbox": {
+          "x_min": 0.5,
+          "y_min": 0.12,
+          "x_max": 0.75,
+          "y_max": 0.22
+        }
+      },
+      {
+        "element_id": "p0_16",
+        "content_type": "latex_formula",
+        "raw_content": "Q = It = \\frac{BL\\Delta S}{2R} = 3A × 2J",
+        "confidence_score": 0.95,
+        "bbox": {
+          "x_min": 0.5,
+          "y_min": 0.22,
+          "x_max": 0.8,
+          "y_max": 0.32
+        }
+      },
+      {
+        "element_id": "p0_17",
+        "content_type": "latex_formula",
+        "raw_content": "S = 5×10^{-3}m",
+        "confidence_score": 0.94,
+        "bbox": {
+          "x_min": 0.65,
+          "y_min": 0.32,
+          "x_max": 0.8,
+          "y_max": 0.42
+        }
+      },
+      {
+        "element_id": "p0_18",
+        "content_type": "plain_text",
+        "raw_content": "(4) ΔV = ?",
+        "confidence_score": 0.96,
+        "bbox": {
+          "x_min": 0.5,
+          "y_min": 0.42,
+          "x_max": 0.7,
+          "y_max": 0.52
+        }
+      },
+      {
+        "element_id": "p0_19",
+        "content_type": "latex_formula",
+        "raw_content": "I = \\frac{BL\\Delta V}{2R}",
+        "confidence_score": 0.95,
+        "bbox": {
+          "x_min": 0.55,
+          "y_min": 0.52,
+          "x_max": 0.75,
+          "y_max": 0.62
+        }
+      },
+      {
+        "element_id": "p0_20",
+        "content_type": "latex_formula",
+        "raw_content": "BLI - mg\\sin\\alpha = (m+1)mg\\sin\\alpha",
+        "confidence_score": 0.94,
+        "bbox": {
+          "x_min": 0.65,
+          "y_min": 0.62,
+          "x_max": 0.95,
+          "y_max": 0.72
+        }
+      },
+      {
+        "element_id": "p0_21",
+        "content_type": "latex_formula",
+        "raw_content": "2BLI = (m+1)mg\\sin\\alpha = 10.8",
+        "confidence_score": 0.95,
+        "bbox": {
+          "x_min": 0.7,
+          "y_min": 0.72,
+          "x_max": 0.95,
+          "y_max": 0.82
+        }
+      },
+      {
+        "element_id": "p0_22",
+        "content_type": "latex_formula",
+        "raw_content": "I = 5.4A",
+        "confidence_score": 0.96,
+        "bbox": {
+          "x_min": 0.75,
+          "y_min": 0.82,
+          "x_max": 0.85,
+          "y_max": 0.92
+        }
+      },
+      {
+        "element_id": "p0_23",
+        "content_type": "latex_formula",
+        "raw_content": "\\Delta V = 5.4m/s",
+        "confidence_score": 0.95,
+        "bbox": {
+          "x_min": 0.7,
+          "y_min": 0.92,
+          "x_max": 0.85,
+          "y_max": 1.0
+        }
+      }
+    ],
+    "global_confidence": 0.96,
+    "trigger_short_circuit": false
+  },
+  "evaluation_report": {
+    "is_fully_correct": false,
+    "total_score_deduction": 10.0,
+    "step_evaluations": [
+      {
+        "reference_element_id": "p0_1",
+        "is_correct": true,
+        "error_type": "NONE",
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_2",
+        "is_correct": true,
+        "error_type": "NONE",
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_3",
+        "is_correct": true,
+        "error_type": "NONE",
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_4",
+        "is_correct": true,
+        "error_type": "NONE",
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_5",
+        "is_correct": true,
+        "error_type": "NONE",
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_6",
+        "is_correct": false,
+        "error_type": "LOGIC",
+        "correction_suggestion": "感应电动势计算错误。在第一个0.5秒内，磁场B1均匀变化，产生的感应电动势应为 ε = (dB1/dt) * L * x0 = 4 * 0.5 * x0 = 2x0 V。面积变化应为ΔS = L * x0，而非0.02。"
+      },
+      {
+        "reference_element_id": "p0_7",
+        "is_correct": false,
+        "error_type": "CALCULATION",
+        "correction_suggestion": "x0计算结果错误。正确解法：由力平衡 B3*I*L = mg sinα 及 I = ε/(2R) = 2x0/(2*0.5) = 2x0 A，代入得 2 * 2x0 * 0.5 = 3，解得 x0 = 3.00 m。"
+      },
+      {
+        "reference_element_id": "p0_8",
+        "is_correct": true,
+        "error_type": "NONE",
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_9",
+        "is_correct": true,
+        "error_type": "NONE",
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_10",
+        "is_correct": true,
+        "error_type": "NONE",
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_11",
+        "is_correct": true,
+        "error_type": "NONE",
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_12",
+        "is_correct": true,
+        "error_type": "NONE",
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_13",
+        "is_correct": true,
+        "error_type": "NONE",
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_14",
+        "is_correct": false,
+        "error_type": "CONCEPTUAL",
+        "correction_suggestion": "表达式 `Q = It = 3A × 2J` 存在量纲错误（电流×时间≠焦耳），且逻辑起点完全偏离。应首先分析杆a开始运动的临界受力条件。"
+      },
+      {
+        "reference_element_id": "p0_15",
+        "is_correct": false,
+        "error_type": "LOGIC",
+        "correction_suggestion": "公式I=E/(2R)在此阶段适用，但未与正确的物理条件（杆a受力平衡）结合。应先建立杆a的力平衡方程：BIL + mg sinα = μ mg cosα。"
+      },
+      {
+        "reference_element_id": "p0_16",
+        "is_correct": false,
+        "error_type": "LOGIC",
+        "correction_suggestion": "推导逻辑混乱，未正确关联电流、速度与位移。在杆a静止阶段，电流由杆b运动产生的动生电动势决定：I = (B L v) / (2R)。"
+      },
+      {
+        "reference_element_id": "p0_17",
+        "is_correct": false,
+        "error_type": "CALCULATION",
+        "correction_suggestion": "距离s计算结果错误。正确解法：由力平衡得I=0.4A，进而v=0.4 m/s。再根据能量守恒 mg sinα * s = (1/2) m v^2 + 2Q，代入数据解得 s = 0.02 m。"
+      },
+      {
+        "reference_element_id": "p0_18",
+        "is_correct": false,
+        "error_type": "LOGIC",
+        "correction_suggestion": "此处仅为设问，未开始有效求解。应首先建立两杆都运动时的电路和动力学方程。"
+      },
+      {
+        "reference_element_id": "p0_19",
+        "is_correct": true,
+        "error_type": "NONE",
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_20",
+        "is_correct": false,
+        "error_type": "CONCEPTUAL",
+        "correction_suggestion": "动力学方程完全错误。正确方程应为：对杆b：mg sinα - B I L = m a；对杆a：mg sinα + B I L - μ mg cosα = m a。"
+      },
+      {
+        "reference_element_id": "p0_21",
+        "is_correct": false,
+        "error_type": "LOGIC",
+        "correction_suggestion": "基于错误的方程进行推导，无正确逻辑。"
+      },
+      {
+        "reference_element_id": "p0_22",
+        "is_correct": false,
+        "error_type": "CALCULATION",
+        "correction_suggestion": "电流计算结果错误，源于错误方程。"
+      },
+      {
+        "reference_element_id": "p0_23",
+        "is_correct": false,
+        "error_type": "CALCULATION",
+        "correction_suggestion": "速度差结果错误。正确解法：联立两杆运动方程，利用稳态时加速度相等的条件，可解得 Δv = v_b - v_a = 3.2 m/s。"
+      }
+    ],
+    "overall_feedback": "你的解答呈现清晰的步骤。第一部分，力平衡方程（F=BIL）设置正确，但后续感应电动势和x0的计算存在逻辑和数值错误。第二部分（求解速度v）完全正确，功率关系建立准确并成功求解。第三部分和第四部分存在根本性错误：第三部分未正确建立杆a开始运动的临界力平衡方程和能量守恒关系，导致后续计算完全偏离；第四部分两杆运动的动力学方程设置错误，未正确应用牛顿第二定律于每个杆。请重点复习电磁感应中动生与感生电动势的计算、含安培力的受力分析、以及多物体系统的能量与动力学关联。",
+    "system_confidence": 0.9,
+    "requires_human_review": false
+  }
+}

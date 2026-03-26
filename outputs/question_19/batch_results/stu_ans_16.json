@@ -1,0 +1,27 @@
+{
+  "is_fully_correct": false,
+  "total_score_deduction": 9.0,
+  "step_evaluations": [
+    {
+      "reference_element_id": "p0_12",
+      "is_correct": true,
+      "error_type": "NONE",
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_20",
+      "is_correct": true,
+      "error_type": "NONE",
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_24",
+      "is_correct": false,
+      "error_type": "CONCEPTUAL",
+      "correction_suggestion": "For part (3), the correct force balance on rod a is BIL + mg sinα = μ mg cosα. Then, apply energy conservation: mg sinα * s = (1/2) m v^2 + Q_total, where Q_total = 2Q, to solve for s."
+    }
+  ],
+  "overall_feedback": "Student correctly solved parts (1) and (2), obtaining x0 = 3 m and v = 0.3 m/s. However, part (3) is incomplete with an incorrect force balance setup, and part (4) was not attempted. Based on the rubric, points are deducted for missing or incorrect elements in parts (3) and (4).",
+  "system_confidence": 0.95,
+  "requires_human_review": false
+}

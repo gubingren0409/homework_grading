@@ -1,0 +1,308 @@
+{
+  "student_id": "stu_ans_07",
+  "question_id": "question_19",
+  "perception_output": {
+    "readability_status": "CLEAR",
+    "elements": [
+      {
+        "element_id": "p0_1",
+        "content_type": "plain_text",
+        "raw_content": "19. (1) E = \\frac{\\partial \\phi}{\\partial t} = \\frac{\\partial B \\cdot S}{\\partial t} = 4S = 2 \\cdot x_0",
+        "confidence_score": 0.98,
+        "bbox": {
+          "x_min": 0.03,
+          "y_min": 0.05,
+          "x_max": 0.52,
+          "y_max": 0.13
+        }
+      },
+      {
+        "element_id": "p0_2",
+        "content_type": "latex_formula",
+        "raw_content": "\\therefore I = \\frac{E}{2R} = 2 \\cdot x_0",
+        "confidence_score": 0.97,
+        "bbox": {
+          "x_min": 0.06,
+          "y_min": 0.13,
+          "x_max": 0.41,
+          "y_max": 0.19
+        }
+      },
+      {
+        "element_id": "p0_3",
+        "content_type": "latex_formula",
+        "raw_content": "\\therefore F_A = BIL = mg \\cdot \\sin \\theta",
+        "confidence_score": 0.96,
+        "bbox": {
+          "x_min": 0.06,
+          "y_min": 0.21,
+          "x_max": 0.45,
+          "y_max": 0.27
+        }
+      },
+      {
+        "element_id": "p0_4",
+        "content_type": "latex_formula",
+        "raw_content": "\\therefore 2 \\cdot 2x_0 \\cdot 0.5 = 1 \\times 10 \\times \\sin 37^\\circ = 6N",
+        "confidence_score": 0.95,
+        "bbox": {
+          "x_min": 0.06,
+          "y_min": 0.28,
+          "x_max": 0.61,
+          "y_max": 0.35
+        }
+      },
+      {
+        "element_id": "p0_5",
+        "content_type": "latex_formula",
+        "raw_content": "\\therefore x_0 = 3m",
+        "confidence_score": 0.97,
+        "bbox": {
+          "x_min": 0.15,
+          "y_min": 0.37,
+          "x_max": 0.33,
+          "y_max": 0.43
+        }
+      },
+      {
+        "element_id": "p0_6",
+        "content_type": "latex_formula",
+        "raw_content": "(2) P_E = I^2 R = \\frac{E^2}{R} = \\frac{B^2 L^2 v^2}{R}",
+        "confidence_score": 0.96,
+        "bbox": {
+          "x_min": 0.05,
+          "y_min": 0.44,
+          "x_max": 0.51,
+          "y_max": 0.51
+        }
+      },
+      {
+        "element_id": "p0_7",
+        "content_type": "latex_formula",
+        "raw_content": "P_b = mg \\cdot v \\cdot \\sin \\theta",
+        "confidence_score": 0.95,
+        "bbox": {
+          "x_min": 0.08,
+          "y_min": 0.53,
+          "x_max": 0.38,
+          "y_max": 0.59
+        }
+      },
+      {
+        "element_id": "p0_8",
+        "content_type": "latex_formula",
+        "raw_content": "\\because P_E = \\frac{1}{40} P_b",
+        "confidence_score": 0.94,
+        "bbox": {
+          "x_min": 0.08,
+          "y_min": 0.61,
+          "x_max": 0.33,
+          "y_max": 0.67
+        }
+      },
+      {
+        "element_id": "p0_9",
+        "content_type": "latex_formula",
+        "raw_content": "\\therefore \\frac{2^2 \\cdot 0.5^2 \\cdot V^2}{0.5} = \\frac{1}{40} \\cdot 10 \\cdot V \\cdot 0.6",
+        "confidence_score": 0.93,
+        "bbox": {
+          "x_min": 0.08,
+          "y_min": 0.68,
+          "x_max": 0.55,
+          "y_max": 0.75
+        }
+      },
+      {
+        "element_id": "p0_10",
+        "content_type": "latex_formula",
+        "raw_content": "\\therefore V = 0.075 m/s",
+        "confidence_score": 0.96,
+        "bbox": {
+          "x_min": 0.12,
+          "y_min": 0.78,
+          "x_max": 0.38,
+          "y_max": 0.84
+        }
+      },
+      {
+        "element_id": "p0_11",
+        "content_type": "latex_formula",
+        "raw_content": "(3) q = I^2 R t + f \\cdot t = 0.02 J",
+        "confidence_score": 0.95,
+        "bbox": {
+          "x_min": 0.05,
+          "y_min": 0.86,
+          "x_max": 0.48,
+          "y_max": 0.93
+        }
+      },
+      {
+        "element_id": "p0_12",
+        "content_type": "image_diagram",
+        "raw_content": "A hand-drawn diagram showing two graphs labeled (a) and (b). Graph (a) has a horizontal axis labeled 't' and a vertical axis labeled 'F_A'. The graph shows a straight line with positive slope, indicating F_A increases linearly with time. Graph (b) has a horizontal axis labeled 'v_mj' and a vertical axis labeled 'F_A'. It shows a downward-sloping straight line, indicating F_A decreases linearly with increasing v_mj.",
+        "confidence_score": 0.97,
+        "bbox": {
+          "x_min": 0.58,
+          "y_min": 0.42,
+          "x_max": 0.78,
+          "y_max": 0.65
+        }
+      },
+      {
+        "element_id": "p0_13",
+        "content_type": "latex_formula",
+        "raw_content": "F_A = \\frac{B^2 L^2 v}{R}",
+        "confidence_score": 0.96,
+        "bbox": {
+          "x_min": 0.55,
+          "y_min": 0.67,
+          "x_max": 0.71,
+          "y_max": 0.73
+        }
+      },
+      {
+        "element_id": "p0_14",
+        "content_type": "latex_formula",
+        "raw_content": "\\left\\{ F_A + 6 - f = 6 - F_A \\right.",
+        "confidence_score": 0.95,
+        "bbox": {
+          "x_min": 0.53,
+          "y_min": 0.75,
+          "x_max": 0.75,
+          "y_max": 0.81
+        }
+      },
+      {
+        "element_id": "p0_15",
+        "content_type": "latex_formula",
+        "raw_content": "\\therefore F_A = 3.2 N",
+        "confidence_score": 0.94,
+        "bbox": {
+          "x_min": 0.78,
+          "y_min": 0.75,
+          "x_max": 0.92,
+          "y_max": 0.81
+        }
+      },
+      {
+        "element_id": "p0_16",
+        "content_type": "latex_formula",
+        "raw_content": "\\therefore \\Delta v = \\frac{F_A \\cdot R}{B^2 L^2} = 3.2 \\times 1 = 3.2 m/s",
+        "confidence_score": 0.95,
+        "bbox": {
+          "x_min": 0.51,
+          "y_min": 0.84,
+          "x_max": 0.95,
+          "y_max": 0.91
+        }
+      }
+    ],
+    "global_confidence": 0.96,
+    "trigger_short_circuit": false
+  },
+  "evaluation_report": {
+    "is_fully_correct": false,
+    "total_score_deduction": 10.0,
+    "step_evaluations": [
+      {
+        "reference_element_id": "p0_1",
+        "is_correct": true,
+        "error_type": "NONE",
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_2",
+        "is_correct": true,
+        "error_type": "NONE",
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_3",
+        "is_correct": true,
+        "error_type": "NONE",
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_4",
+        "is_correct": true,
+        "error_type": "NONE",
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_5",
+        "is_correct": true,
+        "error_type": "NONE",
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_6",
+        "is_correct": false,
+        "error_type": "CONCEPTUAL",
+        "correction_suggestion": "P_E should be I^2 R = (B L v)^2 / (4R) for the circuit, not (B L v)^2 / R. Correctly, P_a = I^2 R with I = E/(2R), so P_a = E^2/(4R)."
+      },
+      {
+        "reference_element_id": "p0_7",
+        "is_correct": true,
+        "error_type": "NONE",
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_8",
+        "is_correct": true,
+        "error_type": "NONE",
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_9",
+        "is_correct": false,
+        "error_type": "CALCULATION",
+        "correction_suggestion": "Based on correct P_a, the equation should be 0.5 v^2 = (1/40) * 6v, leading to v = 0.3 m/s."
+      },
+      {
+        "reference_element_id": "p0_10",
+        "is_correct": false,
+        "error_type": "CALCULATION",
+        "correction_suggestion": "v should be 0.3 m/s, not 0.075 m/s."
+      },
+      {
+        "reference_element_id": "p0_11",
+        "is_correct": false,
+        "error_type": "CONCEPTUAL",
+        "correction_suggestion": "For part (3), you need to set up force balance on rod a: BIL + mg sinα = μ mg cosα, then find I = 0.4 A and v = 0.4 m/s, and use energy conservation: mg sinα s = (1/2) m v^2 + Q_total to find s = 0.02 m."
+      },
+      {
+        "reference_element_id": "p0_12",
+        "is_correct": true,
+        "error_type": "NONE",
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_13",
+        "is_correct": false,
+        "error_type": "CONCEPTUAL",
+        "correction_suggestion": "The magnetic force F_A should be B I L, and with I = B L Δv / (2R), so F_A = B^2 L^2 Δv / (2R). Ensure correct expression for induced emf ε = B L (v_b - v_a)."
+      },
+      {
+        "reference_element_id": "p0_14",
+        "is_correct": false,
+        "error_type": "LOGIC",
+        "correction_suggestion": "The equation setup should be: for rod b: mg sinα - B I L = m a, for rod a: mg sinα + B I L - μ mg cosα = m a, and in steady state, set accelerations equal. With given values, this leads to correct equations."
+      },
+      {
+        "reference_element_id": "p0_15",
+        "is_correct": true,
+        "error_type": "NONE",
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_16",
+        "is_correct": true,
+        "error_type": "NONE",
+        "correction_suggestion": null
+      }
+    ],
+    "overall_feedback": "Good work on parts (1) and the final answer for (4). However, there are errors in the power calculation for part (2), and part (3) is incomplete. For part (2), remember that P_a = I^2 R, and with I = E/(2R), so P_a = E^2/(4R). For part (3), you need to set up force balance on rod a and use energy conservation. For part (4), ensure correct expressions for induced emf and forces. Based on the rubric, you scored 5 out of 15 points.",
+    "system_confidence": 0.9,
+    "requires_human_review": false
+  }
+}

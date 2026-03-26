@@ -1,0 +1,243 @@
+{
+  "is_fully_correct": false,
+  "total_score_deduction": 1.0,
+  "step_evaluations": [
+    {
+      "reference_element_id": "p0_1",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_2",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_3",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_4",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_5",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_6",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_7",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_8",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_9",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_10",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_11",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_12",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_13",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_14",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_15",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_16",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_17",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_18",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_19",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_20",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_21",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_22",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_23",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_24",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_25",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_26",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_27",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_28",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_29",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_30",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_31",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_32",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_33",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_34",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_35",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_36",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_37",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_38",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_39",
+      "is_correct": false,
+      "error_type": "CALCULATION",
+      "correction_suggestion": "稳态速度差应为3.2 m/s，请重新计算方程。"
+    }
+  ],
+  "overall_feedback": "学生解答总体正确，但在第四部分稳态速度差计算有误，正确值应为3.2 m/s。建议检查该步骤的计算过程。",
+  "system_confidence": 0.9,
+  "requires_human_review": false
+}

@@ -1,0 +1,147 @@
+{
+  "is_fully_correct": false,
+  "total_score_deduction": 10.0,
+  "step_evaluations": [
+    {
+      "reference_element_id": "p0_1",
+      "is_correct": true,
+      "error_type": "NONE",
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_2",
+      "is_correct": true,
+      "error_type": "NONE",
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_3",
+      "is_correct": true,
+      "error_type": "NONE",
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_4",
+      "is_correct": true,
+      "error_type": "NONE",
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_5",
+      "is_correct": true,
+      "error_type": "NONE",
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_6",
+      "is_correct": false,
+      "error_type": "LOGIC",
+      "correction_suggestion": "感应电动势计算错误。在第一个0.5秒内，磁场B1均匀变化，产生的感应电动势应为 ε = (dB1/dt) * L * x0 = 4 * 0.5 * x0 = 2x0 V。面积变化应为ΔS = L * x0，而非0.02。"
+    },
+    {
+      "reference_element_id": "p0_7",
+      "is_correct": false,
+      "error_type": "CALCULATION",
+      "correction_suggestion": "x0计算结果错误。正确解法：由力平衡 B3*I*L = mg sinα 及 I = ε/(2R) = 2x0/(2*0.5) = 2x0 A，代入得 2 * 2x0 * 0.5 = 3，解得 x0 = 3.00 m。"
+    },
+    {
+      "reference_element_id": "p0_8",
+      "is_correct": true,
+      "error_type": "NONE",
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_9",
+      "is_correct": true,
+      "error_type": "NONE",
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_10",
+      "is_correct": true,
+      "error_type": "NONE",
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_11",
+      "is_correct": true,
+      "error_type": "NONE",
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_12",
+      "is_correct": true,
+      "error_type": "NONE",
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_13",
+      "is_correct": true,
+      "error_type": "NONE",
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_14",
+      "is_correct": false,
+      "error_type": "CONCEPTUAL",
+      "correction_suggestion": "表达式 `Q = It = 3A × 2J` 存在量纲错误（电流×时间≠焦耳），且逻辑起点完全偏离。应首先分析杆a开始运动的临界受力条件。"
+    },
+    {
+      "reference_element_id": "p0_15",
+      "is_correct": false,
+      "error_type": "LOGIC",
+      "correction_suggestion": "公式I=E/(2R)在此阶段适用，但未与正确的物理条件（杆a受力平衡）结合。应先建立杆a的力平衡方程：BIL + mg sinα = μ mg cosα。"
+    },
+    {
+      "reference_element_id": "p0_16",
+      "is_correct": false,
+      "error_type": "LOGIC",
+      "correction_suggestion": "推导逻辑混乱，未正确关联电流、速度与位移。在杆a静止阶段，电流由杆b运动产生的动生电动势决定：I = (B L v) / (2R)。"
+    },
+    {
+      "reference_element_id": "p0_17",
+      "is_correct": false,
+      "error_type": "CALCULATION",
+      "correction_suggestion": "距离s计算结果错误。正确解法：由力平衡得I=0.4A，进而v=0.4 m/s。再根据能量守恒 mg sinα * s = (1/2) m v^2 + 2Q，代入数据解得 s = 0.02 m。"
+    },
+    {
+      "reference_element_id": "p0_18",
+      "is_correct": false,
+      "error_type": "LOGIC",
+      "correction_suggestion": "此处仅为设问，未开始有效求解。应首先建立两杆都运动时的电路和动力学方程。"
+    },
+    {
+      "reference_element_id": "p0_19",
+      "is_correct": true,
+      "error_type": "NONE",
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_20",
+      "is_correct": false,
+      "error_type": "CONCEPTUAL",
+      "correction_suggestion": "动力学方程完全错误。正确方程应为：对杆b：mg sinα - B I L = m a；对杆a：mg sinα + B I L - μ mg cosα = m a。"
+    },
+    {
+      "reference_element_id": "p0_21",
+      "is_correct": false,
+      "error_type": "LOGIC",
+      "correction_suggestion": "基于错误的方程进行推导，无正确逻辑。"
+    },
+    {
+      "reference_element_id": "p0_22",
+      "is_correct": false,
+      "error_type": "CALCULATION",
+      "correction_suggestion": "电流计算结果错误，源于错误方程。"
+    },
+    {
+      "reference_element_id": "p0_23",
+      "is_correct": false,
+      "error_type": "CALCULATION",
+      "correction_suggestion": "速度差结果错误。正确解法：联立两杆运动方程，利用稳态时加速度相等的条件，可解得 Δv = v_b - v_a = 3.2 m/s。"
+    }
+  ],
+  "overall_feedback": "你的解答呈现清晰的步骤。第一部分，力平衡方程（F=BIL）设置正确，但后续感应电动势和x0的计算存在逻辑和数值错误。第二部分（求解速度v）完全正确，功率关系建立准确并成功求解。第三部分和第四部分存在根本性错误：第三部分未正确建立杆a开始运动的临界力平衡方程和能量守恒关系，导致后续计算完全偏离；第四部分两杆运动的动力学方程设置错误，未正确应用牛顿第二定律于每个杆。请重点复习电磁感应中动生与感生电动势的计算、含安培力的受力分析、以及多物体系统的能量与动力学关联。",
+  "system_confidence": 0.9,
+  "requires_human_review": false
+}

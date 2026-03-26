@@ -1,0 +1,380 @@
+{
+  "student_id": "stu_ans_10",
+  "question_id": "question_19",
+  "perception_output": {
+    "readability_status": "CLEAR",
+    "elements": [
+      {
+        "element_id": "p0_1",
+        "content_type": "plain_text",
+        "raw_content": "19.",
+        "confidence_score": 0.98,
+        "bbox": {
+          "x_min": 0.02,
+          "y_min": 0.03,
+          "x_max": 0.06,
+          "y_max": 0.07
+        }
+      },
+      {
+        "element_id": "p0_2",
+        "content_type": "latex_formula",
+        "raw_content": "E = \\frac{\\Delta \\Phi}{\\Delta t} = \\frac{2 \\cdot l \\cdot x_0}{0.5}",
+        "confidence_score": 0.95,
+        "bbox": {
+          "x_min": 0.07,
+          "y_min": 0.04,
+          "x_max": 0.52,
+          "y_max": 0.13
+        }
+      },
+      {
+        "element_id": "p0_3",
+        "content_type": "latex_formula",
+        "raw_content": "\\Rightarrow \\frac{2 \\times 0.5 \\times V_B}{1.52} = 0.4",
+        "confidence_score": 0.94,
+        "bbox": {
+          "x_min": 0.55,
+          "y_min": 0.04,
+          "x_max": 0.93,
+          "y_max": 0.13
+        }
+      },
+      {
+        "element_id": "p0_4",
+        "content_type": "latex_formula",
+        "raw_content": "F_{\\text{安}} = mg\\sin\\alpha = B_3 \\frac{E}{2R} \\cdot l",
+        "confidence_score": 0.93,
+        "bbox": {
+          "x_min": 0.15,
+          "y_min": 0.13,
+          "x_max": 0.62,
+          "y_max": 0.22
+        }
+      },
+      {
+        "element_id": "p0_5",
+        "content_type": "latex_formula",
+        "raw_content": "\\therefore V_B' = 0.4 \\, \\text{m/s}",
+        "confidence_score": 0.92,
+        "bbox": {
+          "x_min": 0.75,
+          "y_min": 0.13,
+          "x_max": 0.93,
+          "y_max": 0.22
+        }
+      },
+      {
+        "element_id": "p0_6",
+        "content_type": "latex_formula",
+        "raw_content": "6 = 2 \\cdot \\frac{2 \\times 0.5 \\cdot x_0}{0.5} \\cdot 0.5",
+        "confidence_score": 0.91,
+        "bbox": {
+          "x_min": 0.15,
+          "y_min": 0.22,
+          "x_max": 0.52,
+          "y_max": 0.31
+        }
+      },
+      {
+        "element_id": "p0_7",
+        "content_type": "latex_formula",
+        "raw_content": "mV_B'^2",
+        "confidence_score": 0.9,
+        "bbox": {
+          "x_min": 0.65,
+          "y_min": 0.22,
+          "x_max": 0.78,
+          "y_max": 0.31
+        }
+      },
+      {
+        "element_id": "p0_8",
+        "content_type": "latex_formula",
+        "raw_content": "\\therefore x_0 = 3 \\, \\text{m}",
+        "confidence_score": 0.93,
+        "bbox": {
+          "x_min": 0.15,
+          "y_min": 0.31,
+          "x_max": 0.38,
+          "y_max": 0.4
+        }
+      },
+      {
+        "element_id": "p0_9",
+        "content_type": "latex_formula",
+        "raw_content": "\\frac{1}{2} \\cdot 1 \\cdot 0.4^2 = 10 \\cdot \\frac{3}{5} S - 0.2",
+        "confidence_score": 0.92,
+        "bbox": {
+          "x_min": 0.65,
+          "y_min": 0.31,
+          "x_max": 0.93,
+          "y_max": 0.4
+        }
+      },
+      {
+        "element_id": "p0_10",
+        "content_type": "latex_formula",
+        "raw_content": "P_{G_B} = V \\cdot mg\\sin\\alpha = 6 \\, \\text{V}",
+        "confidence_score": 0.94,
+        "bbox": {
+          "x_min": 0.08,
+          "y_min": 0.4,
+          "x_max": 0.62,
+          "y_max": 0.5
+        }
+      },
+      {
+        "element_id": "p0_11",
+        "content_type": "latex_formula",
+        "raw_content": "S = \\frac{0.02 + 0.08}{6} = \\frac{1}{6}",
+        "confidence_score": 0.93,
+        "bbox": {
+          "x_min": 0.75,
+          "y_min": 0.4,
+          "x_max": 0.93,
+          "y_max": 0.5
+        }
+      },
+      {
+        "element_id": "p0_12",
+        "content_type": "latex_formula",
+        "raw_content": "E = B_3 \\cdot l \\cdot V = 2 \\times 0.5 \\cdot V = V",
+        "confidence_score": 0.91,
+        "bbox": {
+          "x_min": 0.15,
+          "y_min": 0.5,
+          "x_max": 0.52,
+          "y_max": 0.59
+        }
+      },
+      {
+        "element_id": "p0_13",
+        "content_type": "latex_formula",
+        "raw_content": "\\approx 0.017 \\, \\text{m}",
+        "confidence_score": 0.9,
+        "bbox": {
+          "x_min": 0.65,
+          "y_min": 0.5,
+          "x_max": 0.8,
+          "y_max": 0.59
+        }
+      },
+      {
+        "element_id": "p0_14",
+        "content_type": "latex_formula",
+        "raw_content": "P_{\\text{电}} = \\frac{(\\frac{1}{2}V)^2}{0.5} = \\frac{V^2}{2}",
+        "confidence_score": 0.92,
+        "bbox": {
+          "x_min": 0.15,
+          "y_min": 0.59,
+          "x_max": 0.52,
+          "y_max": 0.68
+        }
+      },
+      {
+        "element_id": "p0_15",
+        "content_type": "latex_formula",
+        "raw_content": "\\frac{B l \\Delta V}{2R} = I",
+        "confidence_score": 0.91,
+        "bbox": {
+          "x_min": 0.65,
+          "y_min": 0.59,
+          "x_max": 0.85,
+          "y_max": 0.68
+        }
+      },
+      {
+        "element_id": "p0_16",
+        "content_type": "latex_formula",
+        "raw_content": "\\therefore \\frac{V^2}{2} = \\frac{6}{40} V",
+        "confidence_score": 0.93,
+        "bbox": {
+          "x_min": 0.15,
+          "y_min": 0.68,
+          "x_max": 0.45,
+          "y_max": 0.77
+        }
+      },
+      {
+        "element_id": "p0_17",
+        "content_type": "latex_formula",
+        "raw_content": "\\therefore V = \\frac{6}{20} = 0.3 \\, \\text{m/s}",
+        "confidence_score": 0.92,
+        "bbox": {
+          "x_min": 0.15,
+          "y_min": 0.77,
+          "x_max": 0.52,
+          "y_max": 0.86
+        }
+      },
+      {
+        "element_id": "p0_18",
+        "content_type": "plain_text",
+        "raw_content": "(3) 当杆开始运动:",
+        "confidence_score": 0.95,
+        "bbox": {
+          "x_min": 0.07,
+          "y_min": 0.86,
+          "x_max": 0.45,
+          "y_max": 0.95
+        }
+      },
+      {
+        "element_id": "p0_19",
+        "content_type": "latex_formula",
+        "raw_content": "mg\\cos\\alpha = mg\\sin\\alpha + B_2 \\cdot I_1 \\cdot l",
+        "confidence_score": 0.94,
+        "bbox": {
+          "x_min": 0.15,
+          "y_min": 0.95,
+          "x_max": 0.75,
+          "y_max": 1.0
+        }
+      },
+      {
+        "element_id": "p0_20",
+        "content_type": "latex_formula",
+        "raw_content": "\\therefore I_1 = \\frac{0.8 \\times 10 \\times \\frac{4}{5} - 10 \\times \\frac{3}{5}}{0.5 \\times 2} = 0.4 \\, \\text{A}",
+        "confidence_score": 0.93,
+        "bbox": {
+          "x_min": 0.15,
+          "y_min": 1.0,
+          "x_max": 0.85,
+          "y_max": 1.0
+        }
+      }
+    ],
+    "global_confidence": 0.94,
+    "trigger_short_circuit": false
+  },
+  "evaluation_report": {
+    "is_fully_correct": false,
+    "total_score_deduction": 7.0,
+    "step_evaluations": [
+      {
+        "reference_element_id": "p0_1",
+        "is_correct": true,
+        "error_type": "NONE",
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_2",
+        "is_correct": true,
+        "error_type": "NONE",
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_3",
+        "is_correct": false,
+        "error_type": "TRANSCRIPTION_ERROR",
+        "correction_suggestion": "此步骤表达式不清晰，且与解题主线无关。请检查公式推导是否笔误，并专注于核心物理过程。"
+      },
+      {
+        "reference_element_id": "p0_4",
+        "is_correct": true,
+        "error_type": "NONE",
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_5",
+        "is_correct": true,
+        "error_type": "NONE",
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_6",
+        "is_correct": true,
+        "error_type": "NONE",
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_7",
+        "is_correct": true,
+        "error_type": "NONE",
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_8",
+        "is_correct": true,
+        "error_type": "NONE",
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_9",
+        "is_correct": false,
+        "error_type": "CALCULATION",
+        "correction_suggestion": "能量守恒方程中，焦耳热Q_total应为0.04 J，而非0.2 J。请核对题目数据：Q_total = 2Q = 0.04 J。"
+      },
+      {
+        "reference_element_id": "p0_10",
+        "is_correct": true,
+        "error_type": "NONE",
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_11",
+        "is_correct": false,
+        "error_type": "CALCULATION",
+        "correction_suggestion": "距离s的计算结果有误。正确的能量守恒方程为：mg sinα * s = (1/2) m v^2 + Q_total，代入数据应得 s = 0.02 m。"
+      },
+      {
+        "reference_element_id": "p0_12",
+        "is_correct": true,
+        "error_type": "NONE",
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_13",
+        "is_correct": false,
+        "error_type": "CALCULATION",
+        "correction_suggestion": "最终计算出的s值应为0.02 m，而非0.017 m。请重新验算能量守恒方程。"
+      },
+      {
+        "reference_element_id": "p0_14",
+        "is_correct": true,
+        "error_type": "NONE",
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_15",
+        "is_correct": false,
+        "error_type": "LOGIC",
+        "correction_suggestion": "此表达式正确，但仅为中间步骤。问题(4)要求建立两杆的运动方程并求解稳态速度差。请补充：1. 两杆的运动方程；2. 稳态加速度相等的条件；3. 联立求解 Δv。"
+      },
+      {
+        "reference_element_id": "p0_16",
+        "is_correct": true,
+        "error_type": "NONE",
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_17",
+        "is_correct": true,
+        "error_type": "NONE",
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_18",
+        "is_correct": true,
+        "error_type": "NONE",
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_19",
+        "is_correct": true,
+        "error_type": "NONE",
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_20",
+        "is_correct": true,
+        "error_type": "NONE",
+        "correction_suggestion": null
+      }
+    ],
+    "overall_feedback": "你的解答在问题(1)、(2)以及(3)的部分步骤上完成得很好，正确求出了x0、速度v和电流I。但在问题(3)的能量守恒计算中，焦耳热数值使用有误，导致距离s的结果错误。问题(4)的解答完全缺失，未建立运动方程也未求解稳态速度差。请复习电磁感应中双导体棒问题的动力学与能量分析方法，注意焦耳热的计算，并练习完整书写运动方程。",
+    "system_confidence": 0.9,
+    "requires_human_review": false
+  }
+}

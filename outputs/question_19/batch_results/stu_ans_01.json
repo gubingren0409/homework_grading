@@ -1,0 +1,57 @@
+{
+  "is_fully_correct": false,
+  "total_score_deduction": 8.0,
+  "step_evaluations": [
+    {
+      "reference_element_id": "p0_4",
+      "is_correct": true,
+      "error_type": "NONE",
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_12",
+      "is_correct": true,
+      "error_type": "NONE",
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_14",
+      "is_correct": true,
+      "error_type": "NONE",
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_19",
+      "is_correct": true,
+      "error_type": "NONE",
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_20",
+      "is_correct": true,
+      "error_type": "NONE",
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_21",
+      "is_correct": true,
+      "error_type": "NONE",
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_24",
+      "is_correct": false,
+      "error_type": "LOGIC",
+      "correction_suggestion": "需要建立杆a的力平衡方程（BIL + mg sinα = μ mg cosα），求解电流和速度，并应用能量守恒（mg sinα s = (1/2) m v^2 + Q_total）来求解s。"
+    },
+    {
+      "reference_element_id": "p0_31",
+      "is_correct": true,
+      "error_type": "NONE",
+      "correction_suggestion": null
+    }
+  ],
+  "overall_feedback": "学生正确解决了部分（1）和（2），得到了x0=3m和v=0.3m/s。但在部分（3）中，作业不完整，未展示必要的力平衡和能量守恒推导；部分（4）中，正确给出了感应电动势表达式，但缺少运动方程和稳态求解。建议补充缺失步骤以确保逻辑完整性。",
+  "system_confidence": 0.9,
+  "requires_human_review": false
+}

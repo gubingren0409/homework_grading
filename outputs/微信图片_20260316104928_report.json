@@ -1,0 +1,63 @@
+{
+  "is_fully_correct": false,
+  "total_score_deduction": 0.8,
+  "step_evaluations": [
+    {
+      "reference_element_id": "1",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "2",
+      "is_correct": false,
+      "error_type": "LOGIC",
+      "correction_suggestion": "The relationship p = 2p_0 is asserted without justification from previous steps. Verify if p_0 is defined and if this multiplication is logically derived."
+    },
+    {
+      "reference_element_id": "3",
+      "is_correct": false,
+      "error_type": "CALCULATION",
+      "correction_suggestion": "Assuming p_0 = U_AB * (I_AB/2), then 2 * p_0 = 2 * (U_AB * I_AB/2) = U_AB * I_AB, which matches element 4. However, the expression in element 3 is incorrectly written as '2 * U_AB * (I_AB/2)' which simplifies to U_AB * I_AB, but the notation is redundant. Ensure proper mathematical simplification."
+    },
+    {
+      "reference_element_id": "4",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "5",
+      "is_correct": false,
+      "error_type": "LOGIC",
+      "correction_suggestion": "The inequality E = βvL > 2βvl is presented without context. Verify if L and l are defined and if this comparison is logically valid based on given parameters."
+    },
+    {
+      "reference_element_id": "6",
+      "is_correct": false,
+      "error_type": "CALCULATION",
+      "correction_suggestion": "The expression R_AB > R_AB + 1/(1/(5R) + 1/(4R)) > (3/4)R is mathematically inconsistent because R_AB cannot be greater than itself plus a positive term. Recalculate the parallel resistance and inequalities."
+    },
+    {
+      "reference_element_id": "7",
+      "is_correct": false,
+      "error_type": "CALCULATION",
+      "correction_suggestion": "U_AB = E - (E/R_AB) * R_AB simplifies to U_AB = E - E = 0, but it is given as (2/3)βvL. This is a contradiction; check the formula for voltage division or circuit laws."
+    },
+    {
+      "reference_element_id": "8",
+      "is_correct": false,
+      "error_type": "CALCULATION",
+      "correction_suggestion": "I_AB/2 = U_AB/(4R) is given, but then equated to (4βvL)/(3R) without showing substitution from U_AB. Verify the consistency with U_AB from element 7."
+    },
+    {
+      "reference_element_id": "9",
+      "is_correct": false,
+      "error_type": "CALCULATION",
+      "correction_suggestion": "The inequality p > (16β²v²)/(9R) is derived from previous incorrect steps. Re-evaluate using corrected expressions for U_AB and I_AB."
+    }
+  ],
+  "overall_feedback": "The student's work contains multiple logical and calculation errors. Key issues include inconsistent definitions (e.g., p_0), incorrect simplifications in elements 3, 6, 7, and 8, and unjustified inequalities in elements 5 and 9. Review circuit analysis principles and ensure each step follows mathematically from the previous ones. Focus on verifying resistances, voltages, and currents in the context provided.",
+  "system_confidence": 0.85,
+  "requires_human_review": true
+}

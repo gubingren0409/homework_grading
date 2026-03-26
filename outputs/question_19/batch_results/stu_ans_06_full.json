@@ -1,0 +1,236 @@
+{
+  "student_id": "stu_ans_06",
+  "question_id": "question_19",
+  "perception_output": {
+    "readability_status": "CLEAR",
+    "elements": [
+      {
+        "element_id": "p0_e1",
+        "content_type": "plain_text",
+        "raw_content": "19. 解: 1) ∵保持静止.",
+        "confidence_score": 0.98,
+        "bbox": {
+          "x_min": 0.02,
+          "y_min": 0.03,
+          "x_max": 0.35,
+          "y_max": 0.12
+        }
+      },
+      {
+        "element_id": "p0_e2",
+        "content_type": "plain_text",
+        "raw_content": "∴如图:",
+        "confidence_score": 0.97,
+        "bbox": {
+          "x_min": 0.04,
+          "y_min": 0.12,
+          "x_max": 0.16,
+          "y_max": 0.17
+        }
+      },
+      {
+        "element_id": "p0_e3",
+        "content_type": "image_diagram",
+        "raw_content": "A force diagram showing a point with three forces: F_A pointing left, N pointing up-right, and G pointing down. The angle between F_A and G is labeled as α.",
+        "confidence_score": 0.96,
+        "bbox": {
+          "x_min": 0.18,
+          "y_min": 0.12,
+          "x_max": 0.32,
+          "y_max": 0.25
+        }
+      },
+      {
+        "element_id": "p0_e4",
+        "content_type": "latex_formula",
+        "raw_content": "F_A = mg\\sin\\alpha = 6N",
+        "confidence_score": 0.98,
+        "bbox": {
+          "x_min": 0.05,
+          "y_min": 0.25,
+          "x_max": 0.42,
+          "y_max": 0.32
+        }
+      },
+      {
+        "element_id": "p0_e5",
+        "content_type": "latex_formula",
+        "raw_content": "F_A = BIL,\\quad I = \\frac{U}{R}",
+        "confidence_score": 0.97,
+        "bbox": {
+          "x_min": 0.04,
+          "y_min": 0.32,
+          "x_max": 0.45,
+          "y_max": 0.39
+        }
+      },
+      {
+        "element_id": "p0_e6",
+        "content_type": "latex_formula",
+        "raw_content": "U = \\frac{\\Delta\\phi}{\\Delta t}",
+        "confidence_score": 0.95,
+        "bbox": {
+          "x_min": 0.18,
+          "y_min": 0.39,
+          "x_max": 0.42,
+          "y_max": 0.45
+        }
+      },
+      {
+        "element_id": "p0_e7",
+        "content_type": "latex_formula",
+        "raw_content": "F_A = \\frac{BL\\Delta\\phi}{\\Delta t R} = 6N",
+        "confidence_score": 0.96,
+        "bbox": {
+          "x_min": 0.05,
+          "y_min": 0.45,
+          "x_max": 0.45,
+          "y_max": 0.52
+        }
+      },
+      {
+        "element_id": "p0_e8",
+        "content_type": "latex_formula",
+        "raw_content": "\\frac{\\Delta\\phi}{\\Delta t} = 6Wb/s,\\quad \\Delta\\phi = 2\\times0.5x_0Wb",
+        "confidence_score": 0.95,
+        "bbox": {
+          "x_min": 0.06,
+          "y_min": 0.52,
+          "x_max": 0.62,
+          "y_max": 0.6
+        }
+      },
+      {
+        "element_id": "p0_e9",
+        "content_type": "latex_formula",
+        "raw_content": "s = 0.5x_0,\\quad t = 0.5",
+        "confidence_score": 0.97,
+        "bbox": {
+          "x_min": 0.05,
+          "y_min": 0.6,
+          "x_max": 0.35,
+          "y_max": 0.66
+        }
+      },
+      {
+        "element_id": "p0_e10",
+        "content_type": "latex_formula",
+        "raw_content": "x_0 = 3m",
+        "confidence_score": 0.98,
+        "bbox": {
+          "x_min": 0.05,
+          "y_min": 0.66,
+          "x_max": 0.25,
+          "y_max": 0.72
+        }
+      },
+      {
+        "element_id": "p0_e11",
+        "content_type": "latex_formula",
+        "raw_content": "2)\\because B_1=B_2=B_3=2T\\quad\\text{设 }B_1=B_2=B_3=B",
+        "confidence_score": 0.96,
+        "bbox": {
+          "x_min": 0.05,
+          "y_min": 0.72,
+          "x_max": 0.58,
+          "y_max": 0.79
+        }
+      },
+      {
+        "element_id": "p0_e12",
+        "content_type": "latex_formula",
+        "raw_content": "U_b = BLv\\quad I = \\frac{U}{R}\\quad F_{Ab} = \\frac{B^2l^2v}{R}",
+        "confidence_score": 0.95,
+        "bbox": {
+          "x_min": 0.05,
+          "y_min": 0.79,
+          "x_max": 0.58,
+          "y_max": 0.86
+        }
+      },
+      {
+        "element_id": "p0_e13",
+        "content_type": "latex_formula",
+        "raw_content": "Q_a = I^2r_a = \\frac{U^2}{R^2}",
+        "confidence_score": 0.97,
+        "bbox": {
+          "x_min": 0.05,
+          "y_min": 0.86,
+          "x_max": 0.38,
+          "y_max": 0.93
+        }
+      }
+    ],
+    "global_confidence": 0.96,
+    "trigger_short_circuit": false
+  },
+  "evaluation_report": {
+    "is_fully_correct": false,
+    "total_score_deduction": 13.0,
+    "step_evaluations": [
+      {
+        "reference_element_id": "p0_e4",
+        "is_correct": true,
+        "error_type": "NONE",
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_e5",
+        "is_correct": true,
+        "error_type": "NONE",
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_e6",
+        "is_correct": true,
+        "error_type": "NONE",
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_e7",
+        "is_correct": true,
+        "error_type": "NONE",
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_e8",
+        "is_correct": true,
+        "error_type": "NONE",
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_e9",
+        "is_correct": true,
+        "error_type": "NONE",
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_e10",
+        "is_correct": true,
+        "error_type": "NONE",
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_e11",
+        "is_correct": true,
+        "error_type": "NONE",
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_e12",
+        "is_correct": true,
+        "error_type": "NONE",
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_e13",
+        "is_correct": false,
+        "error_type": "CALCULATION",
+        "correction_suggestion": "The power expression for rod a should be P_a = I^2 R, not Q_a = I^2 r_a as written. Ensure to use the correct formula for electrical power and complete the equation setup for part (2)."
+      }
+    ],
+    "overall_feedback": "Student correctly solved part (1) for x0 = 3.00 m, demonstrating proper force balance and induction calculations. However, part (2) was incomplete with an error in the power expression, and parts (3) and (4) were not attempted. Based on the rubric, points were deducted for missing or incorrect steps in parts (2), (3), and (4).",
+    "system_confidence": 0.95,
+    "requires_human_review": false
+  }
+}

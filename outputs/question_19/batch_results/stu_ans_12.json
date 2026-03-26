@@ -1,0 +1,33 @@
+{
+  "is_fully_correct": false,
+  "total_score_deduction": 9.0,
+  "step_evaluations": [
+    {
+      "reference_element_id": "p0_4",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_11",
+      "is_correct": true,
+      "error_type": null,
+      "correction_suggestion": null
+    },
+    {
+      "reference_element_id": "p0_15",
+      "is_correct": false,
+      "error_type": "CONCEPTUAL",
+      "correction_suggestion": "在杆a即将开始运动的临界点，受力平衡应为：磁场力（向下） + 重力分力（向下） = 最大静摩擦力（向上）。你的方程中遗漏了重力分量 mg sinα。正确方程为：BIL + mg sinα = μ mg cosα。"
+    },
+    {
+      "reference_element_id": "p0_18",
+      "is_correct": false,
+      "error_type": "LOGIC",
+      "correction_suggestion": "需要分析两杆均运动后达到稳定状态（加速度相同）的情形。应建立两杆的运动方程和电路方程，并求解稳态下的速度差 Δv = v_b - v_a。你的解答中缺少此部分。"
+    }
+  ],
+  "overall_feedback": "你正确完成了第(1)问和第(2)问，求解了初始位置 x0 和 0.5秒后的速度 v。然而，第(3)问中杆a开始运动时刻的受力分析存在概念错误，遗漏了重力分量，导致速度和后续位移计算错误。第(4)问关于两杆都运动后的稳态分析完全缺失。请重点复习临界受力分析和多体系统稳态条件的建立。",
+  "system_confidence": 0.9,
+  "requires_human_review": false
+}

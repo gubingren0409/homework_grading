@@ -1,0 +1,26 @@
+{
+  "question_id": "p0_1",
+  "correct_answer": "调制　调幅　调谐　解调",
+  "grading_points": [
+    {
+      "point_id": "GP1",
+      "description": "识别第一个空：将声音信号发射出去需要进行的步骤是调制",
+      "score": 2.5
+    },
+    {
+      "point_id": "GP2",
+      "description": "识别第二个空：调制的两种具体做法之一是调幅",
+      "score": 2.5
+    },
+    {
+      "point_id": "GP3",
+      "description": "识别第三个空：从各个电台电磁波中选出需要的信号要进行调谐",
+      "score": 2.5
+    },
+    {
+      "point_id": "GP4",
+      "description": "识别第四个空：从高频电流中取出声音信号要进行解调",
+      "score": 2.5
+    }
+  ]
+}

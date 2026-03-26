@@ -1,0 +1,260 @@
+{
+  "student_id": "stu_ans_12",
+  "question_id": "question_19",
+  "perception_output": {
+    "readability_status": "CLEAR",
+    "elements": [
+      {
+        "element_id": "p0_1",
+        "content_type": "plain_text",
+        "raw_content": "19. (1)",
+        "confidence_score": 0.98,
+        "bbox": {
+          "x_min": 0.02,
+          "y_min": 0.03,
+          "x_max": 0.07,
+          "y_max": 0.06
+        }
+      },
+      {
+        "element_id": "p0_2",
+        "content_type": "latex_formula",
+        "raw_content": "\\frac{S}{t} = \\frac{L}{T_{0}}",
+        "confidence_score": 0.95,
+        "bbox": {
+          "x_min": 0.08,
+          "y_min": 0.03,
+          "x_max": 0.24,
+          "y_max": 0.07
+        }
+      },
+      {
+        "element_id": "p0_3",
+        "content_type": "latex_formula",
+        "raw_content": "E = \\frac{\\Delta \\varphi}{\\Delta t} = \\frac{2}{0.5} \\times 0.5 \\cdot x_0 = 2x_0 \\quad V",
+        "confidence_score": 0.96,
+        "bbox": {
+          "x_min": 0.08,
+          "y_min": 0.07,
+          "x_max": 0.48,
+          "y_max": 0.12
+        }
+      },
+      {
+        "element_id": "p0_4",
+        "content_type": "latex_formula",
+        "raw_content": "mg\\sin\\alpha = B_1\\frac{E}{2R}\\cdot L",
+        "confidence_score": 0.94,
+        "bbox": {
+          "x_min": 0.08,
+          "y_min": 0.12,
+          "x_max": 0.38,
+          "y_max": 0.17
+        }
+      },
+      {
+        "element_id": "p0_5",
+        "content_type": "latex_formula",
+        "raw_content": "\\Rightarrow x_0 = 3m",
+        "confidence_score": 0.97,
+        "bbox": {
+          "x_min": 0.08,
+          "y_min": 0.17,
+          "x_max": 0.28,
+          "y_max": 0.22
+        }
+      },
+      {
+        "element_id": "p0_6",
+        "content_type": "latex_formula",
+        "raw_content": "mg\\sin\\theta = \\frac{1}{2}mv^2 + 2Q",
+        "confidence_score": 0.95,
+        "bbox": {
+          "x_min": 0.62,
+          "y_min": 0.03,
+          "x_max": 0.92,
+          "y_max": 0.08
+        }
+      },
+      {
+        "element_id": "p0_7",
+        "content_type": "latex_formula",
+        "raw_content": "\\Rightarrow S = 3.42m",
+        "confidence_score": 0.96,
+        "bbox": {
+          "x_min": 0.62,
+          "y_min": 0.08,
+          "x_max": 0.82,
+          "y_max": 0.13
+        }
+      },
+      {
+        "element_id": "p0_8",
+        "content_type": "plain_text",
+        "raw_content": "(2)",
+        "confidence_score": 0.98,
+        "bbox": {
+          "x_min": 0.02,
+          "y_min": 0.23,
+          "x_max": 0.05,
+          "y_max": 0.26
+        }
+      },
+      {
+        "element_id": "p0_9",
+        "content_type": "latex_formula",
+        "raw_content": "\\frac{1}{40}mgv\\sin\\theta = I^2R",
+        "confidence_score": 0.95,
+        "bbox": {
+          "x_min": 0.08,
+          "y_min": 0.23,
+          "x_max": 0.42,
+          "y_max": 0.28
+        }
+      },
+      {
+        "element_id": "p0_10",
+        "content_type": "latex_formula",
+        "raw_content": "P_{Ia} = \\frac{1}{40}P_{Gb}",
+        "confidence_score": 0.94,
+        "bbox": {
+          "x_min": 0.08,
+          "y_min": 0.28,
+          "x_max": 0.34,
+          "y_max": 0.33
+        }
+      },
+      {
+        "element_id": "p0_11",
+        "content_type": "latex_formula",
+        "raw_content": "I_a^2R = \\frac{1}{40}mgv\\sin\\theta",
+        "confidence_score": 0.95,
+        "bbox": {
+          "x_min": 0.08,
+          "y_min": 0.33,
+          "x_max": 0.42,
+          "y_max": 0.38
+        }
+      },
+      {
+        "element_id": "p0_12",
+        "content_type": "latex_formula",
+        "raw_content": "\\left(\\frac{B_3Lv}{2R}\\right)^2R = \\frac{1}{40}mgv\\sin\\theta",
+        "confidence_score": 0.94,
+        "bbox": {
+          "x_min": 0.08,
+          "y_min": 0.38,
+          "x_max": 0.48,
+          "y_max": 0.43
+        }
+      },
+      {
+        "element_id": "p0_13",
+        "content_type": "latex_formula",
+        "raw_content": "\\Rightarrow v = 0.3m/s",
+        "confidence_score": 0.97,
+        "bbox": {
+          "x_min": 0.08,
+          "y_min": 0.43,
+          "x_max": 0.32,
+          "y_max": 0.48
+        }
+      },
+      {
+        "element_id": "p0_14",
+        "content_type": "plain_text",
+        "raw_content": "(3)",
+        "confidence_score": 0.98,
+        "bbox": {
+          "x_min": 0.02,
+          "y_min": 0.49,
+          "x_max": 0.05,
+          "y_max": 0.52
+        }
+      },
+      {
+        "element_id": "p0_15",
+        "content_type": "latex_formula",
+        "raw_content": "\\mu mg\\cos\\theta = B_2IL",
+        "confidence_score": 0.95,
+        "bbox": {
+          "x_min": 0.08,
+          "y_min": 0.49,
+          "x_max": 0.42,
+          "y_max": 0.54
+        }
+      },
+      {
+        "element_id": "p0_16",
+        "content_type": "latex_formula",
+        "raw_content": "I = B_3Lv",
+        "confidence_score": 0.96,
+        "bbox": {
+          "x_min": 0.08,
+          "y_min": 0.54,
+          "x_max": 0.32,
+          "y_max": 0.59
+        }
+      },
+      {
+        "element_id": "p0_17",
+        "content_type": "latex_formula",
+        "raw_content": "\\mu mg\\cos\\theta = B_2B_3L^2v",
+        "confidence_score": 0.95,
+        "bbox": {
+          "x_min": 0.08,
+          "y_min": 0.59,
+          "x_max": 0.48,
+          "y_max": 0.64
+        }
+      },
+      {
+        "element_id": "p0_18",
+        "content_type": "latex_formula",
+        "raw_content": "v = 6.4m/s",
+        "confidence_score": 0.97,
+        "bbox": {
+          "x_min": 0.08,
+          "y_min": 0.64,
+          "x_max": 0.32,
+          "y_max": 0.69
+        }
+      }
+    ],
+    "global_confidence": 0.96,
+    "trigger_short_circuit": false
+  },
+  "evaluation_report": {
+    "is_fully_correct": false,
+    "total_score_deduction": 9.0,
+    "step_evaluations": [
+      {
+        "reference_element_id": "p0_4",
+        "is_correct": true,
+        "error_type": null,
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_11",
+        "is_correct": true,
+        "error_type": null,
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_15",
+        "is_correct": false,
+        "error_type": "CONCEPTUAL",
+        "correction_suggestion": "在杆a即将开始运动的临界点，受力平衡应为：磁场力（向下） + 重力分力（向下） = 最大静摩擦力（向上）。你的方程中遗漏了重力分量 mg sinα。正确方程为：BIL + mg sinα = μ mg cosα。"
+      },
+      {
+        "reference_element_id": "p0_18",
+        "is_correct": false,
+        "error_type": "LOGIC",
+        "correction_suggestion": "需要分析两杆均运动后达到稳定状态（加速度相同）的情形。应建立两杆的运动方程和电路方程，并求解稳态下的速度差 Δv = v_b - v_a。你的解答中缺少此部分。"
+      }
+    ],
+    "overall_feedback": "你正确完成了第(1)问和第(2)问，求解了初始位置 x0 和 0.5秒后的速度 v。然而，第(3)问中杆a开始运动时刻的受力分析存在概念错误，遗漏了重力分量，导致速度和后续位移计算错误。第(4)问关于两杆都运动后的稳态分析完全缺失。请重点复习临界受力分析和多体系统稳态条件的建立。",
+    "system_confidence": 0.9,
+    "requires_human_review": false
+  }
+}

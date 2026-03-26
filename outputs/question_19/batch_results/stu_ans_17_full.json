@@ -1,0 +1,272 @@
+{
+  "student_id": "stu_ans_17",
+  "question_id": "question_19",
+  "perception_output": {
+    "readability_status": "CLEAR",
+    "elements": [
+      {
+        "element_id": "p0_1",
+        "content_type": "plain_text",
+        "raw_content": "19. 解: (1) a.b间 φ=",
+        "confidence_score": 0.98,
+        "bbox": {
+          "x_min": 0.02,
+          "y_min": 0.02,
+          "x_max": 0.47,
+          "y_max": 0.11
+        }
+      },
+      {
+        "element_id": "p0_2",
+        "content_type": "latex_formula",
+        "raw_content": "E\\phi = ns\\frac{\\Delta \\phi}{\\Delta t} = ns\\frac{\\Delta B}{\\Delta t} = 4S",
+        "confidence_score": 0.96,
+        "bbox": {
+          "x_min": 0.35,
+          "y_min": 0.11,
+          "x_max": 0.83,
+          "y_max": 0.19
+        }
+      },
+      {
+        "element_id": "p0_3",
+        "content_type": "image_diagram",
+        "raw_content": "A force diagram showing two forces: F upward and mg downward, with an arrow labeled f pointing to the left.",
+        "confidence_score": 0.95,
+        "bbox": {
+          "x_min": 0.12,
+          "y_min": 0.11,
+          "x_max": 0.25,
+          "y_max": 0.25
+        }
+      },
+      {
+        "element_id": "p0_4",
+        "content_type": "latex_formula",
+        "raw_content": "S = L \\cdot \\Delta x = 0.5 \\Delta x",
+        "confidence_score": 0.97,
+        "bbox": {
+          "x_min": 0.48,
+          "y_min": 0.19,
+          "x_max": 0.68,
+          "y_max": 0.25
+        }
+      },
+      {
+        "element_id": "p0_5",
+        "content_type": "latex_formula",
+        "raw_content": "I = \\frac{E}{2R}, F = BIL = \\mu mg \\cos\\theta \\Rightarrow \\Delta x = 3.2m",
+        "confidence_score": 0.96,
+        "bbox": {
+          "x_min": 0.23,
+          "y_min": 0.25,
+          "x_max": 0.93,
+          "y_max": 0.32
+        }
+      },
+      {
+        "element_id": "p0_6",
+        "content_type": "plain_text",
+        "raw_content": "(2)",
+        "confidence_score": 0.98,
+        "bbox": {
+          "x_min": 0.08,
+          "y_min": 0.32,
+          "x_max": 0.13,
+          "y_max": 0.38
+        }
+      },
+      {
+        "element_id": "p0_7",
+        "content_type": "latex_formula",
+        "raw_content": "P_a = P_{F_B} = F_B \\cdot v = BILv = \\frac{B^2L^2v^2}{2R}",
+        "confidence_score": 0.95,
+        "bbox": {
+          "x_min": 0.18,
+          "y_min": 0.32,
+          "x_max": 0.85,
+          "y_max": 0.42
+        }
+      },
+      {
+        "element_id": "p0_8",
+        "content_type": "latex_formula",
+        "raw_content": "P_{b\\text{总}} = mgv",
+        "confidence_score": 0.96,
+        "bbox": {
+          "x_min": 0.17,
+          "y_min": 0.42,
+          "x_max": 0.38,
+          "y_max": 0.5
+        }
+      },
+      {
+        "element_id": "p0_9",
+        "content_type": "latex_formula",
+        "raw_content": "\\frac{B^2L^2v^2}{2R} = \\frac{1}{40}mgv",
+        "confidence_score": 0.95,
+        "bbox": {
+          "x_min": 0.23,
+          "y_min": 0.5,
+          "x_max": 0.51,
+          "y_max": 0.58
+        }
+      },
+      {
+        "element_id": "p0_10",
+        "content_type": "latex_formula",
+        "raw_content": "v = \\frac{1}{4} m/s",
+        "confidence_score": 0.97,
+        "bbox": {
+          "x_min": 0.67,
+          "y_min": 0.5,
+          "x_max": 0.78,
+          "y_max": 0.58
+        }
+      },
+      {
+        "element_id": "p0_11",
+        "content_type": "plain_text",
+        "raw_content": "(3)",
+        "confidence_score": 0.98,
+        "bbox": {
+          "x_min": 0.02,
+          "y_min": 0.58,
+          "x_max": 0.08,
+          "y_max": 0.64
+        }
+      },
+      {
+        "element_id": "p0_12",
+        "content_type": "latex_formula",
+        "raw_content": "v = \\frac{1}{4} m/s",
+        "confidence_score": 0.96,
+        "bbox": {
+          "x_min": 0.38,
+          "y_min": 0.58,
+          "x_max": 0.51,
+          "y_max": 0.64
+        }
+      },
+      {
+        "element_id": "p0_13",
+        "content_type": "latex_formula",
+        "raw_content": "\\frac{1}{2}mv^2 - mgssin\\theta = Q",
+        "confidence_score": 0.95,
+        "bbox": {
+          "x_min": 0.22,
+          "y_min": 0.64,
+          "x_max": 0.55,
+          "y_max": 0.72
+        }
+      },
+      {
+        "element_id": "p0_14",
+        "content_type": "latex_formula",
+        "raw_content": "s = 1.875 \\times 10^{-3} m",
+        "confidence_score": 0.96,
+        "bbox": {
+          "x_min": 0.72,
+          "y_min": 0.64,
+          "x_max": 0.91,
+          "y_max": 0.72
+        }
+      },
+      {
+        "element_id": "p0_15",
+        "content_type": "plain_text",
+        "raw_content": "(4)",
+        "confidence_score": 0.98,
+        "bbox": {
+          "x_min": 0.04,
+          "y_min": 0.72,
+          "x_max": 0.09,
+          "y_max": 0.78
+        }
+      },
+      {
+        "element_id": "p0_16",
+        "content_type": "latex_formula",
+        "raw_content": "对a, \\mu mg \\cos\\theta + \\frac{B^2L^2 \\cdot (v_b - v_a)}{2R} - mg \\sin\\theta = ma",
+        "confidence_score": 0.94,
+        "bbox": {
+          "x_min": 0.14,
+          "y_min": 0.72,
+          "x_max": 0.91,
+          "y_max": 0.8
+        }
+      },
+      {
+        "element_id": "p0_17",
+        "content_type": "latex_formula",
+        "raw_content": "对b, \\frac{B^2L^2 \\Delta v}{2R} + mg \\sin\\theta - \\mu mg \\cos\\theta = a",
+        "confidence_score": 0.95,
+        "bbox": {
+          "x_min": 0.14,
+          "y_min": 0.8,
+          "x_max": 0.87,
+          "y_max": 0.88
+        }
+      },
+      {
+        "element_id": "p0_18",
+        "content_type": "latex_formula",
+        "raw_content": "得 \\Delta v = 0.125 m/s",
+        "confidence_score": 0.96,
+        "bbox": {
+          "x_min": 0.23,
+          "y_min": 0.88,
+          "x_max": 0.57,
+          "y_max": 0.95
+        }
+      },
+      {
+        "element_id": "p0_19",
+        "content_type": "plain_text",
+        "raw_content": "动力定理可行",
+        "confidence_score": 0.97,
+        "bbox": {
+          "x_min": 0.75,
+          "y_min": 0.88,
+          "x_max": 0.87,
+          "y_max": 0.95
+        }
+      }
+    ],
+    "global_confidence": 0.96,
+    "trigger_short_circuit": false
+  },
+  "evaluation_report": {
+    "is_fully_correct": false,
+    "total_score_deduction": 14.0,
+    "step_evaluations": [
+      {
+        "reference_element_id": "p0_1",
+        "is_correct": false,
+        "error_type": "CONCEPTUAL",
+        "correction_suggestion": "第一部分条件分析错误。在最初0.5s内，两杆均静止，杆b的受力平衡应为安培力（由变化磁场产生的感应电流引起）等于其重力沿斜面的分力，即B3 * I * L = mg sinα。您错误地引入了静摩擦力公式，且未正确使用B1的变化率计算感应电动势和电流。请重新建立该阶段的力平衡方程。"
+      },
+      {
+        "reference_element_id": "p0_6",
+        "is_correct": false,
+        "error_type": "CALCULATION",
+        "correction_suggestion": "第二部分思路基本正确，但表达式和计算有误。杆a的热功率为P_a = I²R，其中I = B L v / (2R)，故P_a = (B² L² v²) / (4R) = 0.5v²。杆b的重力功率应为P_G = mg sinα * v = 6v。建立方程P_a = (1/40)P_G，即0.5v² = 0.15v，解得v=0.300 m/s，而非0.25 m/s。请检查功率表达式中的数值系数。"
+      },
+      {
+        "reference_element_id": "p0_11",
+        "is_correct": false,
+        "error_type": "CONCEPTUAL",
+        "correction_suggestion": "第三部分解题逻辑混乱。首先，需分析杆a开始运动的临界条件：B I L + mg sinα = μ mg cosα，由此解出电流I和此时杆b的速度v。然后，对杆b从开始运动到此临界点应用能量守恒：mg sinα * s = (1/2) m v² + Q_total (其中Q_total为两杆总焦耳热)。您未完成第一步，且能量方程符号错误（应为重力做功等于动能增加与产热之和），导致结果完全错误。"
+      },
+      {
+        "reference_element_id": "p0_15",
+        "is_correct": false,
+        "error_type": "CONCEPTUAL",
+        "correction_suggestion": "第四部分运动方程设置错误。电动势应为ε = B L (v_b - v_a)。两杆运动方程分别为：对b，mg sinα - B I L = m a；对a，mg sinα + B I L - μ mg cosα = m a。稳态时两杆加速度a相同。您的方程中错误地为杆b引入了摩擦力项，且杆a的方程力项符号混乱。请根据两杆所受安培力方向相反这一事实，重新正确列写牛顿第二定律方程。"
+      }
+    ],
+    "overall_feedback": "解题过程显示您对电磁感应与力学结合的问题有一定理解，但在分析不同物理阶段（静止、单杆运动、双杆运动）的边界条件和受力时存在概念混淆。主要问题包括：1）误用摩擦力公式于静止阶段；2）功率计算中遗漏斜面倾角因子；3）跳过关键力平衡条件直接使用错误速度进行能量计算；4）双杆运动方程构建错误。建议将问题按时间顺序分阶段，明确每个阶段系统的状态和适用的物理定律（法拉第定律、欧姆定律、牛顿第二定律、能量守恒），再逐步求解。",
+    "system_confidence": 0.9,
+    "requires_human_review": false
+  }
+}

@@ -153,6 +153,21 @@ async def update_task_status(
     await _execute_write_with_retry(db_path, _op)
 
 
+async def update_task_celery_id(
+    db_path: str,
+    task_id: str,
+    celery_task_id: str,
+) -> None:
+    """Phase 28: Update Celery task ID for potential revocation."""
+    async def _op(db: aiosqlite.Connection) -> None:
+        await db.execute(
+            "UPDATE tasks SET celery_task_id = ? WHERE task_id = ?",
+            (celery_task_id, task_id),
+        )
+
+    await _execute_write_with_retry(db_path, _op)
+
+
 async def get_task(db_path: str, task_id: str) -> Optional[Dict[str, Any]]:
     async with _open_connection(db_path) as db:
         db.row_factory = aiosqlite.Row

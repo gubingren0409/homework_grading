@@ -1,15 +1,16 @@
 import uuid
 import json
 import logging
-from typing import List, Optional, Dict, Any, Tuple
-from fastapi import APIRouter, Depends, UploadFile, File, BackgroundTasks, HTTPException, Query, Request
+from typing import List, Optional, Dict, Any
+
+from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, Query, Request
 from pydantic import BaseModel
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
-from src.api.dependencies import get_grading_workflow, get_db_path
-from src.orchestration.workflow import GradingWorkflow
-from src.db.client import create_task, update_task_status, save_grading_result, get_task, fetch_results
+from src.api.dependencies import get_db_path
+from src.db.client import create_task, update_task_celery_id, get_task, fetch_results
+from src.worker.main import grade_homework_task
 
 
 logger = logging.getLogger(__name__)
@@ -36,62 +37,47 @@ class GradingResultItem(BaseModel):
     report_json: str
 
 
-# --- Background Worker ---
-async def run_grading_task(
-    task_id: str, 
-    files_data: List[Tuple[bytes, str]], 
-    workflow: GradingWorkflow, 
-    db_path: str
-):
-    """
-    Isolated background worker with error trapping (Phase 17).
-    """
-    try:
-        await update_task_status(db_path, task_id, "PROCESSING")
-        
-        # Execute Pipeline (supports multi-file/PDF flattening)
-        report = await workflow.run_pipeline(files_data)
-        
-        # Use first filename or task_id as student_id fallback
-        student_id = files_data[0][1] if files_data else task_id
-        
-        # Persistence
-        await save_grading_result(db_path, task_id, student_id, report)
-        await update_task_status(db_path, task_id, "COMPLETED")
-        
-    except Exception as e:
-        logger.error(f"Background task {task_id} failed: {e}")
-        await update_task_status(db_path, task_id, "FAILED", error=str(e))
-
-
-# --- API Endpoints ---
+# --- API Endpoints (Phase 28: Celery-decoupled) ---
 @router.post("/grade/submit", response_model=TaskResponse, status_code=202)
 @limiter.limit("5/minute")
 async def submit_grading_job(
     request: Request,
-    background_tasks: BackgroundTasks,
     files: List[UploadFile] = File(...),
-    workflow: GradingWorkflow = Depends(get_grading_workflow),
     db_path: str = Depends(get_db_path)
 ):
     """
-    Phase 17: Asynchronous entry point for multi-file grading.
-    Rate limited to 5/min to protect high-cost model compute.
+    Phase 28: Asynchronous submission with Celery physical decoupling.
+    Returns HTTP 202 immediately after queueing task to Redis.
+    
+    Contract Guarantees:
+    - Response time < 50ms (no AI computation in HTTP lifecycle)
+    - Task persisted to DB before queueing
+    - Worker processes execute grading in isolated processes
     """
+    # 1. Generate business task UUID
     task_id = str(uuid.uuid4())
     
-    # Read all files into memory for background processing
+    # 2. Serialize uploaded files (Redis broker requires JSON-compatible data)
     files_data = []
     for file in files:
         content = await file.read()
-        files_data.append((content, file.filename))
+        # Convert bytes to int list for JSON serialization
+        files_data.append((list(content), file.filename))
     
-    # 1. Register task in DB
+    # 3. Pre-persist task state (PENDING) BEFORE queueing
     await create_task(db_path, task_id)
     
-    # 2. Push to background worker
-    background_tasks.add_task(run_grading_task, task_id, files_data, workflow, db_path)
+    # 4. Dispatch to Celery worker queue (non-blocking)
+    celery_result = grade_homework_task.apply_async(
+        args=[task_id, files_data, db_path],
+        task_id=task_id,  # Force business UUID as Celery task ID
+    )
     
+    # 5. Track Celery task ID for potential revocation
+    await update_task_celery_id(db_path, task_id, celery_result.id)
+    
+    # 6. Immediate HTTP 202 response (physical cutoff from computation)
+    logger.info(f"[API] Task {task_id} queued to Celery with ID {celery_result.id}")
     return TaskResponse(task_id=task_id, status="PENDING")
 
 
@@ -103,9 +89,9 @@ async def get_job_status_and_results(
     db_path: str = Depends(get_db_path)
 ):
     """
-    Phase 17: Unified status and retrieval endpoint.
-    Returns 206 (Partial) if still processing, or 200 with results if COMPLETED.
-    Rate limited to 30/min for polling.
+    Phase 28: Unified polling endpoint for Celery-queued tasks.
+    Returns task status and results when COMPLETED.
+    Rate limited to 30/min to prevent polling storms.
     """
     task = await get_task(db_path, task_id)
     if not task:

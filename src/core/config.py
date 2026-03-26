@@ -21,6 +21,15 @@ class Settings(BaseSettings):
     deepseek_model_name: str = "deepseek-reasoner"
     deepseek_use_stream: bool = False
 
+    # Redis Configuration (Phase 28)
+    redis_host: str = "localhost"
+    redis_port: int = 6379
+    redis_db: int = 0
+
+    @property
+    def redis_url(self) -> str:
+        return f"redis://{self.redis_host}:{self.redis_port}/{self.redis_db}"
+
     # Internal Parsed Lists (Computed)
     @property
     def parsed_deepseek_keys(self) -> List[str]:

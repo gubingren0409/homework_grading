@@ -1,0 +1,488 @@
+{
+  "student_id": "stu_ans_14",
+  "question_id": "question_19",
+  "perception_output": {
+    "readability_status": "CLEAR",
+    "elements": [
+      {
+        "element_id": "p0_1",
+        "content_type": "plain_text",
+        "raw_content": "19.",
+        "confidence_score": 0.98,
+        "bbox": {
+          "x_min": 0.02,
+          "y_min": 0.03,
+          "x_max": 0.06,
+          "y_max": 0.07
+        }
+      },
+      {
+        "element_id": "p0_2",
+        "content_type": "plain_text",
+        "raw_content": "(1) 前0.5s内，两棒不动",
+        "confidence_score": 0.97,
+        "bbox": {
+          "x_min": 0.07,
+          "y_min": 0.03,
+          "x_max": 0.34,
+          "y_max": 0.08
+        }
+      },
+      {
+        "element_id": "p0_3",
+        "content_type": "latex_formula",
+        "raw_content": "E = \\frac{\\partial \\phi}{\\partial t} = \\frac{\\partial (B_3 S)}{\\partial t} = S \\frac{\\partial B_3}{\\partial t}",
+        "confidence_score": 0.96,
+        "bbox": {
+          "x_min": 0.13,
+          "y_min": 0.08,
+          "x_max": 0.45,
+          "y_max": 0.14
+        }
+      },
+      {
+        "element_id": "p0_4",
+        "content_type": "plain_text",
+        "raw_content": "由题，\\frac{\\partial B_3}{\\partial t} = 4",
+        "confidence_score": 0.95,
+        "bbox": {
+          "x_min": 0.14,
+          "y_min": 0.14,
+          "x_max": 0.33,
+          "y_max": 0.18
+        }
+      },
+      {
+        "element_id": "p0_5",
+        "content_type": "latex_formula",
+        "raw_content": "I = \\frac{E}{2R}",
+        "confidence_score": 0.94,
+        "bbox": {
+          "x_min": 0.18,
+          "y_min": 0.18,
+          "x_max": 0.31,
+          "y_max": 0.23
+        }
+      },
+      {
+        "element_id": "p0_6",
+        "content_type": "latex_formula",
+        "raw_content": "F_b = B_3 I L = mg \\sin \\theta",
+        "confidence_score": 0.95,
+        "bbox": {
+          "x_min": 0.17,
+          "y_min": 0.23,
+          "x_max": 0.45,
+          "y_max": 0.29
+        }
+      },
+      {
+        "element_id": "p0_7",
+        "content_type": "latex_formula",
+        "raw_content": "\\frac{E}{2R} = \\frac{mg \\sin \\theta}{B_3 L}",
+        "confidence_score": 0.93,
+        "bbox": {
+          "x_min": 0.23,
+          "y_min": 0.3,
+          "x_max": 0.45,
+          "y_max": 0.35
+        }
+      },
+      {
+        "element_id": "p0_8",
+        "content_type": "latex_formula",
+        "raw_content": "E = 6V",
+        "confidence_score": 0.96,
+        "bbox": {
+          "x_min": 0.31,
+          "y_min": 0.36,
+          "x_max": 0.41,
+          "y_max": 0.41
+        }
+      },
+      {
+        "element_id": "p0_9",
+        "content_type": "latex_formula",
+        "raw_content": "S = 1.5 m^2",
+        "confidence_score": 0.95,
+        "bbox": {
+          "x_min": 0.28,
+          "y_min": 0.41,
+          "x_max": 0.42,
+          "y_max": 0.46
+        }
+      },
+      {
+        "element_id": "p0_10",
+        "content_type": "latex_formula",
+        "raw_content": "x_0 \\cdot L = S",
+        "confidence_score": 0.94,
+        "bbox": {
+          "x_min": 0.27,
+          "y_min": 0.46,
+          "x_max": 0.41,
+          "y_max": 0.51
+        }
+      },
+      {
+        "element_id": "p0_11",
+        "content_type": "latex_formula",
+        "raw_content": "x_0 = 3m",
+        "confidence_score": 0.95,
+        "bbox": {
+          "x_min": 0.28,
+          "y_min": 0.51,
+          "x_max": 0.4,
+          "y_max": 0.56
+        }
+      },
+      {
+        "element_id": "p0_12",
+        "content_type": "plain_text",
+        "raw_content": "(2) B₁,B₂,B₃均为2T=B",
+        "confidence_score": 0.96,
+        "bbox": {
+          "x_min": 0.08,
+          "y_min": 0.56,
+          "x_max": 0.35,
+          "y_max": 0.61
+        }
+      },
+      {
+        "element_id": "p0_13",
+        "content_type": "latex_formula",
+        "raw_content": "E = BL v_b",
+        "confidence_score": 0.95,
+        "bbox": {
+          "x_min": 0.22,
+          "y_min": 0.61,
+          "x_max": 0.38,
+          "y_max": 0.66
+        }
+      },
+      {
+        "element_id": "p0_14",
+        "content_type": "latex_formula",
+        "raw_content": "I = \\frac{E}{2R} = \\frac{BL v_b}{2R}",
+        "confidence_score": 0.94,
+        "bbox": {
+          "x_min": 0.21,
+          "y_min": 0.66,
+          "x_max": 0.44,
+          "y_max": 0.71
+        }
+      },
+      {
+        "element_id": "p0_15",
+        "content_type": "latex_formula",
+        "raw_content": "P_g = mg \\sin \\theta \\cdot v_b",
+        "confidence_score": 0.95,
+        "bbox": {
+          "x_min": 0.19,
+          "y_min": 0.71,
+          "x_max": 0.43,
+          "y_max": 0.76
+        }
+      },
+      {
+        "element_id": "p0_16",
+        "content_type": "latex_formula",
+        "raw_content": "P_a = I^2 R = \\frac{B^2 L^2 v_b^2}{4R} = \\frac{1}{40} \\cdot mg \\sin \\theta \\cdot v_b",
+        "confidence_score": 0.93,
+        "bbox": {
+          "x_min": 0.2,
+          "y_min": 0.76,
+          "x_max": 0.6,
+          "y_max": 0.82
+        }
+      },
+      {
+        "element_id": "p0_17",
+        "content_type": "latex_formula",
+        "raw_content": "v_b = 0.3m/s",
+        "confidence_score": 0.95,
+        "bbox": {
+          "x_min": 0.28,
+          "y_min": 0.82,
+          "x_max": 0.42,
+          "y_max": 0.87
+        }
+      },
+      {
+        "element_id": "p0_18",
+        "content_type": "latex_formula",
+        "raw_content": "I = \\frac{BL \\omega}{2R} = 4A",
+        "confidence_score": 0.94,
+        "bbox": {
+          "x_min": 0.09,
+          "y_min": 0.71,
+          "x_max": 0.19,
+          "y_max": 0.82
+        }
+      },
+      {
+        "element_id": "p0_19",
+        "content_type": "latex_formula",
+        "raw_content": "\\omega = 4rad/s",
+        "confidence_score": 0.95,
+        "bbox": {
+          "x_min": 0.09,
+          "y_min": 0.82,
+          "x_max": 0.2,
+          "y_max": 0.87
+        }
+      },
+      {
+        "element_id": "p0_20",
+        "content_type": "plain_text",
+        "raw_content": "(3) a棒开始运动时",
+        "confidence_score": 0.96,
+        "bbox": {
+          "x_min": 0.47,
+          "y_min": 0.03,
+          "x_max": 0.68,
+          "y_max": 0.08
+        }
+      },
+      {
+        "element_id": "p0_21",
+        "content_type": "latex_formula",
+        "raw_content": "F_{安} + mg \\sin \\theta = \\mu - mg \\cos \\theta",
+        "confidence_score": 0.95,
+        "bbox": {
+          "x_min": 0.51,
+          "y_min": 0.08,
+          "x_max": 0.78,
+          "y_max": 0.14
+        }
+      },
+      {
+        "element_id": "p0_22",
+        "content_type": "latex_formula",
+        "raw_content": "F_{安} = 0.4N",
+        "confidence_score": 0.96,
+        "bbox": {
+          "x_min": 0.58,
+          "y_min": 0.14,
+          "x_max": 0.71,
+          "y_max": 0.19
+        }
+      },
+      {
+        "element_id": "p0_23",
+        "content_type": "latex_formula",
+        "raw_content": "F_{安} = BIL",
+        "confidence_score": 0.95,
+        "bbox": {
+          "x_min": 0.55,
+          "y_min": 0.19,
+          "x_max": 0.7,
+          "y_max": 0.24
+        }
+      },
+      {
+        "element_id": "p0_24",
+        "content_type": "latex_formula",
+        "raw_content": "I = 0.4A",
+        "confidence_score": 0.94,
+        "bbox": {
+          "x_min": 0.58,
+          "y_min": 0.24,
+          "x_max": 0.7,
+          "y_max": 0.29
+        }
+      },
+      {
+        "element_id": "p0_25",
+        "content_type": "latex_formula",
+        "raw_content": "v_b = \\frac{2R \\cdot I}{BL} = 0.4m/s",
+        "confidence_score": 0.95,
+        "bbox": {
+          "x_min": 0.55,
+          "y_min": 0.29,
+          "x_max": 0.75,
+          "y_max": 0.35
+        }
+      },
+      {
+        "element_id": "p0_26",
+        "content_type": "latex_formula",
+        "raw_content": "W_G = mg \\cdot h = 2Q + \\frac{1}{2}mv_b^2",
+        "confidence_score": 0.94,
+        "bbox": {
+          "x_min": 0.55,
+          "y_min": 0.46,
+          "x_max": 0.8,
+          "y_max": 0.52
+        }
+      },
+      {
+        "element_id": "p0_27",
+        "content_type": "latex_formula",
+        "raw_content": "h = S \\cdot \\sin \\theta",
+        "confidence_score": 0.95,
+        "bbox": {
+          "x_min": 0.6,
+          "y_min": 0.52,
+          "x_max": 0.75,
+          "y_max": 0.57
+        }
+      },
+      {
+        "element_id": "p0_28",
+        "content_type": "latex_formula",
+        "raw_content": "mg \\sin \\theta \\cdot S = 2Q + \\frac{1}{2}mv_b^2",
+        "confidence_score": 0.94,
+        "bbox": {
+          "x_min": 0.58,
+          "y_min": 0.57,
+          "x_max": 0.82,
+          "y_max": 0.63
+        }
+      },
+      {
+        "element_id": "p0_29",
+        "content_type": "latex_formula",
+        "raw_content": "S = 0.02m",
+        "confidence_score": 0.95,
+        "bbox": {
+          "x_min": 0.65,
+          "y_min": 0.63,
+          "x_max": 0.77,
+          "y_max": 0.68
+        }
+      },
+      {
+        "element_id": "p0_30",
+        "content_type": "plain_text",
+        "raw_content": "(4) 连夜差ωb经生日时",
+        "confidence_score": 0.96,
+        "bbox": {
+          "x_min": 0.57,
+          "y_min": 0.71,
+          "x_max": 0.78,
+          "y_max": 0.76
+        }
+      },
+      {
+        "element_id": "p0_31",
+        "content_type": "latex_formula",
+        "raw_content": "a_a = a_b",
+        "confidence_score": 0.95,
+        "bbox": {
+          "x_min": 0.6,
+          "y_min": 0.76,
+          "x_max": 0.72,
+          "y_max": 0.81
+        }
+      },
+      {
+        "element_id": "p0_32",
+        "content_type": "latex_formula",
+        "raw_content": "mg \\sin \\theta + F_{安} - mg \\cos \\theta = F_{安}",
+        "confidence_score": 0.94,
+        "bbox": {
+          "x_min": 0.55,
+          "y_min": 0.81,
+          "x_max": 0.78,
+          "y_max": 0.86
+        }
+      },
+      {
+        "element_id": "p0_33",
+        "content_type": "latex_formula",
+        "raw_content": "F_{安} = 4N",
+        "confidence_score": 0.95,
+        "bbox": {
+          "x_min": 0.6,
+          "y_min": 0.86,
+          "x_max": 0.72,
+          "y_max": 0.91
+        }
+      },
+      {
+        "element_id": "p0_34",
+        "content_type": "latex_formula",
+        "raw_content": "BIL = F_{安} \\Rightarrow I = 4A",
+        "confidence_score": 0.94,
+        "bbox": {
+          "x_min": 0.55,
+          "y_min": 0.91,
+          "x_max": 0.78,
+          "y_max": 0.96
+        }
+      }
+    ],
+    "global_confidence": 0.95,
+    "trigger_short_circuit": false
+  },
+  "evaluation_report": {
+    "is_fully_correct": false,
+    "total_score_deduction": 5.0,
+    "step_evaluations": [
+      {
+        "reference_element_id": "p0_6",
+        "is_correct": true,
+        "error_type": null,
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_11",
+        "is_correct": true,
+        "error_type": null,
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_16",
+        "is_correct": true,
+        "error_type": null,
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_17",
+        "is_correct": true,
+        "error_type": null,
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_21",
+        "is_correct": false,
+        "error_type": "CONCEPTUAL",
+        "correction_suggestion": "力平衡方程应为：F_安 + mg sinθ = μ mg cosθ，其中μ是摩擦系数。"
+      },
+      {
+        "reference_element_id": "p0_28",
+        "is_correct": true,
+        "error_type": null,
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_29",
+        "is_correct": true,
+        "error_type": null,
+        "correction_suggestion": null
+      },
+      {
+        "reference_element_id": "p0_30",
+        "is_correct": false,
+        "error_type": "TRANSCRIPTION_ERROR",
+        "correction_suggestion": "文本识别有误，意图可能是'两棒速度差稳定时'。请检查书写。"
+      },
+      {
+        "reference_element_id": "p0_32",
+        "is_correct": false,
+        "error_type": "LOGIC",
+        "correction_suggestion": "方程应基于牛顿第二定律：对于棒a，mg sinθ + BIL - μ mg cosθ = m a_a；对于棒b，mg sinθ - BIL = m a_b。"
+      },
+      {
+        "reference_element_id": "p0_34",
+        "is_correct": false,
+        "error_type": "CALCULATION",
+        "correction_suggestion": "未正确解出速度差，稳态速度差应为3.2 m/s。"
+      }
+    ],
+    "overall_feedback": "学生正确解决了问题(1)和(2)。在问题(3)中，力平衡方程设置错误，但后续计算正确。问题(4)的推导不完整，缺失关键步骤和正确方程。建议复习电磁感应中的力平衡和能量守恒。",
+    "system_confidence": 0.9,
+    "requires_human_review": false
+  }
+}

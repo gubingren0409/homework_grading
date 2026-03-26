@@ -1,0 +1,86 @@
+{
+  "question_id": "18",
+  "correct_answer": "The model answer provides a complete solution to the three-part physics problem involving a pendulum with force sensor data and magnetic field effects. Key results: (1) Period T = 4π/7 s ≈ 1.80 s, length L = 0.800 m. (2) Mass m = 0.0799 kg, maximum speed v_m = 0.142 m/s. (3) Magnetic field B = 0.0493 T or 0.0495 T, direction perpendicular into the page.",
+  "grading_points": [
+    {
+      "point_id": "1a",
+      "description": "Identify half-period from graph: T/2 = 2π/7 s from A→B→C motion.",
+      "score": 1.0
+    },
+    {
+      "point_id": "1b",
+      "description": "Calculate full period: T = 4π/7 s ≈ 1.80 s.",
+      "score": 1.0
+    },
+    {
+      "point_id": "1c",
+      "description": "Apply pendulum formula T = 2π√(L/g) to find L.",
+      "score": 1.0
+    },
+    {
+      "point_id": "1d",
+      "description": "Compute L = gT²/(4π²) = 0.800 m.",
+      "score": 1.0
+    },
+    {
+      "point_id": "2a",
+      "description": "Set up force equation at endpoint: F_min = mg cosθ.",
+      "score": 1.0
+    },
+    {
+      "point_id": "2b",
+      "description": "Set up force equation at lowest point: F_max - mg = mv_m²/L.",
+      "score": 1.0
+    },
+    {
+      "point_id": "2c",
+      "description": "Apply energy conservation: mgL(1 - cosθ) = ½mv_m².",
+      "score": 1.0
+    },
+    {
+      "point_id": "2d",
+      "description": "Solve system to find m = 0.0799 kg.",
+      "score": 1.0
+    },
+    {
+      "point_id": "2e",
+      "description": "Calculate v_m = 0.142 m/s from energy or force equation.",
+      "score": 1.0
+    },
+    {
+      "point_id": "2f",
+      "description": "Alternative method: Derive m = (F_max + 2F_min)/(3g).",
+      "score": 1.0
+    },
+    {
+      "point_id": "3a",
+      "description": "State that Lorentz force does no work, so speed unchanged.",
+      "score": 1.0
+    },
+    {
+      "point_id": "3b",
+      "description": "Analyze force directions for two passes through lowest point.",
+      "score": 1.0
+    },
+    {
+      "point_id": "3c",
+      "description": "Compare F′₁ and F′₂ with F_max to deduce Lorentz force effects.",
+      "score": 1.0
+    },
+    {
+      "point_id": "3d",
+      "description": "Determine magnetic field direction (into page) using left-hand rule.",
+      "score": 1.0
+    },
+    {
+      "point_id": "3e",
+      "description": "Write equations: F′₁ = mg + mv_m²/L + qv_mB, F′₂ = mg + mv_m²/L - qv_mB.",
+      "score": 1.0
+    },
+    {
+      "point_id": "3f",
+      "description": "Solve for B = (F′₁ - F′₂)/(2qv_m) ≈ 0.0493 T.",
+      "score": 1.0
+    }
+  ]
+}
