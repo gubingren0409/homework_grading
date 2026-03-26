@@ -73,6 +73,22 @@ def _sample_perception() -> PerceptionOutput:
     )
 
 
+def _sample_perception_heavily_altered() -> PerceptionOutput:
+    return PerceptionOutput(
+        readability_status="HEAVILY_ALTERED",
+        elements=[
+            PerceptionNode(
+                element_id="e1",
+                content_type="plain_text",
+                raw_content="illegible noisy fragment",
+                confidence_score=0.4,
+            )
+        ],
+        global_confidence=0.4,
+        trigger_short_circuit=False,
+    )
+
+
 def _valid_eval_wrapped_json() -> str:
     payload = {
         "evaluation_report": {
@@ -108,6 +124,27 @@ async def test_parse_failure_triggers_v3_fallback():
         assert completions.calls[0]["stream"] is True
         assert completions.calls[1]["stream"] is False
         assert completions.calls[1]["model"] == "deepseek-chat"
+    finally:
+        settings.deepseek_use_stream = original_use_stream
+
+
+@pytest.mark.asyncio
+async def test_heavily_altered_bypasses_reasoner_to_v3():
+    original_use_stream = settings.deepseek_use_stream
+    settings.deepseek_use_stream = True
+
+    def v3_ok(_kwargs):
+        text = _valid_eval_wrapped_json()
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=text))])
+
+    try:
+        engine, completions = _make_engine_with_behaviors([v3_ok])
+        report = await engine.evaluate_logic(_sample_perception_heavily_altered())
+
+        assert report.is_fully_correct is True
+        assert len(completions.calls) == 1
+        assert completions.calls[0]["stream"] is False
+        assert completions.calls[0]["model"] == "deepseek-chat"
     finally:
         settings.deepseek_use_stream = original_use_stream
 

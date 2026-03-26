@@ -125,11 +125,21 @@ class DeepSeekCognitiveEngine(BaseCognitiveAgent):
                 # 2. Primary model path + deterministic fallback.
                 # Stream mode is configurable to balance latency/caching vs token streaming.
                 should_degrade = connection_error_count >= MAX_CONNECTION_ERRORS
+                should_bypass_reasoner = perception_data.readability_status == "HEAVILY_ALTERED"
                 if should_degrade:
                     logger.warning(
                         "Switching to deepseek-chat fallback (attempt=%s, net_failures=%s).",
                         attempt + 1,
                         connection_error_count,
+                    )
+                    model_to_use = "deepseek-chat"
+                    use_stream = False
+                elif should_bypass_reasoner:
+                    logger.warning(
+                        "Bypassing reasoner for HEAVILY_ALTERED input (attempt=%s, confidence=%.2f). "
+                        "Routing directly to deepseek-chat.",
+                        attempt + 1,
+                        perception_data.global_confidence,
                     )
                     model_to_use = "deepseek-chat"
                     use_stream = False

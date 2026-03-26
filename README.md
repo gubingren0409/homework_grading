@@ -252,7 +252,7 @@ DEEPSEEK_USE_STREAM=false
 |------|------|---------|
 | `CLEAR` | 清晰可读 | 正常流转 |
 | `MINOR_ALTERATION` | 轻微问题 | 正常流转 |
-| `HEAVILY_ALTERED` | 严重涂改但可提取 | 放行到认知层判断 |
+| `HEAVILY_ALTERED` | 严重涂改但可提取 | 放行编排层；认知层旁路到 DeepSeek-Chat 快速判定 |
 | `UNREADABLE` | 完全不可读 | 立即拦截 |
 
 ---
