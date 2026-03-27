@@ -10,6 +10,7 @@ import openai
 from src.core.config import settings
 from src.core.connection_pool import CircuitBreakerKeyPool, AllKeysExhaustedError
 from src.core.exceptions import GradingSystemError
+from src.core.circuit_breaker import CircuitBreaker, CircuitBreakerOpenError  # Phase 33
 from src.perception.base import BasePerceptionEngine
 from src.schemas.perception_ir import PerceptionOutput
 from src.perception.prompts import QWEN_PERCEPTION_SYSTEM_PROMPT
@@ -22,6 +23,7 @@ class QwenVLMPerceptionEngine(BasePerceptionEngine):
     """
     Implementation of the Visual Perception Engine using Qwen-VL.
     Supports API Key pooling and dynamic circuit breaker (Phase 22.5).
+    Phase 33: Global circuit breaker for API service-level protection.
     """
 
     def __init__(self):
@@ -42,6 +44,20 @@ class QwenVLMPerceptionEngine(BasePerceptionEngine):
         self._system_prompt = QWEN_PERCEPTION_SYSTEM_PROMPT
         # Throttling: Max 3 concurrent physical connections to Qwen API
         self._api_semaphore = asyncio.Semaphore(3)
+        
+        # Phase 33: Global circuit breaker for Qwen API service
+        self._circuit_breaker = CircuitBreaker(
+            name="qwen_api_service",
+            failure_threshold=5,        # Open after 5 consecutive failures
+            recovery_timeout=60.0,      # Wait 60s before attempting recovery
+            success_threshold=2,         # Need 2 successes to fully recover
+            expected_exceptions=(
+                openai.APIError,
+                openai.APIConnectionError,
+                openai.RateLimitError,
+                openai.InternalServerError,
+            ),
+        )
 
     def _encode_image(self, image_bytes: bytes) -> str:
         """Converts raw image bytes to a base64-encoded string."""
@@ -93,24 +109,29 @@ class QwenVLMPerceptionEngine(BasePerceptionEngine):
                 async with self._api_semaphore:
                     logger.info(f"Initiating VLM request to {settings.qwen_model_name} (Attempt {attempt + 1})...")
                     
-                    response = await client.chat.completions.create(
-                        model=settings.qwen_model_name,
-                        messages=[
-                            {"role": "system", "content": self._system_prompt},
-                            {
-                                "role": "user",
-                                "content": [
-                                    {"type": "text", "text": "Extract all structural elements from this homework image."},
-                                    {
-                                        "type": "image_url",
-                                        "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}
-                                    }
-                                ]
-                            }
-                        ],
-                        temperature=0.01,
-                        response_format={"type": "json_object"}
-                    )
+                    # Phase 33: Wrap API call with circuit breaker
+                    @self._circuit_breaker
+                    async def _protected_api_call():
+                        return await client.chat.completions.create(
+                            model=settings.qwen_model_name,
+                            messages=[
+                                {"role": "system", "content": self._system_prompt},
+                                {
+                                    "role": "user",
+                                    "content": [
+                                        {"type": "text", "text": "Extract all structural elements from this homework image."},
+                                        {
+                                            "type": "image_url",
+                                            "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}
+                                        }
+                                    ]
+                                }
+                            ],
+                            temperature=0.01,
+                            response_format={"type": "json_object"}
+                        )
+                    
+                    response = await _protected_api_call()
                     
                     # Success: Reset network failure counter
                     connection_error_count = 0
@@ -134,6 +155,13 @@ class QwenVLMPerceptionEngine(BasePerceptionEngine):
             except AllKeysExhaustedError as e:
                 logger.error(f"FATAL: {e}")
                 raise GradingSystemError("All Qwen-VL API keys are rate-limited. System saturated.")
+            
+            except CircuitBreakerOpenError as e:
+                # Phase 33: Circuit breaker OPEN, service degraded
+                logger.error(f"Qwen API circuit breaker OPEN: {e}")
+                raise GradingSystemError(
+                    f"Qwen API service degraded. Circuit breaker active. {str(e)}"
+                )
 
             except openai.RateLimitError:
                 # 2. CIRCUIT BREAKER FAILOVER
