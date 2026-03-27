@@ -15,7 +15,7 @@ from celery import Celery
 
 from src.core.config import settings
 from src.core.exceptions import PerceptionShortCircuitError
-from src.core.storage import retrieve_files, cleanup_task_files
+from src.core.storage_adapter import storage
 from src.db.client import update_task_status, save_grading_result
 from src.orchestration.workflow import GradingWorkflow
 from src.perception.engines.qwen_engine import QwenVLMPerceptionEngine
@@ -31,7 +31,7 @@ app = Celery(
     backend=settings.redis_url,
 )
 
-# Celery Configuration (Phase 28)
+# Celery Configuration (Phase 28, Phase 32: DLQ)
 app.conf.update(
     task_serializer="json",
     accept_content=["json"],
@@ -42,7 +42,15 @@ app.conf.update(
     task_acks_late=True,  # Only ack after task completion (failure-tolerant)
     worker_prefetch_multiplier=1,  # Prevent task hoarding in workers
     broker_connection_retry_on_startup=True,  # Tolerate Redis startup delays
+    
+    # Phase 32: Dead Letter Queue (DLQ) Configuration
+    task_reject_on_worker_lost=True,  # Send to DLQ if worker crashes
+    task_default_max_retries=2,  # Global max retries
 )
+
+# Phase 32: Dead Letter Queue Names
+DLQ_QUEUE_NAME = "grading_tasks_dlq"
+DLQ_EXCHANGE = "dlq"
 
 
 def _build_workflow() -> GradingWorkflow:
@@ -62,7 +70,7 @@ def _build_workflow() -> GradingWorkflow:
 def grade_homework_task(
     self,
     task_id: str,
-    payload: Dict[str, Any],  # Phase 31: Claim Check payload with file references
+    payload: Dict[str, Any],  # Phase 32: Storage adapter payload with file_refs
     db_path: str,
 ) -> dict:
     """
@@ -70,7 +78,7 @@ def grade_homework_task(
 
     Args:
         task_id: Business task UUID
-        payload: Claim Check payload with {"file_paths": ["/path/to/file", ...]}
+        payload: Storage adapter payload with {"file_refs": ["file://..." or "s3://..."]}
         db_path: SQLite database path
 
     Returns:
@@ -99,9 +107,9 @@ def grade_homework_task(
         run_async(update_task_status(db_path, task_id, "PROCESSING"))
         logger.info(f"[Worker] Task {task_id} started processing")
 
-        # Step 2: Retrieve files from disk (Phase 31: Claim Check retrieval)
-        file_paths = payload.get("file_paths", [])
-        reconstructed_files = retrieve_files(file_paths)
+        # Step 2: Retrieve files from storage backend (Phase 32)
+        file_refs = payload.get("file_refs", [])
+        reconstructed_files = storage.retrieve_files(file_refs)
 
         # Step 3: Initialize workflow (worker-local instance)
         workflow = _build_workflow()
@@ -114,8 +122,8 @@ def grade_homework_task(
         run_async(save_grading_result(db_path, task_id, student_id, report))
         run_async(update_task_status(db_path, task_id, "COMPLETED"))
 
-        # Step 6: Cleanup temp files (Phase 31: Garbage collection)
-        cleanup_task_files(task_id)
+        # Step 6: Cleanup via storage adapter (Phase 32)
+        storage.cleanup_task(task_id)
 
         logger.info(f"[Worker] Task {task_id} completed successfully")
         return {"status": "success", "task_id": task_id}
@@ -132,7 +140,7 @@ def grade_homework_task(
             )
         )
         # Cleanup on rejection
-        cleanup_task_files(task_id)
+        storage.cleanup_task(task_id)
         return {"status": "rejected", "reason": str(e)}
 
     except Exception as e:
@@ -142,7 +150,7 @@ def grade_homework_task(
 
         # Cleanup on permanent failure (after max retries)
         if self.request.retries >= self.max_retries:
-            cleanup_task_files(task_id)
+            storage.cleanup_task(task_id)`r`n            `r`n            # Phase 32: Route to Dead Letter Queue for audit`r`n            _route_to_dlq(task_id, payload, db_path, str(e))`r`n            `r`n            logger.critical(f"[Worker] Task {task_id} permanently failed and routed to DLQ")`r`n            return {"status": "failed", "error": str(e)}`r`n        
 
         # Retry if attempts remain
         if self.request.retries < self.max_retries:
@@ -151,3 +159,47 @@ def grade_homework_task(
         # Permanent failure after max retries
         logger.critical(f"[Worker] Task {task_id} permanently failed after {self.max_retries} retries")
         return {"status": "failed", "error": str(e)}
+
+
+
+def _route_to_dlq(task_id: str, payload: Dict[str, Any], db_path: str, error: str) -> None:
+    """"""
+    Phase 32: Route permanently failed task to Dead Letter Queue.
+    
+    Poison messages (tasks that crash even after max retries) are stored
+    in a separate Redis queue for manual inspection and replay.
+    
+    Args:
+        task_id: Business task UUID
+        payload: Original Celery payload
+        db_path: Database path
+        error: Error message from final failure
+    """"""
+    import redis
+    import json
+    
+    try:
+        # Connect to Redis DLQ
+        redis_client = redis.from_url(settings.redis_url)
+        
+        # Package task metadata for audit
+        dlq_entry = {
+            "task_id": task_id,
+            "payload": payload,
+            "db_path": db_path,
+            "error": error,
+            "failed_at": __import__('datetime').datetime.utcnow().isoformat(),
+            "retry_count": 2,  # Max retries exhausted
+        }
+        
+        # Push to DLQ (Redis list)
+        redis_client.lpush(DLQ_QUEUE_NAME, json.dumps(dlq_entry))
+        
+        logger.warning(
+            f"[DLQ] Task {task_id} routed to dead letter queue. "
+            f"Error: {error[:100]}"
+        )
+        
+    except Exception as dlq_error:
+        logger.error(f"[DLQ] Failed to route task {task_id} to DLQ: {dlq_error}")
+

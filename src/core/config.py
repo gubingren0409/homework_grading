@@ -28,11 +28,18 @@ class Settings(BaseSettings):
     redis_db: int = 0
     
     # File Storage Configuration (Phase 31: Claim Check Pattern)
-    uploads_dir: str = "data/uploads"  # Temporary file storage
+    uploads_dir: str = "data/uploads"  # Temporary file storage (LocalStorage)
+    
+    # Phase 32: Storage Adapter Configuration
+    storage_backend: str = "local"  # Options: "local", "s3"
+    s3_bucket: str = "homework-grading"  # S3 bucket name
+    s3_endpoint_url: str | None = None  # Custom S3 endpoint (e.g., MinIO)
+    aws_access_key_id: str | None = None  # S3 access key
+    aws_secret_access_key: str | None = None  # S3 secret key
     
     @property
     def uploads_path(self) -> Path:
-        """Absolute path to uploads directory."""
+        """Absolute path to uploads directory (LocalStorage only)."""
         path = Path(self.uploads_dir)
         path.mkdir(parents=True, exist_ok=True)
         return path.resolve()
