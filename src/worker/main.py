@@ -1,8 +1,13 @@
 """
-Phase 28: Celery Worker - Physical Isolation Layer
+Phase 33: Celery Worker - Distributed Event-Driven Architecture
 
 This module decouples AI computation from the FastAPI gateway.
 Workers consume tasks from Redis queue and execute GradingWorkflow asynchronously.
+
+Phase 33 Enhancements:
+- Redis Pub/Sub: Worker publishes status updates after DB writes
+- Multi-node support: API nodes receive events regardless of physical location
+- Event-driven SSE: Sub-100ms latency vs 1s database polling
 
 Usage:
     celery -A src.worker.main worker --loglevel=info --concurrency=4
@@ -105,6 +110,8 @@ def grade_homework_task(
     try:
         # Step 1: Mark task as processing
         run_async(update_task_status(db_path, task_id, "PROCESSING"))
+        # Phase 33: Publish status update to Redis Pub/Sub
+        run_async(_publish_status(task_id, "PROCESSING", progress=0.0))
         logger.info(f"[Worker] Task {task_id} started processing")
 
         # Step 2: Retrieve files from storage backend (Phase 32)
@@ -121,6 +128,8 @@ def grade_homework_task(
         student_id = reconstructed_files[0][1] if reconstructed_files else task_id
         run_async(save_grading_result(db_path, task_id, student_id, report))
         run_async(update_task_status(db_path, task_id, "COMPLETED"))
+        # Phase 33: Publish completion event to Redis Pub/Sub
+        run_async(_publish_status(task_id, "COMPLETED", message="Grading completed successfully"))
 
         # Step 6: Cleanup via storage adapter (Phase 32)
         storage.cleanup_task(task_id)
@@ -139,6 +148,8 @@ def grade_homework_task(
                 error=f"Perception short-circuit: {e.readability_status}",
             )
         )
+        # Phase 33: Publish rejection event to Redis Pub/Sub
+        run_async(_publish_status(task_id, "REJECTED", error=str(e)))
         # Cleanup on rejection
         storage.cleanup_task(task_id)
         return {"status": "rejected", "reason": str(e)}
@@ -147,10 +158,18 @@ def grade_homework_task(
         # Transient failure: Retry logic
         logger.error(f"[Worker] Task {task_id} failed (attempt {self.request.retries + 1}): {e}")
         run_async(update_task_status(db_path, task_id, "FAILED", error=str(e)))
+        # Phase 33: Publish failure event to Redis Pub/Sub
+        run_async(_publish_status(task_id, "FAILED", error=str(e)))
 
         # Cleanup on permanent failure (after max retries)
         if self.request.retries >= self.max_retries:
-            storage.cleanup_task(task_id)`r`n            `r`n            # Phase 32: Route to Dead Letter Queue for audit`r`n            _route_to_dlq(task_id, payload, db_path, str(e))`r`n            `r`n            logger.critical(f"[Worker] Task {task_id} permanently failed and routed to DLQ")`r`n            return {"status": "failed", "error": str(e)}`r`n        
+            storage.cleanup_task(task_id)
+            
+            # Phase 32: Route to Dead Letter Queue for audit
+            _route_to_dlq(task_id, payload, db_path, str(e))
+            
+            logger.critical(f"[Worker] Task {task_id} permanently failed and routed to DLQ")
+            return {"status": "failed", "error": str(e)}
 
         # Retry if attempts remain
         if self.request.retries < self.max_retries:
@@ -159,11 +178,52 @@ def grade_homework_task(
         # Permanent failure after max retries
         logger.critical(f"[Worker] Task {task_id} permanently failed after {self.max_retries} retries")
         return {"status": "failed", "error": str(e)}
+
 
+async def _publish_status(task_id: str, status: str, **kwargs) -> None:
+    """
+    Phase 33: Publish task status update to Redis Pub/Sub.
+    
+    Called after database update to notify all API nodes (multi-node support).
+    Non-blocking: If Pub/Sub fails, API nodes fallback to DB polling.
+    
+    Args:
+        task_id: Business task UUID
+        status: Task status (PENDING, PROCESSING, COMPLETED, FAILED, REJECTED)
+        **kwargs: Additional event data (progress, error, message, etc.)
+    """
+    import redis.asyncio as aioredis
+    import json
+    
+    redis_client = None
+    try:
+        redis_client = await aioredis.from_url(
+            settings.redis_url,
+            encoding="utf-8",
+            decode_responses=True,
+        )
+        
+        channel = f"task_status:{task_id}"
+        event_data = {
+            "task_id": task_id,
+            "status": status,
+            **kwargs,
+        }
+        
+        await redis_client.publish(channel, json.dumps(event_data))
+        logger.info(f"[Worker-PubSub] Published status update for task {task_id}: {status}")
+    
+    except Exception as e:
+        # Non-critical: SSE will fallback to DB polling
+        logger.warning(f"[Worker-PubSub] Failed to publish task {task_id} status: {e}")
+    
+    finally:
+        if redis_client:
+            await redis_client.close()
 
 
 def _route_to_dlq(task_id: str, payload: Dict[str, Any], db_path: str, error: str) -> None:
-    """"""
+    """
     Phase 32: Route permanently failed task to Dead Letter Queue.
     
     Poison messages (tasks that crash even after max retries) are stored
