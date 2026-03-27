@@ -1,88 +1,48 @@
 """
-Phase 33: Circuit Breaker Pattern for External API Resilience
+Phase 34: Distributed Circuit Breaker - Redis-backed Global State
 
-Prevents cascading failures when downstream services (Qwen/DeepSeek APIs) degrade.
-
-Problem:
-- Large model API outage → Worker retries exhaust → Tasks flood DLQ
-- RPM limit reached → 100% failure rate → Wasted retry attempts
-- Network issues → Slow timeouts → Worker thread starvation
-
-Solution:
-- Circuit Breaker: Detect consecutive failures → Open circuit → Fast-fail
-- Exponential backoff: Gradually retry after cooling period
-- Failure isolation: Separate breakers per API (Qwen/DeepSeek)
-
-Circuit States:
-1. CLOSED: Normal operation, requests pass through
-2. OPEN: Consecutive failures exceed threshold, reject immediately
-3. HALF_OPEN: Test recovery after timeout, allow single probe request
-
-Benefits:
-✅ Prevents Worker thread starvation (fast-fail vs timeout)
-✅ Reduces wasted retry attempts (no retries during known outage)
-✅ Self-healing: Automatic recovery detection
-✅ Graceful degradation: Clear error messages vs silent failures
+This module replaces the Phase 33 in-memory circuit breaker to fix state
+isolation across worker processes. Circuit state is stored in Redis and shared
+globally by all API/Worker instances.
 """
+
+import asyncio
 import time
 import logging
-from typing import Callable, Any, Optional
 from enum import Enum
 from functools import wraps
+from typing import Any, Callable, Optional
+
+import redis.asyncio as aioredis
+
+from src.core.config import settings
 
 
 logger = logging.getLogger(__name__)
 
 
 class CircuitState(Enum):
-    """Circuit breaker states."""
-    CLOSED = "closed"          # Normal operation
-    OPEN = "open"              # Failure threshold exceeded, reject requests
-    HALF_OPEN = "half_open"    # Testing recovery
+    CLOSED = "closed"
+    OPEN = "open"
+    HALF_OPEN = "half_open"
 
 
 class CircuitBreakerOpenError(Exception):
-    """
-    Raised when circuit breaker is OPEN.
-    
-    Indicates downstream service is degraded, request rejected to prevent
-    cascading failures.
-    """
-    pass
+    """Raised when the distributed circuit breaker is OPEN/HALF_OPEN."""
 
 
 class CircuitBreaker:
     """
-    Circuit Breaker for external API calls.
-    
-    Usage:
-        breaker = CircuitBreaker(
-            name="qwen_api",
-            failure_threshold=3,
-            recovery_timeout=60,
-            expected_exceptions=(openai.APIError,)
-        )
-        
-        @breaker
-        def call_qwen_api():
-            return qwen_client.chat.completions.create(...)
-    
-    Configuration:
-        failure_threshold: Consecutive failures before opening circuit
-        recovery_timeout: Seconds before attempting recovery (HALF_OPEN)
-        expected_exceptions: Exceptions to count as failures
-    
-    States:
-        CLOSED: All requests pass through, failures counted
-        OPEN: All requests rejected immediately (CircuitBreakerOpenError)
-        HALF_OPEN: Single probe request allowed, others rejected
-    
-    Metrics:
-        - failure_count: Consecutive failures in CLOSED state
-        - success_count: Successes in HALF_OPEN state
-        - last_failure_time: Timestamp of last failure
+    Redis-backed distributed circuit breaker.
+
+    State is stored under:
+      - circuit:{name}:state
+      - circuit:{name}:failures
+      - circuit:{name}:successes
+      - circuit:{name}:last_failure
+      - circuit:{name}:probe_lock
     """
-    
+
     def __init__(
         self,
         name: str,
@@ -90,206 +50,214 @@ class CircuitBreaker:
         recovery_timeout: float = 60.0,
         success_threshold: int = 2,
         expected_exceptions: tuple = (Exception,),
+        redis_client: Optional[aioredis.Redis] = None,
     ):
-        """
-        Initialize circuit breaker.
-        
-        Args:
-            name: Circuit breaker identifier (e.g., "qwen_api")
-            failure_threshold: Consecutive failures before OPEN
-            recovery_timeout: Seconds in OPEN before HALF_OPEN
-            success_threshold: Successes in HALF_OPEN before CLOSED
-            expected_exceptions: Exceptions counted as failures
-        """
         self.name = name
         self.failure_threshold = failure_threshold
         self.recovery_timeout = recovery_timeout
         self.success_threshold = success_threshold
         self.expected_exceptions = expected_exceptions
-        
+
+        self._state_key = f"circuit:{name}:state"
+        self._failures_key = f"circuit:{name}:failures"
+        self._successes_key = f"circuit:{name}:successes"
+        self._last_failure_key = f"circuit:{name}:last_failure"
+        self._probe_lock_key = f"circuit:{name}:probe_lock"
+
+        self._redis_client = redis_client
+        self._own_client = redis_client is None
+        # Compatibility mirrors for existing callers/tests; source of truth is Redis.
         self.state = CircuitState.CLOSED
         self.failure_count = 0
         self.success_count = 0
-        self.last_failure_time: Optional[float] = None
-        self.last_state_change: float = time.time()
-        
+        self._last_state_change = time.time()
+
         logger.info(
-            f"[CircuitBreaker] Initialized {name}: "
-            f"failure_threshold={failure_threshold}, "
-            f"recovery_timeout={recovery_timeout}s"
+            "[CircuitBreaker] Initialized distributed breaker %s "
+            "(threshold=%s, recovery_timeout=%ss)",
+            name,
+            failure_threshold,
+            recovery_timeout,
         )
-    
-    def __call__(self, func: Callable) -> Callable:
-        """
-        Decorator: Wrap function with circuit breaker protection.
-        
-        Example:
-            @circuit_breaker
-            def risky_api_call():
-                return external_api.call()
-        """
-        @wraps(func)
-        def wrapper(*args, **kwargs) -> Any:
-            # Check circuit state before execution
-            if self.state == CircuitState.OPEN:
-                # Circuit OPEN: Check if recovery timeout elapsed
-                if self._should_attempt_reset():
-                    self._transition_to_half_open()
-                else:
-                    # Still in cooling period, reject immediately
-                    elapsed = time.time() - self.last_failure_time
-                    remaining = self.recovery_timeout - elapsed
-                    
-                    logger.warning(
-                        f"[CircuitBreaker] {self.name} OPEN: "
-                        f"Rejecting request (recovery in {remaining:.1f}s)"
-                    )
-                    raise CircuitBreakerOpenError(
-                        f"Circuit breaker {self.name} is OPEN. "
-                        f"Service degraded, retry in {remaining:.1f}s."
-                    )
-            
-            elif self.state == CircuitState.HALF_OPEN:
-                # HALF_OPEN: Only allow probe request
-                if self.success_count > 0:
-                    # Probe already in progress, reject others
-                    logger.warning(
-                        f"[CircuitBreaker] {self.name} HALF_OPEN: "
-                        f"Probe in progress, rejecting concurrent request"
-                    )
-                    raise CircuitBreakerOpenError(
-                        f"Circuit breaker {self.name} is HALF_OPEN. "
-                        f"Recovery probe in progress."
-                    )
-            
-            # Execute protected function
-            try:
-                result = func(*args, **kwargs)
-                self._on_success()
-                return result
-            
-            except self.expected_exceptions as e:
-                self._on_failure()
-                raise  # Re-raise original exception
-        
-        return wrapper
-    
-    def _should_attempt_reset(self) -> bool:
-        """Check if recovery timeout has elapsed."""
-        if self.last_failure_time is None:
-            return False
-        
-        elapsed = time.time() - self.last_failure_time
-        return elapsed >= self.recovery_timeout
-    
-    def _transition_to_half_open(self) -> None:
-        """Transition from OPEN to HALF_OPEN state."""
-        self.state = CircuitState.HALF_OPEN
-        self.success_count = 0
-        self.last_state_change = time.time()
-        
-        logger.info(
-            f"[CircuitBreaker] {self.name} → HALF_OPEN: "
-            f"Attempting recovery probe"
-        )
-    
-    def _on_success(self) -> None:
-        """Handle successful request."""
-        if self.state == CircuitState.HALF_OPEN:
-            # Success in HALF_OPEN: Count towards recovery
-            self.success_count += 1
-            
-            logger.info(
-                f"[CircuitBreaker] {self.name} HALF_OPEN success: "
-                f"{self.success_count}/{self.success_threshold}"
+
+    async def _get_redis(self) -> aioredis.Redis:
+        if self._redis_client is None:
+            self._redis_client = await aioredis.from_url(
+                settings.redis_url,
+                encoding="utf-8",
+                decode_responses=True,
             )
-            
-            # Enough successes → Close circuit
-            if self.success_count >= self.success_threshold:
-                self._transition_to_closed()
-        
-        elif self.state == CircuitState.CLOSED:
-            # Success in CLOSED: Reset failure counter
-            if self.failure_count > 0:
-                logger.info(
-                    f"[CircuitBreaker] {self.name} recovered: "
-                    f"Resetting failure count ({self.failure_count} → 0)"
+        return self._redis_client
+
+    async def _get_state(self, redis: aioredis.Redis) -> CircuitState:
+        state = await redis.get(self._state_key)
+        if state is None:
+            return CircuitState.CLOSED
+        return CircuitState(state)
+
+    async def _sync_local_snapshot(self, redis: aioredis.Redis) -> None:
+        state = await self._get_state(redis)
+        self.state = state
+        self.failure_count = int(await redis.get(self._failures_key) or 0)
+        self.success_count = int(await redis.get(self._successes_key) or 0)
+        self._last_state_change = time.time()
+
+    async def _remaining_timeout(self, redis: aioredis.Redis) -> float:
+        last_failure = await redis.get(self._last_failure_key)
+        if last_failure is None:
+            return 0.0
+        elapsed = time.time() - float(last_failure)
+        return max(0.0, self.recovery_timeout - elapsed)
+
+    async def _should_half_open(self, redis: aioredis.Redis) -> bool:
+        return await self._remaining_timeout(redis) <= 0.0
+
+    async def _to_half_open(self, redis: aioredis.Redis) -> None:
+        await redis.set(self._state_key, CircuitState.HALF_OPEN.value)
+        await redis.delete(self._successes_key)
+        await self._sync_local_snapshot(redis)
+
+    async def _acquire_probe_lock(self, redis: aioredis.Redis) -> bool:
+        # one probe request globally, auto-expire to avoid dead lock
+        return bool(await redis.set(self._probe_lock_key, "1", nx=True, ex=15))
+
+    async def _on_success(self, redis: aioredis.Redis) -> None:
+        state = await self._get_state(redis)
+        if state == CircuitState.CLOSED:
+            # reset failures on any success in closed state
+            await redis.delete(self._failures_key)
+            result = "reset"
+        elif state == CircuitState.HALF_OPEN:
+            successes = await redis.incr(self._successes_key)
+            if successes >= self.success_threshold:
+                await redis.set(self._state_key, CircuitState.CLOSED.value)
+                await redis.delete(
+                    self._failures_key, self._successes_key, self._probe_lock_key
                 )
-                self.failure_count = 0
-    
-    def _on_failure(self) -> None:
-        """Handle failed request."""
-        self.last_failure_time = time.time()
-        
-        if self.state == CircuitState.CLOSED:
-            # Failure in CLOSED: Increment counter
-            self.failure_count += 1
-            
-            logger.warning(
-                f"[CircuitBreaker] {self.name} failure: "
-                f"{self.failure_count}/{self.failure_threshold}"
+                result = "closed"
+            else:
+                # Keep HALF_OPEN but release probe lock so next sequential probe can run.
+                await redis.delete(self._probe_lock_key)
+                result = "probing"
+        else:
+            result = "ignored"
+        if result == "closed":
+            logger.info("[CircuitBreaker] %s transitioned to CLOSED globally", self.name)
+        await self._sync_local_snapshot(redis)
+
+    async def _on_failure(self, redis: aioredis.Redis) -> None:
+        now_ts = time.time()
+        state = await self._get_state(redis)
+        if state == CircuitState.CLOSED:
+            failures = await redis.incr(self._failures_key)
+            await redis.set(self._last_failure_key, now_ts)
+            if failures >= self.failure_threshold:
+                await redis.set(self._state_key, CircuitState.OPEN.value)
+                await redis.delete(self._failures_key)
+                result = "tripped"
+            else:
+                result = "recorded"
+        elif state == CircuitState.HALF_OPEN:
+            await redis.set(self._state_key, CircuitState.OPEN.value)
+            await redis.set(self._last_failure_key, now_ts)
+            await redis.delete(
+                self._failures_key, self._successes_key, self._probe_lock_key
             )
-            
-            # Threshold exceeded → Open circuit
-            if self.failure_count >= self.failure_threshold:
-                self._transition_to_open()
-        
-        elif self.state == CircuitState.HALF_OPEN:
-            # Failure in HALF_OPEN: Recovery failed, reopen circuit
+            result = "reopened"
+        else:
+            result = "ignored"
+        if result == "tripped":
             logger.error(
-                f"[CircuitBreaker] {self.name} HALF_OPEN probe failed: "
-                f"Reopening circuit"
+                "[CircuitBreaker] %s OPEN globally after %s failures",
+                self.name,
+                self.failure_threshold,
             )
-            self._transition_to_open()
-    
-    def _transition_to_open(self) -> None:
-        """Transition to OPEN state (circuit tripped)."""
-        self.state = CircuitState.OPEN
-        self.last_state_change = time.time()
-        
-        logger.error(
-            f"[CircuitBreaker] {self.name} → OPEN: "
-            f"Failure threshold exceeded ({self.failure_threshold}). "
-            f"Rejecting requests for {self.recovery_timeout}s."
-        )
-    
-    def _transition_to_closed(self) -> None:
-        """Transition to CLOSED state (circuit recovered)."""
-        self.state = CircuitState.CLOSED
-        self.failure_count = 0
-        self.success_count = 0
-        self.last_state_change = time.time()
-        
-        logger.info(
-            f"[CircuitBreaker] {self.name} → CLOSED: "
-            f"Service recovered, resuming normal operation"
-        )
-    
-    def get_state(self) -> dict:
-        """
-        Get current circuit breaker state for monitoring.
-        
-        Returns:
-            Dict with state, counters, and timestamps
-        """
-        uptime = time.time() - self.last_state_change
-        
+            # Keep local mirror compatible with existing expectations.
+            self.state = CircuitState.OPEN
+            self.failure_count = self.failure_threshold
+            self.success_count = 0
+            self._last_state_change = time.time()
+        else:
+            await self._sync_local_snapshot(redis)
+
+    def __call__(self, func: Callable) -> Callable:
+        @wraps(func)
+        async def wrapper(*args, **kwargs) -> Any:
+            redis = await self._get_redis()
+            state = await self._get_state(redis)
+            self.state = state
+
+            if state == CircuitState.OPEN:
+                if await self._should_half_open(redis):
+                    await self._to_half_open(redis)
+                    state = CircuitState.HALF_OPEN
+                    self.state = state
+                else:
+                    remaining = await self._remaining_timeout(redis)
+                    raise CircuitBreakerOpenError(
+                        f"Circuit breaker {self.name} is OPEN globally. "
+                        f"Retry in {remaining:.1f}s."
+                    )
+
+            if state == CircuitState.HALF_OPEN:
+                if not await self._acquire_probe_lock(redis):
+                    raise CircuitBreakerOpenError(
+                        f"Circuit breaker {self.name} is HALF_OPEN. Probe in progress."
+                    )
+
+            try:
+                result = await func(*args, **kwargs)
+                await self._on_success(redis)
+                return result
+            except self.expected_exceptions:
+                await self._on_failure(redis)
+                raise
+
+        return wrapper
+
+    async def _get_state_dict(self) -> dict:
+        redis = await self._get_redis()
+        state = await self._get_state(redis)
+        failures = int(await redis.get(self._failures_key) or 0)
+        successes = int(await redis.get(self._successes_key) or 0)
+        last_failure = await redis.get(self._last_failure_key)
+        state_uptime = time.time() - self._last_state_change
         return {
             "name": self.name,
-            "state": self.state.value,
-            "failure_count": self.failure_count,
-            "success_count": self.success_count,
+            "state": state.value,
+            "failure_count": failures,
+            "success_count": successes,
             "failure_threshold": self.failure_threshold,
             "recovery_timeout": self.recovery_timeout,
-            "last_failure_time": self.last_failure_time,
-            "state_uptime_seconds": uptime,
+            "last_failure_time": float(last_failure) if last_failure else None,
+            "state_uptime_seconds": state_uptime,
+            "backend": "redis_distributed",
         }
-    
-    def reset(self) -> None:
-        """
-        Manually reset circuit breaker to CLOSED state.
-        
-        Use for administrative recovery or testing.
-        """
-        logger.warning(f"[CircuitBreaker] {self.name} manually reset to CLOSED")
-        self._transition_to_closed()
+
+    async def reset(self) -> None:
+        redis = await self._get_redis()
+        await redis.set(self._state_key, CircuitState.CLOSED.value)
+        await redis.delete(
+            self._failures_key,
+            self._successes_key,
+            self._last_failure_key,
+            self._probe_lock_key,
+        )
+        await self._sync_local_snapshot(redis)
+
+    def _run_sync(self, coro):
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(coro)
+        raise RuntimeError("Cannot call sync helper while event loop is running; use await.")
+
+    def snapshot(self):
+        """Sync helper for tests/tools; async code should use await get_state()."""
+        return self._run_sync(self._get_state_dict())
+
+    async def close(self) -> None:
+        if self._own_client and self._redis_client is not None:
+            await self._redis_client.close()
+            self._redis_client = None
+

@@ -6,8 +6,7 @@ Validates that downstream failures are properly isolated and recovered.
 """
 import pytest
 import asyncio
-import time
-from unittest.mock import Mock, AsyncMock
+import fakeredis.aioredis as fakeredis_aioredis
 
 from src.core.circuit_breaker import (
     CircuitBreaker,
@@ -19,12 +18,14 @@ from src.core.circuit_breaker import (
 @pytest.fixture
 def breaker():
     """Create circuit breaker with short timeouts for testing."""
+    redis_client = fakeredis_aioredis.FakeRedis(decode_responses=True)
     return CircuitBreaker(
         name="test_api",
         failure_threshold=3,
         recovery_timeout=2.0,
         success_threshold=2,
         expected_exceptions=(ValueError, RuntimeError),
+        redis_client=redis_client,
     )
 
 
@@ -226,7 +227,7 @@ async def test_unexpected_exception_not_counted(breaker):
 
 def test_get_state_returns_metrics(breaker):
     """Test: get_state() returns circuit breaker metrics."""
-    state = breaker.get_state()
+    state = breaker.snapshot()
     
     assert state["name"] == "test_api"
     assert state["state"] == "closed"
@@ -236,19 +237,22 @@ def test_get_state_returns_metrics(breaker):
     assert "state_uptime_seconds" in state
 
 
-def test_manual_reset(breaker):
+@pytest.mark.asyncio
+async def test_manual_reset(breaker):
     """Test: Manual reset transitions circuit to CLOSED."""
     @breaker
     async def failing_call():
         raise ValueError("API error")
     
     # Trip circuit
-    asyncio.run(asyncio.gather(*[failing_call() for _ in range(3)], return_exceptions=True))
+    for _ in range(3):
+        with pytest.raises(ValueError):
+            await failing_call()
     
     assert breaker.state == CircuitState.OPEN
     
     # Manual reset
-    breaker.reset()
+    await breaker.reset()
     
     assert breaker.state == CircuitState.CLOSED
     assert breaker.failure_count == 0
