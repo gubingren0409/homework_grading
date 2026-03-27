@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     redis_host: str = "localhost"
     redis_port: int = 6379
     redis_db: int = 0
+    celery_task_always_eager: bool = False
     
     # File Storage Configuration (Phase 31: Claim Check Pattern)
     uploads_dir: str = "data/uploads"  # Temporary file storage (LocalStorage)

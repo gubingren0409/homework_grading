@@ -11,6 +11,7 @@ from src.core.config import settings
 from src.core.connection_pool import CircuitBreakerKeyPool, AllKeysExhaustedError
 from src.core.exceptions import GradingSystemError
 from src.core.circuit_breaker import CircuitBreaker, CircuitBreakerOpenError  # Phase 33
+from src.core.trace_context import outbound_trace_headers
 from src.perception.base import BasePerceptionEngine
 from src.schemas.perception_ir import PerceptionOutput
 from src.perception.prompts import QWEN_PERCEPTION_SYSTEM_PROMPT
@@ -108,12 +109,17 @@ class QwenVLMPerceptionEngine(BasePerceptionEngine):
 
                 async with self._api_semaphore:
                     logger.info(f"Initiating VLM request to {settings.qwen_model_name} (Attempt {attempt + 1})...")
+                    logger.info(
+                        "llm_request_outbound",
+                        extra={"extra_fields": {"component": "qwen-engine", "model": settings.qwen_model_name}},
+                    )
                     
                     # Phase 33: Wrap API call with circuit breaker
                     @self._circuit_breaker
                     async def _protected_api_call():
                         return await client.chat.completions.create(
                             model=settings.qwen_model_name,
+                            extra_headers=outbound_trace_headers(),
                             messages=[
                                 {"role": "system", "content": self._system_prompt},
                                 {

@@ -13,7 +13,9 @@ Usage:
     celery -A src.worker.main worker --loglevel=info --concurrency=4
 """
 import asyncio
+import contextvars
 import logging
+import threading
 from typing import List, Tuple, Dict, Any
 
 from celery import Celery
@@ -25,9 +27,12 @@ from src.db.client import update_task_status, save_grading_result
 from src.orchestration.workflow import GradingWorkflow
 from src.perception.engines.qwen_engine import QwenVLMPerceptionEngine
 from src.cognitive.engines.deepseek_engine import DeepSeekCognitiveEngine
+from src.core.trace_context import bind_context, reset_context, get_trace_id
+from src.core.json_logging import configure_json_logging
 
 
 logger = logging.getLogger(__name__)
+configure_json_logging(level=logging.INFO)
 
 # Celery Application Initialization
 app = Celery(
@@ -51,11 +56,33 @@ app.conf.update(
     # Phase 32: Dead Letter Queue (DLQ) Configuration
     task_reject_on_worker_lost=True,  # Send to DLQ if worker crashes
     task_default_max_retries=2,  # Global max retries
+    task_always_eager=settings.celery_task_always_eager,
+    task_store_eager_result=True,
 )
 
 # Phase 32: Dead Letter Queue Names
 DLQ_QUEUE_NAME = "grading_tasks_dlq"
 DLQ_EXCHANGE = "dlq"
+
+
+@app.task(bind=True, name="src.worker.main.emit_trace_probe")
+def emit_trace_probe(self, task_id: str) -> dict:
+    """Phase 34 trace/log probe task for observability verification."""
+    request_trace_id = (self.request.headers or {}).get("trace_id", "-")
+    tokens = bind_context(trace_id=request_trace_id, task_id=task_id, component="worker")
+    try:
+        logger.info("worker_task_pulled")
+        logger.info(
+            "llm_request_outbound",
+            extra={"extra_fields": {"component": "trace-probe", "model": "simulated"}}
+        )
+        logger.info(
+            "task_status_persisted",
+            extra={"extra_fields": {"status": "COMPLETED"}}
+        )
+        return {"status": "ok", "task_id": task_id}
+    finally:
+        reset_context(tokens)
 
 
 def _build_workflow() -> GradingWorkflow:
@@ -95,21 +122,58 @@ def grade_homework_task(
         - Permanent failure marked as FAILED in DB
     """
     # Phase 30: Explicit event loop creation/disposal (no nest-asyncio pollution)
+    request_trace_id = (self.request.headers or {}).get("trace_id", "-")
+    ctx_tokens = bind_context(
+        trace_id=request_trace_id,
+        task_id=task_id,
+        component="worker",
+    )
+
     def run_async(coro):
         """
         Standard async bridge for Celery sync context.
         Creates isolated event loop per invocation.
+        In eager mode (task executed inside an active event loop), run in a
+        dedicated thread to avoid "Cannot run the event loop while another loop
+        is running".
         """
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
         try:
-            return loop.run_until_complete(coro)
-        finally:
-            loop.close()
+            asyncio.get_running_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                return loop.run_until_complete(coro)
+            finally:
+                loop.close()
+
+        result_holder: Dict[str, Any] = {}
+        error_holder: Dict[str, Exception] = {}
+        parent_ctx = contextvars.copy_context()
+
+        def _runner() -> None:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                # Preserve trace/task contextvars when eager mode forces a thread hop.
+                result_holder["result"] = parent_ctx.run(loop.run_until_complete, coro)
+            except Exception as exc:
+                error_holder["error"] = exc
+            finally:
+                loop.close()
+
+        t = threading.Thread(target=_runner, daemon=True)
+        t.start()
+        t.join()
+        if "error" in error_holder:
+            raise error_holder["error"]
+        return result_holder.get("result")
     
     try:
+        logger.info("worker_task_pulled")
         # Step 1: Mark task as processing
         run_async(update_task_status(db_path, task_id, "PROCESSING"))
+        logger.info("task_status_persisted", extra={"extra_fields": {"status": "PROCESSING"}})
         # Phase 33: Publish status update to Redis Pub/Sub
         run_async(_publish_status(task_id, "PROCESSING", progress=0.0))
         logger.info(f"[Worker] Task {task_id} started processing")
@@ -128,6 +192,7 @@ def grade_homework_task(
         student_id = reconstructed_files[0][1] if reconstructed_files else task_id
         run_async(save_grading_result(db_path, task_id, student_id, report))
         run_async(update_task_status(db_path, task_id, "COMPLETED"))
+        logger.info("task_status_persisted", extra={"extra_fields": {"status": "COMPLETED"}})
         # Phase 33: Publish completion event to Redis Pub/Sub
         run_async(_publish_status(task_id, "COMPLETED", message="Grading completed successfully"))
 
@@ -148,6 +213,7 @@ def grade_homework_task(
                 error=f"Perception short-circuit: {e.readability_status}",
             )
         )
+        logger.info("task_status_persisted", extra={"extra_fields": {"status": "REJECTED"}})
         # Phase 33: Publish rejection event to Redis Pub/Sub
         run_async(_publish_status(task_id, "REJECTED", error=str(e)))
         # Cleanup on rejection
@@ -158,6 +224,7 @@ def grade_homework_task(
         # Transient failure: Retry logic
         logger.error(f"[Worker] Task {task_id} failed (attempt {self.request.retries + 1}): {e}")
         run_async(update_task_status(db_path, task_id, "FAILED", error=str(e)))
+        logger.info("task_status_persisted", extra={"extra_fields": {"status": "FAILED"}})
         # Phase 33: Publish failure event to Redis Pub/Sub
         run_async(_publish_status(task_id, "FAILED", error=str(e)))
 
@@ -178,6 +245,8 @@ def grade_homework_task(
         # Permanent failure after max retries
         logger.critical(f"[Worker] Task {task_id} permanently failed after {self.max_retries} retries")
         return {"status": "failed", "error": str(e)}
+    finally:
+        reset_context(ctx_tokens)
 
 
 async def _publish_status(task_id: str, status: str, **kwargs) -> None:
@@ -207,6 +276,7 @@ async def _publish_status(task_id: str, status: str, **kwargs) -> None:
         event_data = {
             "task_id": task_id,
             "status": status,
+            "trace_id": get_trace_id(),
             **kwargs,
         }
         
@@ -234,7 +304,7 @@ def _route_to_dlq(task_id: str, payload: Dict[str, Any], db_path: str, error: st
         payload: Original Celery payload
         db_path: Database path
         error: Error message from final failure
-    """"""
+    """
     import redis
     import json
     
@@ -245,6 +315,7 @@ def _route_to_dlq(task_id: str, payload: Dict[str, Any], db_path: str, error: st
         # Package task metadata for audit
         dlq_entry = {
             "task_id": task_id,
+            "trace_id": get_trace_id(),
             "payload": payload,
             "db_path": db_path,
             "error": error,

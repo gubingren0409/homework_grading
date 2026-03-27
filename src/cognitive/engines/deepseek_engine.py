@@ -12,6 +12,7 @@ from src.core.config import settings
 from src.core.connection_pool import CircuitBreakerKeyPool, AllKeysExhaustedError
 from src.core.exceptions import CognitiveRefusalError, GradingSystemError
 from src.core.circuit_breaker import CircuitBreaker, CircuitBreakerOpenError  # Phase 33
+from src.core.trace_context import outbound_trace_headers
 from src.schemas.cognitive_ir import EvaluationReport
 from src.schemas.perception_ir import PerceptionOutput
 from src.schemas.rubric_ir import TeacherRubric
@@ -165,11 +166,16 @@ class DeepSeekCognitiveEngine(BaseCognitiveAgent):
 
                 # 3. Execute request
                 if use_stream:
+                    logger.info(
+                        "llm_request_outbound",
+                        extra={"extra_fields": {"component": "deepseek-engine", "model": model_to_use, "stream": True}},
+                    )
                     # Phase 33: Wrap streaming API call with circuit breaker
                     @self._circuit_breaker
                     async def _protected_stream_call():
                         return await client.chat.completions.create(
                             model=model_to_use,
+                            extra_headers=outbound_trace_headers(),
                             messages=[
                                 {"role": "system", "content": self._system_prompt_grading_base},
                                 {"role": "user", "content": final_user_content}
@@ -200,11 +206,16 @@ class DeepSeekCognitiveEngine(BaseCognitiveAgent):
                         full_raw_text += f"<think>\n{reasoning_acc}\n</think>\n"
                     full_raw_text += content_acc
                 else:
+                    logger.info(
+                        "llm_request_outbound",
+                        extra={"extra_fields": {"component": "deepseek-engine", "model": model_to_use, "stream": False}},
+                    )
                     # Phase 33: Wrap non-streaming API call with circuit breaker
                     @self._circuit_breaker
                     async def _protected_call():
                         return await client.chat.completions.create(
                             model=model_to_use,
+                            extra_headers=outbound_trace_headers(),
                             messages=[
                                 {"role": "system", "content": self._system_prompt_grading_base},
                                 {"role": "user", "content": final_user_content}
@@ -318,12 +329,17 @@ class DeepSeekCognitiveEngine(BaseCognitiveAgent):
         
         try:
             logger.info("Generating TeacherRubric from model answer IR (Reasoner)...")
+            logger.info(
+                "llm_request_outbound",
+                extra={"extra_fields": {"component": "deepseek-engine", "model": settings.deepseek_model_name, "purpose": "rubric"}},
+            )
             
             # Phase 33: Wrap rubric extraction API call with circuit breaker
             @self._circuit_breaker
             async def _protected_rubric_call():
                 return await client.chat.completions.create(
                     model=settings.deepseek_model_name,
+                    extra_headers=outbound_trace_headers(),
                     messages=[
                         {"role": "system", "content": self._system_prompt_rubric_base},
                         {"role": "user", "content": f"Extract rubric from this model answer IR:\n{ir_json_input}\n\nTarget Schema:\n{target_schema}"}

@@ -160,6 +160,12 @@ async def update_task_celery_id(
 ) -> None:
     """Phase 28: Update Celery task ID for potential revocation."""
     async def _op(db: aiosqlite.Connection) -> None:
+        # Compatibility migration for old DB files missing Phase 28 column.
+        async with db.execute("PRAGMA table_info(tasks)") as cursor:
+            columns = await cursor.fetchall()
+        column_names = {col[1] for col in columns}
+        if "celery_task_id" not in column_names:
+            await db.execute("ALTER TABLE tasks ADD COLUMN celery_task_id TEXT")
         await db.execute(
             "UPDATE tasks SET celery_task_id = ? WHERE task_id = ?",
             (celery_task_id, task_id),

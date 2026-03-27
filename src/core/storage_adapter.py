@@ -16,7 +16,7 @@ import shutil
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import List, Tuple, Dict, Any
-from urllib.parse import urlparse
+from urllib.parse import urlparse, unquote
 import logging
 
 from src.core.config import settings
@@ -119,6 +119,8 @@ class LocalStorage(BaseStorage):
             path_str = parsed.path
             if path_str.startswith('/') and len(path_str) > 2 and path_str[2] == ':':
                 path_str = path_str[1:]  # Remove leading / for Windows absolute paths
+            # Decode URL-encoded characters (e.g. Chinese path segments).
+            path_str = unquote(path_str)
             
             file_path = Path(path_str)
             

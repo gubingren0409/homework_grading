@@ -14,6 +14,8 @@ from src.api.sse import create_sse_response
 from src.db.client import create_task, update_task_celery_id, get_task, fetch_results
 from src.worker.main import grade_homework_task
 from src.core.storage_adapter import storage
+from src.core.trace_context import get_trace_id
+from src.worker.main import emit_trace_probe
 
 
 logger = logging.getLogger(__name__)
@@ -43,6 +45,13 @@ class GradingResultItem(BaseModel):
     report_json: str
 
 
+class TraceProbeResponse(BaseModel):
+    trace_id: str
+    task_id: str
+    celery_task_id: str
+    status: str
+
+
 # --- API Endpoints (Phase 28: Celery-decoupled) ---
 @router.post("/grade/submit", response_model=TaskResponse, status_code=202)
 @limiter.limit("5/minute")
@@ -65,6 +74,7 @@ async def submit_grading_job(
     """
     # 1. Generate business task UUID
     task_id = str(uuid.uuid4())
+    trace_id = get_trace_id()
     
     # 2. Store uploaded files via storage adapter (Phase 32)
     file_refs = []
@@ -83,13 +93,17 @@ async def submit_grading_job(
     celery_result = grade_homework_task.apply_async(
         args=[task_id, payload, db_path],
         task_id=task_id,
+        headers={"trace_id": trace_id},
     )
     
     # 5. Track Celery task ID for potential revocation
     await update_task_celery_id(db_path, task_id, celery_result.id)
     
     # 6. Immediate HTTP 202 response (physical cutoff from computation)
-    logger.info(f"[API] Task {task_id} queued to Celery with ID {celery_result.id}")
+    logger.info(
+        "task_enqueued",
+        extra={"extra_fields": {"task_id": task_id, "event": "task_enqueued"}},
+    )
     return TaskResponse(task_id=task_id, status="PENDING")
 
 
@@ -239,3 +253,24 @@ async def get_all_results(
     offset = (page - 1) * limit
     results = await fetch_results(db_path, limit, offset)
     return [GradingResultItem(**r) for r in results]
+
+
+@router.post("/trace/probe", response_model=TraceProbeResponse)
+async def trace_probe():
+    """
+    Phase 34 observability probe endpoint.
+    Uses Celery headers + contextvars path without touching business kwargs.
+    """
+    trace_id = get_trace_id()
+    task_id = f"probe-{uuid.uuid4()}"
+    result = emit_trace_probe.apply_async(args=[task_id], headers={"trace_id": trace_id})
+    logger.info(
+        "trace_probe_enqueued",
+        extra={"extra_fields": {"task_id": task_id, "event": "trace_probe_enqueued"}},
+    )
+    return TraceProbeResponse(
+        trace_id=trace_id,
+        task_id=task_id,
+        celery_task_id=result.id,
+        status="ENQUEUED",
+    )
