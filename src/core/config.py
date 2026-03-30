@@ -37,6 +37,9 @@ class Settings(BaseSettings):
     s3_endpoint_url: str | None = None  # Custom S3 endpoint (e.g., MinIO)
     aws_access_key_id: str | None = None  # S3 access key
     aws_secret_access_key: str | None = None  # S3 secret key
+
+    # Phase 35: Layout preprocessing switch (disabled by default for safe rollout)
+    enable_layout_preprocess: bool = False
     
     @property
     def uploads_path(self) -> Path:

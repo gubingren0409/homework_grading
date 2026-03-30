@@ -1,11 +1,15 @@
 import asyncio
+from pathlib import Path
+from uuid import uuid4
 from src.perception.base import BasePerceptionEngine
 from src.cognitive.base import BaseCognitiveAgent
 from src.schemas.cognitive_ir import EvaluationReport
-from src.schemas.perception_ir import PerceptionOutput
+from src.schemas.perception_ir import PerceptionOutput, LayoutIR
 from src.schemas.rubric_ir import TeacherRubric
 from src.core.exceptions import PerceptionShortCircuitError
-from src.utils.file_parsers import normalize_to_images, process_multiple_files
+from src.core.config import settings
+from src.utils.file_parsers import process_multiple_files
+from src.utils.image_slicer import slice_image_by_layout
 
 
 class GradingWorkflow:
@@ -25,6 +29,55 @@ class GradingWorkflow:
         self._perception_engine = perception_engine
         self._cognitive_agent = cognitive_agent
 
+    async def _persist_layout_slices(self, slices: dict[str, bytes], *, task_scope: str, page_idx: int) -> list[tuple[bytes, str]]:
+        """
+        Persist sliced images asynchronously to temporary folder and return pipeline-ready bytes.
+        Uses asyncio.to_thread to avoid blocking event loop on file I/O.
+        """
+        target_dir = settings.uploads_path / "layout_slices" / task_scope / f"page_{page_idx}"
+        await asyncio.to_thread(target_dir.mkdir, True, True)
+
+        def _write_file(path: Path, content: bytes) -> None:
+            path.write_bytes(content)
+
+        output_files: list[tuple[bytes, str]] = []
+        for target_id, content in slices.items():
+            filename = f"{target_id}.png"
+            out_path = target_dir / filename
+            await asyncio.to_thread(_write_file, out_path, content)
+            output_files.append((content, filename))
+        return output_files
+
+    async def _layout_preprocess(self, image_bytes_list: list[bytes], *, context_type: str) -> list[bytes]:
+        """
+        Phase 36: Optional two-stage perception preprocessor.
+        1) Extract LayoutIR
+        2) Slice image by layout
+        3) Persist slices asynchronously
+        4) Return sliced bytes (fallback to original page if slicing empty)
+        """
+        processed: list[bytes] = []
+        task_scope = uuid4().hex
+        engine = self._perception_engine
+
+        # Soft capability check: only Qwen engine currently exposes extract_layout
+        if not hasattr(engine, "extract_layout"):
+            return image_bytes_list
+
+        for page_idx, page_bytes in enumerate(image_bytes_list):
+            layout: LayoutIR = await engine.extract_layout(  # type: ignore[attr-defined]
+                page_bytes,
+                context_type=context_type,
+                page_index=page_idx,
+            )
+            slices = slice_image_by_layout(page_bytes, layout)
+            persisted = await self._persist_layout_slices(slices, task_scope=task_scope, page_idx=page_idx)
+            if persisted:
+                processed.extend([b for b, _ in persisted])
+            else:
+                processed.append(page_bytes)
+        return processed
+
     async def run_pipeline(
         self, 
         files_data: list[tuple[bytes, str]], 
@@ -37,6 +90,11 @@ class GradingWorkflow:
         """
         # Step 1: Flatten and normalize all inputs
         image_bytes_list = await process_multiple_files(files_data)
+        if settings.enable_layout_preprocess:
+            image_bytes_list = await self._layout_preprocess(
+                image_bytes_list,
+                context_type="STUDENT_ANSWER",
+            )
         
         # Step 2: Parallel Perception (Throttled by engine-level semaphore)
         tasks = [
@@ -108,6 +166,11 @@ class GradingWorkflow:
         """
         # Step 1: Flatten and normalize all inputs
         image_bytes_list = await process_multiple_files(files_data)
+        if settings.enable_layout_preprocess:
+            image_bytes_list = await self._layout_preprocess(
+                image_bytes_list,
+                context_type="REFERENCE",
+            )
         
         # Step 2: Parallel Perception (Throttled by engine-level semaphore)
         tasks = [
