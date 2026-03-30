@@ -11,7 +11,14 @@ from slowapi.util import get_remote_address
 
 from src.api.dependencies import get_db_path
 from src.api.sse import create_sse_response
-from src.db.client import create_task, update_task_celery_id, get_task, fetch_results
+from src.db.client import (
+    create_task,
+    update_task_celery_id,
+    get_task,
+    fetch_results,
+    list_pending_review_tasks,
+    submit_task_review,
+)
 from src.worker.main import grade_homework_task
 from src.core.storage_adapter import storage
 from src.core.trace_context import get_trace_id
@@ -31,6 +38,9 @@ class TaskResponse(BaseModel):
 class TaskStatusResponse(BaseModel):
     task_id: str
     status: str
+    review_status: Optional[str] = None
+    fallback_reason: Optional[str] = None
+    is_regression_sample: bool = False
     error_message: Optional[str] = None
     error_code: Optional[str] = None  # Phase 29: Sanitized error codes
     progress: Optional[float] = None  # Phase 29: Progress percentage (0.0-1.0)
@@ -50,6 +60,36 @@ class TraceProbeResponse(BaseModel):
     task_id: str
     celery_task_id: str
     status: str
+
+
+class PendingReviewTaskItem(BaseModel):
+    task_id: str
+    status: str
+    review_status: str
+    error_message: Optional[str] = None
+    fallback_reason: Optional[str] = None
+    is_regression_sample: bool = False
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class ReviewSubmissionRequest(BaseModel):
+    human_feedback_json: Dict[str, Any]
+    is_regression_sample: bool = False
+
+
+class ReviewSubmissionResponse(BaseModel):
+    task_id: str
+    review_status: str
+    is_regression_sample: bool
+
+
+class ReviewFlowGuideResponse(BaseModel):
+    pending_list_endpoint: str
+    submit_review_endpoint_template: str
+    review_status_enum: List[str]
+    task_status_enum: List[str]
+    notes: List[str]
 
 
 # --- API Endpoints (Phase 28: Celery-decoupled) ---
@@ -141,6 +181,9 @@ async def get_job_status_and_results(
     response_data = {
         "task_id": task["task_id"],
         "status": task["status"],
+        "review_status": task.get("review_status"),
+        "fallback_reason": task.get("fallback_reason"),
+        "is_regression_sample": bool(task.get("is_regression_sample", 0)),
     }
     
     # Phase 29: Status-specific enrichment
@@ -253,6 +296,71 @@ async def get_all_results(
     offset = (page - 1) * limit
     results = await fetch_results(db_path, limit, offset)
     return [GradingResultItem(**r) for r in results]
+
+
+@router.get("/tasks/pending-review", response_model=List[PendingReviewTaskItem])
+async def get_pending_review_tasks(
+    status: Optional[str] = Query(default=None, pattern="^(COMPLETED|REJECTED)$"),
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+    db_path: str = Depends(get_db_path),
+):
+    offset = (page - 1) * limit
+    rows = await list_pending_review_tasks(
+        db_path,
+        status_filter=status,
+        limit=limit,
+        offset=offset,
+    )
+    normalized = []
+    for row in rows:
+        row["is_regression_sample"] = bool(row.get("is_regression_sample", 0))
+        normalized.append(PendingReviewTaskItem(**row))
+    return normalized
+
+
+@router.post("/tasks/{task_id}/review", response_model=ReviewSubmissionResponse)
+async def submit_review_result(
+    task_id: str,
+    payload: ReviewSubmissionRequest,
+    db_path: str = Depends(get_db_path),
+):
+    task = await get_task(db_path, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if task.get("review_status") == "REVIEWED":
+        raise HTTPException(status_code=409, detail="Task already reviewed")
+
+    await submit_task_review(
+        db_path,
+        task_id,
+        human_feedback_json=payload.human_feedback_json,
+        is_regression_sample=payload.is_regression_sample,
+    )
+    return ReviewSubmissionResponse(
+        task_id=task_id,
+        review_status="REVIEWED",
+        is_regression_sample=payload.is_regression_sample,
+    )
+
+
+@router.get("/review/flow-guide", response_model=ReviewFlowGuideResponse)
+async def get_review_flow_guide():
+    """
+    前端对接辅助文档接口：
+    给出复核流程核心端点与状态机枚举，方便 UI 快速接入。
+    """
+    return ReviewFlowGuideResponse(
+        pending_list_endpoint="/api/v1/tasks/pending-review?status=REJECTED&page=1&limit=20",
+        submit_review_endpoint_template="/api/v1/tasks/{task_id}/review",
+        review_status_enum=["NOT_REQUIRED", "PENDING_REVIEW", "REVIEWED"],
+        task_status_enum=["PENDING", "PROCESSING", "COMPLETED", "FAILED", "REJECTED"],
+        notes=[
+            "前端上传后应优先走 SSE 接口接收状态变化。",
+            "当任务进入 REJECTED 或 COMPLETED 且 review_status=PENDING_REVIEW 时，进入人工待办池。",
+            "提交复核后任务 review_status 变为 REVIEWED。",
+        ],
+    )
 
 
 @router.post("/trace/probe", response_model=TraceProbeResponse)

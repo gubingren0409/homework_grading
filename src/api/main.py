@@ -1,6 +1,8 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 import logging
+from pathlib import Path
 
 from src.api.routes import router as grading_router
 from src.db.client import init_db
@@ -41,3 +43,16 @@ app.include_router(grading_router)
 async def health_check():
     """Basic health check endpoint."""
     return {"status": "healthy", "service": "grader-api"}
+
+
+@app.get("/review-console", include_in_schema=False)
+async def review_console():
+    """
+    Minimal review console for:
+    1) Uploading image/PDF tasks
+    2) Real-time SSE status tracking
+    3) Pending human-review list
+    4) Submitting human feedback back to DB
+    """
+    static_file = Path(__file__).parent / "static" / "review_console.html"
+    return FileResponse(static_file)

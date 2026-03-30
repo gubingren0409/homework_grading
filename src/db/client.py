@@ -130,6 +130,21 @@ async def init_db(db_path: str) -> None:
 
 async def create_task(db_path: str, task_id: str) -> None:
     async def _op(db: aiosqlite.Connection) -> None:
+        async with db.execute("PRAGMA table_info(tasks)") as cursor:
+            columns = await cursor.fetchall()
+        column_names = {col[1] for col in columns}
+        if "review_status" not in column_names:
+            await db.execute(
+                "ALTER TABLE tasks ADD COLUMN review_status TEXT NOT NULL DEFAULT 'NOT_REQUIRED'"
+            )
+        if "human_feedback_json" not in column_names:
+            await db.execute("ALTER TABLE tasks ADD COLUMN human_feedback_json TEXT")
+        if "is_regression_sample" not in column_names:
+            await db.execute(
+                "ALTER TABLE tasks ADD COLUMN is_regression_sample INTEGER NOT NULL DEFAULT 0"
+            )
+        if "fallback_reason" not in column_names:
+            await db.execute("ALTER TABLE tasks ADD COLUMN fallback_reason TEXT")
         await db.execute(
             "INSERT INTO tasks (task_id, status) VALUES (?, ?)",
             (task_id, "PENDING"),
@@ -143,12 +158,26 @@ async def update_task_status(
     task_id: str,
     status: str,
     error: Optional[str] = None,
+    *,
+    review_status: Optional[str] = None,
+    fallback_reason: Optional[str] = None,
 ) -> None:
     async def _op(db: aiosqlite.Connection) -> None:
-        await db.execute(
-            "UPDATE tasks SET status = ?, error_message = ?, updated_at = CURRENT_TIMESTAMP WHERE task_id = ?",
-            (status, error, task_id),
-        )
+        assignments = [
+            "status = ?",
+            "error_message = ?",
+            "updated_at = CURRENT_TIMESTAMP",
+        ]
+        params: List[Any] = [status, error]
+        if review_status is not None:
+            assignments.append("review_status = ?")
+            params.append(review_status)
+        if fallback_reason is not None:
+            assignments.append("fallback_reason = ?")
+            params.append(fallback_reason)
+        params.append(task_id)
+        sql = f"UPDATE tasks SET {', '.join(assignments)} WHERE task_id = ?"
+        await db.execute(sql, params)
 
     await _execute_write_with_retry(db_path, _op)
 
@@ -166,6 +195,18 @@ async def update_task_celery_id(
         column_names = {col[1] for col in columns}
         if "celery_task_id" not in column_names:
             await db.execute("ALTER TABLE tasks ADD COLUMN celery_task_id TEXT")
+        if "review_status" not in column_names:
+            await db.execute(
+                "ALTER TABLE tasks ADD COLUMN review_status TEXT NOT NULL DEFAULT 'NOT_REQUIRED'"
+            )
+        if "human_feedback_json" not in column_names:
+            await db.execute("ALTER TABLE tasks ADD COLUMN human_feedback_json TEXT")
+        if "is_regression_sample" not in column_names:
+            await db.execute(
+                "ALTER TABLE tasks ADD COLUMN is_regression_sample INTEGER NOT NULL DEFAULT 0"
+            )
+        if "fallback_reason" not in column_names:
+            await db.execute("ALTER TABLE tasks ADD COLUMN fallback_reason TEXT")
         await db.execute(
             "UPDATE tasks SET celery_task_id = ? WHERE task_id = ?",
             (celery_task_id, task_id),
@@ -180,6 +221,55 @@ async def get_task(db_path: str, task_id: str) -> Optional[Dict[str, Any]]:
         async with db.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,)) as cursor:
             row = await cursor.fetchone()
             return dict(row) if row else None
+
+
+async def list_pending_review_tasks(
+    db_path: str,
+    *,
+    status_filter: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> List[Dict[str, Any]]:
+    async with _open_connection(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        sql = (
+            "SELECT task_id, status, review_status, error_message, fallback_reason, "
+            "is_regression_sample, created_at, updated_at "
+            "FROM tasks WHERE review_status = 'PENDING_REVIEW'"
+        )
+        params: List[Any] = []
+        if status_filter:
+            sql += " AND status = ?"
+            params.append(status_filter)
+        sql += " ORDER BY updated_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        async with db.execute(sql, tuple(params)) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+
+async def submit_task_review(
+    db_path: str,
+    task_id: str,
+    human_feedback_json: Any,
+    is_regression_sample: bool,
+) -> None:
+    feedback_str = _to_json_string(human_feedback_json)
+
+    async def _op(db: aiosqlite.Connection) -> None:
+        await db.execute(
+            """
+            UPDATE tasks
+            SET review_status = 'REVIEWED',
+                human_feedback_json = ?,
+                is_regression_sample = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE task_id = ?
+            """,
+            (feedback_str, 1 if is_regression_sample else 0, task_id),
+        )
+
+    await _execute_write_with_retry(db_path, _op)
 
 
 async def save_grading_result(

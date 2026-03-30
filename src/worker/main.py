@@ -191,7 +191,15 @@ def grade_homework_task(
         # Step 5: Persist results
         student_id = reconstructed_files[0][1] if reconstructed_files else task_id
         run_async(save_grading_result(db_path, task_id, student_id, report))
-        run_async(update_task_status(db_path, task_id, "COMPLETED"))
+        review_status = "PENDING_REVIEW" if getattr(report, "requires_human_review", False) else "NOT_REQUIRED"
+        run_async(
+            update_task_status(
+                db_path,
+                task_id,
+                "COMPLETED",
+                review_status=review_status,
+            )
+        )
         logger.info("task_status_persisted", extra={"extra_fields": {"status": "COMPLETED"}})
         # Phase 33: Publish completion event to Redis Pub/Sub
         run_async(_publish_status(task_id, "COMPLETED", message="Grading completed successfully"))
@@ -211,6 +219,8 @@ def grade_homework_task(
                 task_id,
                 "REJECTED",
                 error=f"Perception short-circuit: {e.readability_status}",
+                review_status="PENDING_REVIEW",
+                fallback_reason=f"PERCEPTION_SHORT_CIRCUIT:{e.readability_status}",
             )
         )
         logger.info("task_status_persisted", extra={"extra_fields": {"status": "REJECTED"}})

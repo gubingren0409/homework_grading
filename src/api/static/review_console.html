@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AI 批改最小复核台</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 24px; background: #f7f7f9; color: #222; }
+    h1 { margin-bottom: 8px; }
+    h2 { margin-top: 28px; margin-bottom: 8px; }
+    .card { background: #fff; border: 1px solid #ddd; border-radius: 8px; padding: 14px; margin-bottom: 14px; }
+    .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    input[type="text"], textarea, select { width: 100%; padding: 8px; border: 1px solid #bbb; border-radius: 6px; }
+    textarea { min-height: 130px; font-family: Consolas, monospace; }
+    button { padding: 8px 12px; border: none; border-radius: 6px; background: #1f6feb; color: white; cursor: pointer; }
+    button.secondary { background: #555; }
+    button:disabled { background: #9bb7e0; cursor: not-allowed; }
+    .small { font-size: 12px; color: #666; }
+    .ok { color: #0a7a0a; }
+    .warn { color: #9a6200; }
+    .err { color: #b42318; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { border: 1px solid #ddd; padding: 8px; text-align: left; vertical-align: top; }
+    th { background: #f2f2f2; }
+    code { background: #f0f0f0; padding: 2px 6px; border-radius: 4px; }
+    .mono { font-family: Consolas, monospace; }
+  </style>
+</head>
+<body>
+  <h1>AI 批改最小复核台</h1>
+  <div class="small">目标：上传 → SSE看状态 → 进入待复核池 → 提交人工修正</div>
+
+  <div class="card">
+    <h2>1) 上传图片 / PDF</h2>
+    <form id="uploadForm">
+      <input id="files" type="file" name="files" multiple accept=".jpg,.jpeg,.png,.pdf" />
+      <div class="row" style="margin-top: 10px;">
+        <button id="uploadBtn" type="submit">提交批改任务</button>
+      </div>
+    </form>
+    <div id="uploadResult" class="small" style="margin-top: 10px;"></div>
+  </div>
+
+  <div class="card">
+    <h2>2) 实时状态（SSE）</h2>
+    <div class="row">
+      <input id="taskIdInput" type="text" placeholder="输入 task_id（上传后会自动填充）" />
+      <button id="watchBtn">开始监听</button>
+      <button id="stopBtn" class="secondary">停止监听</button>
+    </div>
+    <div id="statusBox" class="small mono" style="margin-top: 10px; white-space: pre-wrap;"></div>
+  </div>
+
+  <div class="card">
+    <h2>3) 待人工复核任务池</h2>
+    <div class="row">
+      <select id="pendingFilter">
+        <option value="">全部（PENDING_REVIEW）</option>
+        <option value="REJECTED">仅 REJECTED</option>
+        <option value="COMPLETED">仅 COMPLETED</option>
+      </select>
+      <button id="refreshPendingBtn">刷新待办</button>
+    </div>
+    <table style="margin-top: 10px;">
+      <thead>
+        <tr>
+          <th>task_id</th>
+          <th>status</th>
+          <th>review_status</th>
+          <th>fallback_reason</th>
+          <th>error_message</th>
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody id="pendingBody"></tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>4) 提交人工修正</h2>
+    <div class="row">
+      <input id="reviewTaskId" type="text" placeholder="task_id（可从待办列表一键填入）" />
+      <label><input id="regressionFlag" type="checkbox" /> 纳入回归样本</label>
+    </div>
+    <div class="small" style="margin: 8px 0;">human_feedback_json（建议含 before/after/diff）</div>
+    <textarea id="feedbackJson">{
+  "before": {"score": 6, "comment": "模型评语"},
+  "after": {"score": 8, "comment": "教师修正评语"},
+  "diff": ["撤销第2扣分点", "修正评语语气"]
+}</textarea>
+    <div class="row" style="margin-top: 10px;">
+      <button id="submitReviewBtn">提交人工复核</button>
+    </div>
+    <div id="reviewResult" class="small" style="margin-top: 10px;"></div>
+  </div>
+
+  <script>
+    let currentEventSource = null;
+
+    function setStatus(text, cls = "") {
+      const el = document.getElementById("statusBox");
+      el.className = "small mono " + cls;
+      el.textContent = text;
+    }
+
+    async function submitUpload(evt) {
+      evt.preventDefault();
+      const filesEl = document.getElementById("files");
+      const resultEl = document.getElementById("uploadResult");
+      const btn = document.getElementById("uploadBtn");
+      if (!filesEl.files.length) {
+        resultEl.textContent = "请选择至少一个文件。";
+        resultEl.className = "small err";
+        return;
+      }
+      const formData = new FormData();
+      for (const f of filesEl.files) formData.append("files", f);
+      btn.disabled = true;
+      resultEl.textContent = "提交中...";
+      resultEl.className = "small";
+      try {
+        const resp = await fetch("/api/v1/grade/submit", { method: "POST", body: formData });
+        if (!resp.ok) throw new Error("HTTP " + resp.status);
+        const data = await resp.json();
+        resultEl.textContent = "提交成功，task_id = " + data.task_id;
+        resultEl.className = "small ok";
+        document.getElementById("taskIdInput").value = data.task_id;
+        document.getElementById("reviewTaskId").value = data.task_id;
+      } catch (e) {
+        resultEl.textContent = "提交失败: " + e;
+        resultEl.className = "small err";
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    function stopSSE() {
+      if (currentEventSource) {
+        currentEventSource.close();
+        currentEventSource = null;
+      }
+    }
+
+    function watchTask() {
+      const taskId = document.getElementById("taskIdInput").value.trim();
+      if (!taskId) {
+        setStatus("请先输入 task_id", "warn");
+        return;
+      }
+      stopSSE();
+      setStatus("连接 SSE 中...", "");
+      const es = new EventSource(`/api/v1/tasks/${taskId}/stream`);
+      currentEventSource = es;
+
+      es.addEventListener("status_update", (ev) => {
+        try {
+          const d = JSON.parse(ev.data);
+          setStatus(JSON.stringify(d, null, 2), "");
+        } catch {
+          setStatus(ev.data, "");
+        }
+      });
+
+      es.addEventListener("complete", async (ev) => {
+        setStatus("任务完成，准备查询详情并判断是否进入复核池...\n" + ev.data, "ok");
+        stopSSE();
+        await fetchTaskDetail(taskId);
+        await refreshPending();
+      });
+
+      es.addEventListener("error", (ev) => {
+        setStatus("SSE 异常或已断开，请检查服务日志。", "err");
+      });
+    }
+
+    async function fetchTaskDetail(taskId) {
+      const resp = await fetch(`/api/v1/grade/${taskId}`);
+      if (!resp.ok) return;
+      const d = await resp.json();
+      const lines = [
+        "任务详情：",
+        `status=${d.status}`,
+        `review_status=${d.review_status}`,
+        `fallback_reason=${d.fallback_reason || "-"}`,
+      ];
+      setStatus(lines.join("\n"), d.review_status === "PENDING_REVIEW" ? "warn" : "ok");
+    }
+
+    function renderPendingRows(items) {
+      const body = document.getElementById("pendingBody");
+      body.innerHTML = "";
+      for (const it of items) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td class="mono">${it.task_id}</td>
+          <td>${it.status}</td>
+          <td>${it.review_status}</td>
+          <td class="mono">${it.fallback_reason || ""}</td>
+          <td class="mono">${it.error_message || ""}</td>
+          <td><button data-task="${it.task_id}">选中</button></td>
+        `;
+        tr.querySelector("button").addEventListener("click", () => {
+          document.getElementById("reviewTaskId").value = it.task_id;
+          document.getElementById("taskIdInput").value = it.task_id;
+        });
+        body.appendChild(tr);
+      }
+      if (!items.length) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `<td colspan="6" class="small">暂无待复核任务</td>`;
+        body.appendChild(tr);
+      }
+    }
+
+    async function refreshPending() {
+      const filter = document.getElementById("pendingFilter").value;
+      const qs = new URLSearchParams({ page: "1", limit: "50" });
+      if (filter) qs.set("status", filter);
+      const resp = await fetch(`/api/v1/tasks/pending-review?${qs.toString()}`);
+      if (!resp.ok) {
+        renderPendingRows([]);
+        return;
+      }
+      const data = await resp.json();
+      renderPendingRows(data);
+    }
+
+    async function submitReview() {
+      const taskId = document.getElementById("reviewTaskId").value.trim();
+      const feedbackText = document.getElementById("feedbackJson").value.trim();
+      const regression = document.getElementById("regressionFlag").checked;
+      const resultEl = document.getElementById("reviewResult");
+      if (!taskId) {
+        resultEl.textContent = "请先输入 task_id。";
+        resultEl.className = "small err";
+        return;
+      }
+      let feedbackObj;
+      try {
+        feedbackObj = JSON.parse(feedbackText);
+      } catch (e) {
+        resultEl.textContent = "feedback JSON 格式错误: " + e;
+        resultEl.className = "small err";
+        return;
+      }
+      const payload = {
+        human_feedback_json: feedbackObj,
+        is_regression_sample: regression
+      };
+      try {
+        const resp = await fetch(`/api/v1/tasks/${taskId}/review`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+        const text = await resp.text();
+        if (!resp.ok) throw new Error("HTTP " + resp.status + " " + text);
+        resultEl.textContent = "提交成功: " + text;
+        resultEl.className = "small ok";
+        await refreshPending();
+      } catch (e) {
+        resultEl.textContent = "提交失败: " + e;
+        resultEl.className = "small err";
+      }
+    }
+
+    document.getElementById("uploadForm").addEventListener("submit", submitUpload);
+    document.getElementById("watchBtn").addEventListener("click", watchTask);
+    document.getElementById("stopBtn").addEventListener("click", () => { stopSSE(); setStatus("已手动停止监听。", "warn"); });
+    document.getElementById("refreshPendingBtn").addEventListener("click", refreshPending);
+    document.getElementById("submitReviewBtn").addEventListener("click", submitReview);
+
+    refreshPending();
+  </script>
+</body>
+</html>
+
