@@ -127,6 +127,8 @@ async def init_db(db_path: str) -> None:
         await _ensure_tasks_columns(db, include_celery=True)
         await _ensure_rubrics_schema(db)
         await _ensure_domain_split_tables(db)
+        if await _has_legacy_review_columns(db):
+            await _migrate_drop_legacy_review_columns(db)
 
     await _execute_write_with_retry(db_path, _op)
 
@@ -160,14 +162,6 @@ async def _ensure_tasks_columns(db: aiosqlite.Connection, *, include_celery: boo
             "ALTER TABLE tasks ADD COLUMN review_status TEXT NOT NULL DEFAULT 'NOT_REQUIRED'"
         )
         column_names.add("review_status")
-    if "human_feedback_json" not in column_names:
-        await db.execute("ALTER TABLE tasks ADD COLUMN human_feedback_json TEXT")
-        column_names.add("human_feedback_json")
-    if "is_regression_sample" not in column_names:
-        await db.execute(
-            "ALTER TABLE tasks ADD COLUMN is_regression_sample INTEGER NOT NULL DEFAULT 0"
-        )
-        column_names.add("is_regression_sample")
     if "fallback_reason" not in column_names:
         await db.execute("ALTER TABLE tasks ADD COLUMN fallback_reason TEXT")
         column_names.add("fallback_reason")
@@ -242,6 +236,65 @@ async def _ensure_domain_split_tables(db: aiosqlite.Connection) -> None:
     await db.execute("CREATE INDEX IF NOT EXISTS idx_golden_trace_id ON golden_annotation_assets(trace_id)")
     await db.execute("CREATE INDEX IF NOT EXISTS idx_golden_task_id ON golden_annotation_assets(task_id)")
     await db.execute("CREATE INDEX IF NOT EXISTS idx_golden_region_id ON golden_annotation_assets(region_id)")
+    await db.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_golden_trace_region ON golden_annotation_assets(trace_id, region_id)"
+    )
+
+
+async def _has_legacy_review_columns(db: aiosqlite.Connection) -> bool:
+    column_names = await _get_tasks_column_names(db)
+    return "human_feedback_json" in column_names or "is_regression_sample" in column_names
+
+
+async def _migrate_drop_legacy_review_columns(db: aiosqlite.Connection) -> None:
+    """
+    SQLite-compatible table rebuild executed in the current transaction.
+    """
+    await db.execute("DROP TABLE IF EXISTS tasks_new")
+    await db.execute(
+        """
+        CREATE TABLE tasks_new (
+            task_id TEXT PRIMARY KEY,
+            status TEXT NOT NULL,
+            grading_status TEXT
+                CHECK (grading_status IN ('SCORED', 'REJECTED_UNREADABLE') OR grading_status IS NULL),
+            celery_task_id TEXT,
+            rubric_id TEXT,
+            error_message TEXT,
+            review_status TEXT NOT NULL DEFAULT 'NOT_REQUIRED'
+                CHECK (review_status IN ('NOT_REQUIRED', 'PENDING_REVIEW', 'REVIEWED')),
+            fallback_reason TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    await db.execute(
+        """
+        INSERT INTO tasks_new
+        (task_id, status, grading_status, celery_task_id, rubric_id, error_message, review_status, fallback_reason, created_at, updated_at)
+        SELECT task_id, status, grading_status, celery_task_id, rubric_id, error_message, review_status, fallback_reason, created_at, updated_at
+        FROM tasks
+        """
+    )
+    await db.execute("DROP TABLE tasks")
+    await db.execute("ALTER TABLE tasks_new RENAME TO tasks")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_review_status ON tasks(review_status)")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_grading_status ON tasks(grading_status)")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_rubric_id ON tasks(rubric_id)")
+
+
+async def migrate_drop_legacy_review_columns(db_path: str) -> None:
+    """
+    Phase 39 hard-cut:
+    Physically drop tasks.human_feedback_json and tasks.is_regression_sample by
+    table rebuild (SQLite-compatible migration).
+    """
+    async def _op(db: aiosqlite.Connection) -> None:
+        if await _has_legacy_review_columns(db):
+            await _migrate_drop_legacy_review_columns(db)
+
+    await _execute_write_with_retry(db_path, _op)
 
 
 async def create_task(db_path: str, task_id: str) -> None:
@@ -334,7 +387,7 @@ async def list_pending_review_tasks(
         db.row_factory = aiosqlite.Row
         sql = (
             "SELECT task_id, status, grading_status, rubric_id, review_status, error_message, fallback_reason, "
-            "is_regression_sample, created_at, updated_at "
+            "created_at, updated_at "
             "FROM tasks WHERE review_status = 'PENDING_REVIEW'"
         )
         params: List[Any] = []
@@ -344,51 +397,6 @@ async def list_pending_review_tasks(
         sql += " ORDER BY updated_at DESC LIMIT ? OFFSET ?"
         params.extend([limit, offset])
         async with db.execute(sql, tuple(params)) as cursor:
-            rows = await cursor.fetchall()
-            return [dict(r) for r in rows]
-
-
-async def submit_task_review(
-    db_path: str,
-    task_id: str,
-    human_feedback_json: Any,
-    is_regression_sample: bool,
-) -> None:
-    feedback_str = _to_json_string(human_feedback_json)
-
-    async def _op(db: aiosqlite.Connection) -> None:
-        await db.execute(
-            """
-            UPDATE tasks
-            SET review_status = 'REVIEWED',
-                human_feedback_json = ?,
-                is_regression_sample = ?,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE task_id = ?
-            """,
-            (feedback_str, 1 if is_regression_sample else 0, task_id),
-        )
-
-    await _execute_write_with_retry(db_path, _op)
-
-
-async def list_regression_samples(
-    db_path: str,
-    *,
-    limit: int = 50,
-    offset: int = 0,
-) -> List[Dict[str, Any]]:
-    async with _open_connection(db_path) as db:
-        db.row_factory = aiosqlite.Row
-        sql = (
-            "SELECT task_id, status, grading_status, review_status, rubric_id, human_feedback_json, "
-            "fallback_reason, created_at, updated_at "
-            "FROM tasks "
-            "WHERE is_regression_sample = 1 "
-            "ORDER BY updated_at DESC "
-            "LIMIT ? OFFSET ?"
-        )
-        async with db.execute(sql, (limit, offset)) as cursor:
             rows = await cursor.fetchall()
             return [dict(r) for r in rows]
 
@@ -546,6 +554,19 @@ async def create_golden_annotation_asset(
                 is_integrated_to_dataset, updated_at
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(trace_id, region_id)
+            DO UPDATE SET
+                task_id=excluded.task_id,
+                region_type=excluded.region_type,
+                image_width=excluded.image_width,
+                image_height=excluded.image_height,
+                bbox_coordinates=excluded.bbox_coordinates,
+                perception_ir_snapshot=excluded.perception_ir_snapshot,
+                cognitive_ir_snapshot=excluded.cognitive_ir_snapshot,
+                teacher_text_feedback=excluded.teacher_text_feedback,
+                expected_score=excluded.expected_score,
+                is_integrated_to_dataset=excluded.is_integrated_to_dataset,
+                updated_at=CURRENT_TIMESTAMP
             """,
             (
                 trace_id,

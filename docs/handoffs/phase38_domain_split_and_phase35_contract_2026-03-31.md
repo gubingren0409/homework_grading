@@ -84,11 +84,11 @@
 
 ## 兼容性说明
 
-- 旧接口（`/tasks/{task_id}/review`, `/review/regression-samples`）仍保留，避免一次性破坏既有集成。
+- 旧接口（`/tasks/{task_id}/review`, `/review/regression-samples`）已在 Phase39 物理下线。
 - 新策略下，推荐业务只写入 `/annotations/feedback` 进入黄金资产流；卫生流只通过 hygiene 接口运维处理。
 
 ## 下一阶段建议
 
-1. 逐步下线 `human_feedback_json + is_regression_sample` 在业务路径中的写入
+1. 通过迁移重建表物理删除 `human_feedback_json + is_regression_sample`
 2. 在前端 Canvas 接入前，先用真实多题同页样本跑 Phase35 A/B 验收
 3. 为 `golden_annotation_assets` 增加数据集集成批处理任务（仅消费 `is_integrated_to_dataset=false`）

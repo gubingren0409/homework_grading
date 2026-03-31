@@ -19,8 +19,6 @@ from src.db.client import (
     get_task,
     fetch_results,
     list_pending_review_tasks,
-    list_regression_samples,
-    submit_task_review,
     save_rubric,
     get_rubric,
     list_rubrics,
@@ -59,7 +57,6 @@ class TaskStatusResponse(BaseModel):
     rubric_id: Optional[str] = None
     review_status: Optional[str] = None
     fallback_reason: Optional[str] = None
-    is_regression_sample: bool = False
     error_message: Optional[str] = None
     error_code: Optional[str] = None  # Phase 29: Sanitized error codes
     progress: Optional[float] = None  # Phase 29: Progress percentage (0.0-1.0)
@@ -89,46 +86,15 @@ class PendingReviewTaskItem(BaseModel):
     review_status: str
     error_message: Optional[str] = None
     fallback_reason: Optional[str] = None
-    is_regression_sample: bool = False
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
-
-
-class ReviewSubmissionRequest(BaseModel):
-    human_feedback_json: Dict[str, Any]
-    is_regression_sample: bool = False
-
-
-class ReviewSubmissionResponse(BaseModel):
-    task_id: str
-    review_status: str
-    is_regression_sample: bool
 
 
 class ReviewFlowGuideResponse(BaseModel):
     pending_list_endpoint: str
-    submit_review_endpoint_template: str
-    review_status_enum: List[str]
     task_status_enum: List[str]
     grading_status_enum: List[str]
     notes: List[str]
-
-
-class RegressionSampleItem(BaseModel):
-    task_id: str
-    status: str
-    grading_status: Optional[str] = None
-    review_status: Optional[str] = None
-    rubric_id: Optional[str] = None
-    human_feedback_json: Optional[Any] = None
-    fallback_reason: Optional[str] = None
-    created_at: Optional[str] = None
-    updated_at: Optional[str] = None
-
-
-class RegressionSampleExportResponse(BaseModel):
-    count: int
-    items: List[RegressionSampleItem]
 
 
 class RubricGenerateResponse(BaseModel):
@@ -477,7 +443,6 @@ async def get_job_status_and_results(
         "rubric_id": task.get("rubric_id"),
         "review_status": task.get("review_status"),
         "fallback_reason": task.get("fallback_reason"),
-        "is_regression_sample": bool(task.get("is_regression_sample", 0)),
     }
     
     # Phase 29: Status-specific enrichment
@@ -608,7 +573,6 @@ async def get_pending_review_tasks(
     )
     normalized = []
     for row in rows:
-        row["is_regression_sample"] = bool(row.get("is_regression_sample", 0))
         normalized.append(PendingReviewTaskItem(**row))
     return normalized
 
@@ -666,31 +630,6 @@ async def bulk_update_hygiene_action(
         action=payload.action,
     )
     return {"updated_count": affected}
-
-
-@router.post("/tasks/{task_id}/review", response_model=ReviewSubmissionResponse)
-async def submit_review_result(
-    task_id: str,
-    payload: ReviewSubmissionRequest,
-    db_path: str = Depends(get_db_path),
-):
-    task = await get_task(db_path, task_id)
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
-    if task.get("review_status") == "REVIEWED":
-        raise HTTPException(status_code=409, detail="Task already reviewed")
-
-    await submit_task_review(
-        db_path,
-        task_id,
-        human_feedback_json=payload.human_feedback_json,
-        is_regression_sample=payload.is_regression_sample,
-    )
-    return ReviewSubmissionResponse(
-        task_id=task_id,
-        review_status="REVIEWED",
-        is_regression_sample=payload.is_regression_sample,
-    )
 
 
 @router.post("/annotations/feedback", response_model=AnnotationFeedbackResponse)
@@ -768,43 +707,15 @@ async def get_review_flow_guide():
     """
     return ReviewFlowGuideResponse(
         pending_list_endpoint="/api/v1/tasks/pending-review?status=REJECTED_UNREADABLE&page=1&limit=20",
-        submit_review_endpoint_template="/api/v1/tasks/{task_id}/review",
-        review_status_enum=["NOT_REQUIRED", "PENDING_REVIEW", "REVIEWED"],
         task_status_enum=["PENDING", "PROCESSING", "COMPLETED", "FAILED"],
         grading_status_enum=["SCORED", "REJECTED_UNREADABLE"],
         notes=[
             "前端上传后应优先走 SSE 接口接收状态变化。",
             "pipeline_status=COMPLETED 且 grading_status=REJECTED_UNREADABLE 时，进入人工待办池。",
-            "提交复核后任务 review_status 变为 REVIEWED。",
             "卫生流请走 /api/v1/hygiene/interceptions；黄金反馈流请走 /api/v1/annotations/feedback。",
+            "annotations/feedback 使用 (trace_id, region_id) upsert 覆盖提交，保证并发幂等。",
         ],
     )
-
-
-@router.get("/review/regression-samples", response_model=RegressionSampleExportResponse)
-async def get_regression_samples(
-    page: int = Query(1, ge=1),
-    limit: int = Query(50, ge=1, le=200),
-    db_path: str = Depends(get_db_path),
-):
-    offset = (page - 1) * limit
-    rows = await list_regression_samples(db_path, limit=limit, offset=offset)
-
-    items: List[RegressionSampleItem] = []
-    for row in rows:
-        raw_feedback = row.get("human_feedback_json")
-        feedback_obj: Optional[Dict[str, Any]] = None
-        if raw_feedback is not None:
-            try:
-                parsed = json.loads(raw_feedback) if isinstance(raw_feedback, str) else raw_feedback
-                if isinstance(parsed, dict):
-                    feedback_obj = parsed
-            except Exception:
-                feedback_obj = None
-        row["human_feedback_json"] = feedback_obj
-        items.append(RegressionSampleItem(**row))
-
-    return RegressionSampleExportResponse(count=len(items), items=items)
 
 
 @router.post("/trace/probe", response_model=TraceProbeResponse)

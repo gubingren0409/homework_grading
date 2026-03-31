@@ -9,8 +9,6 @@ CREATE TABLE IF NOT EXISTS tasks (
     error_message TEXT,
     review_status TEXT NOT NULL DEFAULT 'NOT_REQUIRED'
         CHECK (review_status IN ('NOT_REQUIRED', 'PENDING_REVIEW', 'REVIEWED')),
-    human_feedback_json TEXT, -- Structured teacher correction payload (JSON string)
-    is_regression_sample INTEGER NOT NULL DEFAULT 0 CHECK (is_regression_sample IN (0, 1)),
     fallback_reason TEXT, -- Why machine path was rejected/degraded to human
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -76,3 +74,4 @@ CREATE INDEX IF NOT EXISTS idx_hygiene_created_at ON hygiene_interception_log(cr
 CREATE INDEX IF NOT EXISTS idx_golden_trace_id ON golden_annotation_assets(trace_id);
 CREATE INDEX IF NOT EXISTS idx_golden_task_id ON golden_annotation_assets(task_id);
 CREATE INDEX IF NOT EXISTS idx_golden_region_id ON golden_annotation_assets(region_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_golden_trace_region ON golden_annotation_assets(trace_id, region_id);
