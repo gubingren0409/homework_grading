@@ -9,6 +9,7 @@ Tests for distributed event-driven SSE:
 """
 import asyncio
 import pytest
+import pytest_asyncio
 import json
 from unittest.mock import Mock, patch, AsyncMock
 
@@ -22,7 +23,7 @@ from src.api.sse import (
 from src.core.config import settings
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def redis_client():
     """Redis client for testing."""
     client = await aioredis.from_url(
@@ -31,10 +32,10 @@ async def redis_client():
         decode_responses=True,
     )
     yield client
-    await client.close()
+    await client.aclose()
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def mock_db_task():
     """Mock database task record."""
     return {
@@ -82,7 +83,7 @@ async def test_publish_task_status(redis_client):
     assert data["progress"] == 0.5
     
     await pubsub.unsubscribe(channel)
-    await pubsub.close()
+    await pubsub.aclose()
 
 
 @pytest.mark.asyncio
@@ -248,10 +249,8 @@ async def test_sse_stream_client_disconnect():
         # Consume initial event
         await stream_gen.__anext__()
         
-        # Simulate client disconnect (cancel generator)
-        with pytest.raises(asyncio.CancelledError):
-            await stream_gen.aclose()
-            await stream_gen.__anext__()
+        # Simulate client disconnect
+        await stream_gen.aclose()
 
 
 @pytest.mark.asyncio

@@ -1,6 +1,6 @@
 import asyncio
 from src.perception.base import BasePerceptionEngine
-from src.schemas.perception_ir import PerceptionOutput, ExtractedElement, BoundingBox
+from src.schemas.perception_ir import PerceptionOutput, PerceptionNode, BoundingBox
 
 
 class MockPerceptionEngine(BasePerceptionEngine):
@@ -19,7 +19,7 @@ class MockPerceptionEngine(BasePerceptionEngine):
         return PerceptionOutput(
             readability_status="CLEAR",
             elements=[
-                ExtractedElement(
+                PerceptionNode(
                     element_id="elem_001",
                     content_type="latex_formula",
                     raw_content="\\int_{0}^{1} x^2 dx = \\frac{1}{2}",

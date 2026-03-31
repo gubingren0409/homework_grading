@@ -16,6 +16,11 @@ class _FakeKeyPool:
         return None
 
 
+class _PassThroughCircuitBreaker:
+    def __call__(self, fn):
+        return fn
+
+
 class _FakeStream:
     def __init__(self, chunks=None, error: Exception | None = None):
         self._chunks = chunks or []
@@ -53,6 +58,7 @@ def _make_engine_with_behaviors(behaviors):
     engine._key_pool = _FakeKeyPool()
     completions = _SequencedCompletions(behaviors)
     engine._clients = {"k1": SimpleNamespace(chat=SimpleNamespace(completions=completions))}
+    engine._circuit_breaker = _PassThroughCircuitBreaker()
     engine._system_prompt_grading_base = "system"
     return engine, completions
 

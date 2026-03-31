@@ -19,6 +19,7 @@ from src.core.serialization import (
 )
 from src.worker.main import grade_homework_task
 from src.db.client import init_db, create_task
+from src.core.storage_adapter import storage
 
 
 @pytest.fixture
@@ -106,10 +107,10 @@ async def test_worker_receives_dict_not_string(test_db_path):
     task_id = "test-worker-types-001"
     await create_task(test_db_path, task_id)
     
-    # Prepare payload using Phase 30 serialization
+    # Prepare payload using claim-check references
     fake_content = b"test content"
-    file_payload = prepare_file_payload(fake_content, "test.txt")
-    files_data = [file_payload]
+    file_ref = storage.store_file(task_id, fake_content, "test.txt")
+    payload = storage.prepare_payload([file_ref])
     
     # Mock workflow to intercept deserialized data
     with patch("src.worker.main._build_workflow") as mock_workflow_factory:
@@ -127,7 +128,7 @@ async def test_worker_receives_dict_not_string(test_db_path):
         # Capture deserialized files_data received by worker
         captured_files = []
         
-        async def mock_pipeline(files):
+        async def mock_pipeline(files, rubric=None):
             captured_files.extend(files)
             return mock_report
         
@@ -139,7 +140,7 @@ async def test_worker_receives_dict_not_string(test_db_path):
         import concurrent.futures
         
         def run_task():
-            return grade_homework_task(task_id, files_data, test_db_path)
+            return grade_homework_task(task_id, payload, test_db_path)
         
         with concurrent.futures.ThreadPoolExecutor() as executor:
             future = executor.submit(run_task)

@@ -14,13 +14,17 @@
 
 ## 2. 状态机（Task 维度）
 
-### 业务状态 `tasks.status`
+### 执行状态 `tasks.status`（pipeline_status）
 
 - `PENDING`
 - `PROCESSING`
 - `COMPLETED`
 - `FAILED`
-- `REJECTED`
+
+### 业务判定 `tasks.grading_status`
+
+- `SCORED`
+- `REJECTED_UNREADABLE`
 
 ### 复核状态 `tasks.review_status`
 
@@ -33,6 +37,7 @@
 ## 3. 新增/补齐字段（tasks）
 
 - `review_status`：复核状态（带 CHECK 约束）
+- `grading_status`：业务判定状态（`SCORED` / `REJECTED_UNREADABLE`）
 - `human_feedback_json`：结构化人工修正内容（JSON 字符串）
 - `is_regression_sample`：是否纳入回归样本（0/1）
 - `fallback_reason`：进入人工链路原因（如感知拒绝）
@@ -44,13 +49,17 @@
 
 ## 4. 自动状态推进规则（Worker）
 
-1）任务正常完成（`status=COMPLETED`）：
+1）任务正常完成（`pipeline_status=COMPLETED`, `grading_status=SCORED`）：
 - 若 `report.requires_human_review=True` -> `review_status=PENDING_REVIEW`
 - 否则 -> `review_status=NOT_REQUIRED`
 
-2）感知层拒绝（`status=REJECTED`）：
+2）业务拒绝（`pipeline_status=COMPLETED`, `grading_status=REJECTED_UNREADABLE`）：
 - 强制 `review_status=PENDING_REVIEW`
 - `fallback_reason=PERCEPTION_SHORT_CIRCUIT:<readability_status>`
+
+3）系统失败（`pipeline_status=FAILED`）：
+- 进入重试 / DLQ 路径
+- 不进入人工复核待办池
 
 ---
 
@@ -61,7 +70,7 @@
 `GET /api/v1/tasks/pending-review`
 
 参数：
-- `status`（可选）：`COMPLETED` 或 `REJECTED`
+- `status`（可选）：`SCORED` 或 `REJECTED_UNREADABLE`（按 `grading_status` 过滤）
 - `page`（默认 1）
 - `limit`（默认 20）
 
@@ -90,6 +99,7 @@
 ## C. 任务详情接口补齐分流字段
 
 `GET /api/v1/grade/{task_id}` 现已返回：
+- `grading_status`
 - `review_status`
 - `fallback_reason`
 - `is_regression_sample`
@@ -111,7 +121,7 @@
 1）上传图片/PDF -> 获取 `task_id`  
 2）接入 SSE：`/api/v1/tasks/{task_id}/stream`  
 3）任务终态后查询：`/api/v1/grade/{task_id}`  
-4）若 `review_status=PENDING_REVIEW`，进入待办池视图  
+4）若 `pipeline_status=COMPLETED` 且 `review_status=PENDING_REVIEW`，进入待办池视图  
 5）教师提交人工修正：`POST /api/v1/tasks/{task_id}/review`  
 
 ---

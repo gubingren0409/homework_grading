@@ -1,6 +1,6 @@
 import pytest
 from src.cognitive.engines.deepseek_engine import DeepSeekCognitiveEngine
-from src.schemas.perception_ir import PerceptionOutput, ExtractedElement
+from src.schemas.perception_ir import PerceptionOutput, PerceptionNode
 from src.schemas.cognitive_ir import EvaluationReport
 from src.core.config import settings
 
@@ -20,19 +20,19 @@ async def test_deepseek_engine_logic_evaluation():
     mock_perception_output = PerceptionOutput(
         readability_status="CLEAR",
         elements=[
-            ExtractedElement(
+            PerceptionNode(
                 element_id="step_1",
                 content_type="latex_formula",
                 raw_content="2x = 4",
                 confidence_score=1.0
             ),
-            ExtractedElement(
+            PerceptionNode(
                 element_id="step_2",
                 content_type="latex_formula",
                 raw_content="x = 4 - 2",  # Logical/Conceptual Error injected here
                 confidence_score=1.0
             ),
-            ExtractedElement(
+            PerceptionNode(
                 element_id="step_3",
                 content_type="latex_formula",
                 raw_content="x = 2",      # Coincidentally correct final answer, but wrong path

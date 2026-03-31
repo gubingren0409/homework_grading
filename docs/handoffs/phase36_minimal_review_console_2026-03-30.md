@@ -22,7 +22,7 @@
 
 3. 待人工复核任务池  
 - 调用：`GET /api/v1/tasks/pending-review`
-- 支持过滤：`status=REJECTED|COMPLETED`
+- 支持过滤（按业务判定）：`status=REJECTED_UNREADABLE|SCORED`
 
 4. 提交人工复核  
 - 调用：`POST /api/v1/tasks/{task_id}/review`

@@ -68,7 +68,7 @@ async def task_status_stream(
         SSE events with task status updates
         
     Termination Conditions:
-        - Task reaches terminal state (COMPLETED, FAILED, REJECTED)
+        - Task reaches terminal state (COMPLETED, FAILED)
         - Timeout exceeded
         - Client disconnects
     
@@ -120,7 +120,7 @@ async def task_status_stream(
         last_status = task["status"]
         
         # Check if already terminal
-        if task["status"] in ["COMPLETED", "FAILED", "REJECTED"]:
+        if task["status"] in ["COMPLETED", "FAILED"]:
             logger.info(f"[SSE] Task {task_id} already in terminal state")
             yield {
                 "event": "complete",
@@ -167,7 +167,7 @@ async def task_status_stream(
                         last_poll_time = asyncio.get_event_loop().time()  # Reset poll timer
                         
                         # Terminate on terminal state
-                        if current_status in ["COMPLETED", "FAILED", "REJECTED"]:
+                        if current_status in ["COMPLETED", "FAILED"]:
                             logger.info(f"[SSE] Task {task_id} reached terminal state via Pub/Sub")
                             yield {
                                 "event": "complete",
@@ -205,7 +205,7 @@ async def task_status_stream(
                     last_status = current_status
                     
                     # Terminate on terminal state
-                    if current_status in ["COMPLETED", "FAILED", "REJECTED"]:
+                    if current_status in ["COMPLETED", "FAILED"]:
                         logger.info(f"[SSE] Task {task_id} reached terminal state via DB fallback")
                         yield {
                             "event": "complete",
@@ -231,9 +231,9 @@ async def task_status_stream(
         # Cleanup: Unsubscribe and close Redis connection
         if pubsub:
             await pubsub.unsubscribe(get_task_channel(task_id))
-            await pubsub.close()
+            await pubsub.aclose()
         if redis_client:
-            await redis_client.close()
+            await redis_client.aclose()
         logger.info(f"[SSE] Cleaned up Redis connection for task {task_id}")
 
 
@@ -262,7 +262,7 @@ async def _build_status_event(task: dict, source: str) -> dict:
     elif task["status"] == "COMPLETED":
         event_data["message"] = "Grading completed successfully"
     
-    elif task["status"] in ["FAILED", "REJECTED"]:
+    elif task["status"] == "FAILED":
         raw_error = task.get("error_message", "Unknown error")
         event_data["error"] = raw_error[:200]  # Truncate
     
@@ -328,7 +328,7 @@ async def publish_task_status(task_id: str, status: str, **kwargs) -> None:
     
     Args:
         task_id: Business task UUID
-        status: Task status (PENDING, PROCESSING, COMPLETED, FAILED, REJECTED)
+        status: Task status (PENDING, PROCESSING, COMPLETED, FAILED)
         **kwargs: Additional event data (progress, error, etc.)
     
     Example:
@@ -358,4 +358,4 @@ async def publish_task_status(task_id: str, status: str, **kwargs) -> None:
     
     finally:
         if redis_client:
-            await redis_client.close()
+            await redis_client.aclose()

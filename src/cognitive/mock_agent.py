@@ -3,6 +3,7 @@ from typing import Any
 from src.cognitive.base import BaseCognitiveAgent
 from src.schemas.perception_ir import PerceptionOutput
 from src.schemas.cognitive_ir import EvaluationReport, StepEvaluation
+from src.schemas.rubric_ir import TeacherRubric
 
 
 class MockCognitiveAgent(BaseCognitiveAgent):

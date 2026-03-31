@@ -48,7 +48,7 @@ async def test_full_pipeline_with_real_engines():
     
     # 3. Execution
     image_bytes = generate_e2e_test_image_bytes()
-    report = await workflow.run_pipeline(image_bytes)
+    report = await workflow.run_pipeline([(image_bytes, "e2e.jpg")])
     
     # 4. Resilient Assertions
     # Ensure it's the correct type

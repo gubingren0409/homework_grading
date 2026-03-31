@@ -10,9 +10,11 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from fakeredis import FakeStrictRedis
+from fastapi import Request, Response
 
 from src.worker.main import app as celery_app, grade_homework_task
 from src.db.client import create_task, get_task, init_db
+from src.core.storage_adapter import storage
 
 
 @pytest.fixture
@@ -41,15 +43,14 @@ async def test_serialization_boundary_bytes_to_int_list(fake_redis, test_db_path
     
     # Simulate API gateway payload construction
     fake_file_content = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"  # PNG header bytes
-    files_data = [
-        (list(fake_file_content), "test.png")  # Convert bytes to int list
-    ]
+    file_ref = storage.store_file(task_id, fake_file_content, "test.png")
+    payload = storage.prepare_payload([file_ref])
     
-    # Verify JSON serializability (this would fail if we passed raw bytes)
+    # Verify JSON serializability for queue payload
     try:
-        json.dumps(files_data)  # Should succeed
+        json.dumps(payload)  # Should succeed
     except TypeError:
-        pytest.fail("Serialization check failed: files_data contains non-JSON types")
+        pytest.fail("Serialization check failed: payload contains non-JSON types")
     
     # Verify Celery can accept this payload
     await create_task(test_db_path, task_id)
@@ -73,7 +74,7 @@ async def test_serialization_boundary_bytes_to_int_list(fake_redis, test_db_path
         mock_workflow_factory.return_value = mock_workflow
         
         # Execute task synchronously (bypasses broker but tests serialization)
-        result = grade_homework_task(task_id, files_data, test_db_path)
+        result = grade_homework_task(task_id, payload, test_db_path)
         
         assert result["status"] == "success"
         assert mock_workflow.run_pipeline.called
@@ -135,19 +136,29 @@ async def test_polling_endpoint_contract_pending_status(test_db_path):
     This ensures frontend can display meaningful waiting indicators.
     """
     from src.api.routes import get_job_status_and_results
-    from fastapi import Request
-    
     task_id = "test-polling-001"
     await create_task(test_db_path, task_id)
-    
-    # Mock FastAPI request object
-    mock_request = AsyncMock(spec=Request)
-    
-    response = await get_job_status_and_results(mock_request, task_id, test_db_path)
-    
-    assert response.status == "PENDING"
-    assert response.progress is not None, "PENDING tasks must include progress field"
-    assert response.eta_seconds is not None, "PENDING tasks must include ETA"
+
+    request = Request(
+        scope={
+            "type": "http",
+            "method": "GET",
+            "path": f"/api/v1/grade/{task_id}",
+            "headers": [],
+            "query_string": b"",
+            "client": ("127.0.0.1", 12345),
+            "server": ("testserver", 80),
+            "scheme": "http",
+        }
+    )
+    response = Response()
+    result = await get_job_status_and_results(request, response, task_id, test_db_path)
+
+    assert response.status_code == 200
+    assert response.headers.get("ETag")
+    assert result.status == "PENDING"
+    assert result.progress is not None, "PENDING tasks must include progress field"
+    assert result.eta_seconds is not None, "PENDING tasks must include ETA"
 
 
 @pytest.mark.asyncio
@@ -158,8 +169,6 @@ async def test_polling_endpoint_sanitizes_internal_errors(test_db_path):
     Expected: Raw Python exceptions replaced with sanitized error_code.
     """
     from src.api.routes import get_job_status_and_results
-    from fastapi import Request
-    
     task_id = "test-error-001"
     await create_task(test_db_path, task_id)
     
@@ -176,9 +185,21 @@ ValueError: secret API key exposed"""
         )
         await db.commit()
     
-    mock_request = AsyncMock(spec=Request)
-    response = await get_job_status_and_results(mock_request, task_id, test_db_path)
-    
-    assert response.error_code == "INTERNAL_ERROR"
-    assert "Traceback" not in response.error_message, "Must NOT leak stack traces"
-    assert "secret" not in response.error_message.lower(), "Must NOT leak secrets"
+    request = Request(
+        scope={
+            "type": "http",
+            "method": "GET",
+            "path": f"/api/v1/grade/{task_id}",
+            "headers": [],
+            "query_string": b"",
+            "client": ("127.0.0.1", 12345),
+            "server": ("testserver", 80),
+            "scheme": "http",
+        }
+    )
+    response = Response()
+    result = await get_job_status_and_results(request, response, task_id, test_db_path)
+
+    assert result.error_code == "INTERNAL_ERROR"
+    assert "Traceback" not in result.error_message, "Must NOT leak stack traces"
+    assert "secret" not in result.error_message.lower(), "Must NOT leak secrets"
