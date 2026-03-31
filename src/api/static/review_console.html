@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>AI 批改双轨复核台</title>
+  <title>AI 批改双轨终端台</title>
   <style>
     body { font-family: Arial, sans-serif; margin: 24px; background: #f7f7f9; color: #222; }
     h1 { margin-bottom: 8px; }
@@ -11,7 +11,7 @@
     .card { background: #fff; border: 1px solid #ddd; border-radius: 8px; padding: 14px; margin-bottom: 14px; }
     .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
     input[type="text"], textarea, select { width: 100%; padding: 8px; border: 1px solid #bbb; border-radius: 6px; }
-    textarea { min-height: 130px; font-family: Consolas, monospace; }
+    textarea { min-height: 120px; font-family: Consolas, monospace; }
     button { padding: 8px 12px; border: none; border-radius: 6px; background: #1f6feb; color: white; cursor: pointer; }
     button.secondary { background: #555; }
     button:disabled { background: #9bb7e0; cursor: not-allowed; }
@@ -22,13 +22,12 @@
     table { width: 100%; border-collapse: collapse; }
     th, td { border: 1px solid #ddd; padding: 8px; text-align: left; vertical-align: top; }
     th { background: #f2f2f2; }
-    code { background: #f0f0f0; padding: 2px 6px; border-radius: 4px; }
     .mono { font-family: Consolas, monospace; }
   </style>
 </head>
 <body>
-  <h1>AI 批改双轨复核台</h1>
-  <div class="small">目标：先生成 Rubric（标准答案）→ 再上传学生作答并绑定 Rubric → SSE看状态 → 进入待复核池</div>
+  <h1>AI 批改双轨终端台</h1>
+  <div class="small">视图A用于卫生阻断流；视图B用于教学反馈资产流。两条管线严格隔离。</div>
 
   <div class="card">
     <h2>1) 标准答案上传（生成 Rubric）</h2>
@@ -44,7 +43,7 @@
       <select id="rubricSelect"></select>
       <button id="loadRubricBtn" class="secondary" type="button">查看 Rubric</button>
     </div>
-    <textarea id="rubricPreview" class="small mono" readonly style="margin-top: 10px; min-height: 120px;"></textarea>
+    <textarea id="rubricPreview" class="small mono" readonly style="margin-top: 10px;"></textarea>
   </div>
 
   <div class="card">
@@ -54,7 +53,7 @@
       <input id="selectedRubricId" type="text" placeholder="rubric_id（可从上方列表自动填充）" />
       <label class="small" style="display:block; margin-top:8px;">
         <input id="batchPerFile" type="checkbox" checked />
-        批量模式：多文件时“每个文件单独创建一个任务”（用于多份作业）
+        批量模式：多文件时每个文件单独创建任务
       </label>
       <div class="row" style="margin-top: 10px;">
         <button id="uploadBtn" type="submit">提交批改任务</button>
@@ -68,7 +67,7 @@
   <div class="card">
     <h2>3) 实时状态（SSE）</h2>
     <div class="row">
-      <input id="taskIdInput" type="text" placeholder="输入 task_id（上传后会自动填充）" />
+      <input id="taskIdInput" type="text" placeholder="输入 task_id（上传后自动填充）" />
       <button id="watchBtn">开始监听</button>
       <button id="stopBtn" class="secondary">停止监听</button>
     </div>
@@ -76,47 +75,90 @@
   </div>
 
   <div class="card">
-    <h2>4) 待人工复核任务池</h2>
+    <h2>4) 视图A：卫生阻断列表（运维）</h2>
     <div class="row">
-      <select id="pendingFilter">
-        <option value="">全部（PENDING_REVIEW）</option>
-        <option value="REJECTED">仅 REJECTED</option>
-        <option value="COMPLETED">仅 COMPLETED</option>
+      <select id="hygieneFilter">
+        <option value="">全部</option>
+        <option value="blank">blank</option>
+        <option value="short_circuit">short_circuit</option>
+        <option value="unreadable">unreadable</option>
       </select>
-      <button id="refreshPendingBtn">刷新待办</button>
+      <button id="refreshHygieneBtn">刷新阻断列表</button>
+      <button id="bulkDiscardBtn" class="secondary">批量标记丢弃</button>
+      <button id="bulkManualBtn" class="secondary">批量标记人工接管</button>
     </div>
     <table style="margin-top: 10px;">
       <thead>
         <tr>
+          <th>选中</th>
+          <th>id</th>
+          <th>trace_id</th>
           <th>task_id</th>
-          <th>status</th>
-          <th>rubric_id</th>
-          <th>review_status</th>
-          <th>fallback_reason</th>
-          <th>error_message</th>
+          <th>interception_node</th>
+          <th>raw_image_path</th>
+          <th>action</th>
           <th>操作</th>
         </tr>
       </thead>
-      <tbody id="pendingBody"></tbody>
+      <tbody id="hygieneBody"></tbody>
     </table>
   </div>
 
   <div class="card">
-    <h2>5) 提交人工修正</h2>
+    <h2>5) 视图B：教学反馈资产（无手写OCR）</h2>
     <div class="row">
-      <input id="reviewTaskId" type="text" placeholder="task_id（可从待办列表一键填入）" />
-      <label><input id="regressionFlag" type="checkbox" /> 纳入回归样本</label>
+      <input id="annotationTaskId" type="text" placeholder="task_id（仅 SCORED）" />
+      <input id="annotationRegionId" type="text" value="region_1" placeholder="region_id" />
+      <select id="annotationRegionType">
+        <option value="answer_region">answer_region</option>
+        <option value="question_region">question_region</option>
+      </select>
     </div>
-    <div class="small" style="margin: 8px 0;">human_feedback_json（建议含 before/after/diff）</div>
-    <textarea id="feedbackJson">{
-  "before": {"score": 6, "comment": "模型评语"},
-  "after": {"score": 8, "comment": "教师修正评语"},
-  "diff": ["撤销第2扣分点", "修正评语语气"]
+    <div class="row" style="margin-top: 8px;">
+      <input id="annotationWidth" type="text" value="1000" placeholder="image_width" />
+      <input id="annotationHeight" type="text" value="1000" placeholder="image_height" />
+      <input id="bboxX1" type="text" value="100" placeholder="bbox.x1" />
+      <input id="bboxY1" type="text" value="100" placeholder="bbox.y1" />
+      <input id="bboxX2" type="text" value="400" placeholder="bbox.x2" />
+      <input id="bboxY2" type="text" value="300" placeholder="bbox.y2" />
+    </div>
+    <div class="row" style="margin-top: 8px;">
+      <input id="expectedScore" type="text" value="8" placeholder="expected_score" />
+      <label><input id="integratedFlag" type="checkbox" /> 直接纳入黄金数据集</label>
+    </div>
+    <div class="small" style="margin: 8px 0;">teacher_text_feedback</div>
+    <textarea id="teacherFeedbackText">第2步计算符号错误，建议更正后该小问得 8 分。</textarea>
+    <div class="small" style="margin: 8px 0;">PerceptionIR Snapshot（必须含 regions）</div>
+    <textarea id="perceptionSnapshotJson">{
+  "context_type": "STUDENT_ANSWER",
+  "regions": [
+    {
+      "target_id": "region_1",
+      "region_type": "answer_region",
+      "bbox": {"x_min": 0.1, "y_min": 0.1, "x_max": 0.5, "y_max": 0.4}
+    }
+  ]
+}</textarea>
+    <div class="small" style="margin: 8px 0;">CognitiveIR Snapshot（step_evaluations 必须锚定 region_id）</div>
+    <textarea id="cognitiveSnapshotJson">{
+  "status": "SCORED",
+  "step_evaluations": [
+    {
+      "reference_element_id": "region_1",
+      "is_correct": false,
+      "error_type": "CALCULATION",
+      "correction_suggestion": "修正符号后可得满分。"
+    }
+  ],
+  "overall_feedback": "存在局部扣分点"
 }</textarea>
     <div class="row" style="margin-top: 10px;">
-      <button id="submitReviewBtn">提交人工复核</button>
+      <button id="submitAnnotationBtn">提交教学反馈资产</button>
+      <button id="refreshAssetsBtn" class="secondary">刷新资产列表</button>
     </div>
-    <div id="reviewResult" class="small" style="margin-top: 10px;"></div>
+    <div id="annotationResult" class="small" style="margin-top: 10px;"></div>
+    <div class="small" style="margin-top: 8px;">已入库资产（最新 20 条）</div>
+    <textarea id="assetsPreview" class="small mono" readonly style="margin-top: 6px;"></textarea>
   </div>
 
   <script>
@@ -163,7 +205,7 @@
         const resp = await fetch("/api/v1/rubric/generate", { method: "POST", body: fd });
         if (!resp.ok) throw new Error("HTTP " + resp.status);
         const data = await resp.json();
-        resultEl.textContent = `Rubric 生成成功: ${data.rubric_id} (question_id=${data.question_id || "-"})`;
+        resultEl.textContent = `Rubric 生成成功: ${data.rubric_id}`;
         resultEl.className = "small ok";
         document.getElementById("selectedRubricId").value = data.rubric_id;
         await loadRubrics();
@@ -254,10 +296,10 @@
           submittedEl.value = lines.join("\n");
           if (firstTaskId) {
             document.getElementById("taskIdInput").value = firstTaskId;
-            document.getElementById("reviewTaskId").value = firstTaskId;
+            document.getElementById("annotationTaskId").value = firstTaskId;
           }
           if (ok > 0) {
-            resultEl.textContent = `批量提交完成：共 ${files.length} 份，成功 ${ok} 份。可从下方 task_id 列表逐个监听。`;
+            resultEl.textContent = `批量提交完成：共 ${files.length} 份，成功 ${ok} 份。`;
             resultEl.className = "small ok";
           } else {
             resultEl.textContent = "批量提交失败：没有成功创建任务。";
@@ -267,14 +309,14 @@
           const data = await submitOneTask(files);
           created.push(data.task_id);
           submittedEl.value = `${files.map(f => f.name).join(", ")}\t${data.task_id}`;
-          resultEl.textContent = `提交成功，task_id=${data.task_id}，rubric_id=${data.rubric_id || "-"}`;
+          resultEl.textContent = `提交成功，task_id=${data.task_id}`;
           resultEl.className = "small ok";
           document.getElementById("taskIdInput").value = data.task_id;
-          document.getElementById("reviewTaskId").value = data.task_id;
+          document.getElementById("annotationTaskId").value = data.task_id;
         }
 
         if (created.length) {
-          await refreshPending();
+          await refreshHygiene();
         }
       } catch (e) {
         resultEl.textContent = "提交失败: " + e;
@@ -312,94 +354,127 @@
       });
 
       es.addEventListener("complete", async (ev) => {
-        setStatus("任务完成，准备查询详情并判断是否进入复核池...\n" + ev.data, "ok");
+        setStatus("任务完成\n" + ev.data, "ok");
         stopSSE();
-        await fetchTaskDetail(taskId);
-        await refreshPending();
+        await refreshHygiene();
       });
 
-      es.addEventListener("error", (ev) => {
-        setStatus("SSE 异常或已断开，请检查服务日志。", "err");
+      es.addEventListener("error", () => {
+        setStatus("SSE 异常或已断开。", "err");
       });
     }
 
-    async function fetchTaskDetail(taskId) {
-      const resp = await fetch(`/api/v1/grade/${taskId}`);
-      if (!resp.ok) return;
-      const d = await resp.json();
-      const lines = [
-        "任务详情：",
-        `status=${d.status}`,
-        `review_status=${d.review_status}`,
-        `fallback_reason=${d.fallback_reason || "-"}`,
-      ];
-      setStatus(lines.join("\n"), d.review_status === "PENDING_REVIEW" ? "warn" : "ok");
-    }
-
-    function renderPendingRows(items) {
-      const body = document.getElementById("pendingBody");
+    function renderHygieneRows(items) {
+      const body = document.getElementById("hygieneBody");
       body.innerHTML = "";
       for (const it of items) {
         const tr = document.createElement("tr");
         tr.innerHTML = `
-          <td class="mono">${it.task_id}</td>
-          <td>${it.status}</td>
-          <td class="mono">${it.rubric_id || ""}</td>
-          <td>${it.review_status}</td>
-          <td class="mono">${it.fallback_reason || ""}</td>
-          <td class="mono">${it.error_message || ""}</td>
-          <td><button data-task="${it.task_id}">选中</button></td>
+          <td><input type="checkbox" class="hygiene-check" data-id="${it.id}" /></td>
+          <td>${it.id}</td>
+          <td class="mono">${it.trace_id}</td>
+          <td class="mono">${it.task_id || ""}</td>
+          <td>${it.interception_node}</td>
+          <td class="mono">${it.raw_image_path || ""}</td>
+          <td>${it.action}</td>
+          <td>
+            <button data-id="${it.id}" data-action="discard" class="secondary">丢弃</button>
+            <button data-id="${it.id}" data-action="manual_review" class="secondary">人工接管</button>
+          </td>
         `;
-        tr.querySelector("button").addEventListener("click", () => {
-          document.getElementById("reviewTaskId").value = it.task_id;
-          document.getElementById("taskIdInput").value = it.task_id;
+        tr.querySelectorAll("button").forEach((btn) => {
+          btn.addEventListener("click", async () => {
+            const id = btn.getAttribute("data-id");
+            const action = btn.getAttribute("data-action");
+            await fetch(`/api/v1/hygiene/interceptions/${id}/action`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ action })
+            });
+            await refreshHygiene();
+          });
         });
         body.appendChild(tr);
       }
       if (!items.length) {
         const tr = document.createElement("tr");
-        tr.innerHTML = `<td colspan="7" class="small">暂无待复核任务</td>`;
+        tr.innerHTML = `<td colspan="8" class="small">暂无卫生阻断记录</td>`;
         body.appendChild(tr);
       }
     }
 
-    async function refreshPending() {
-      const filter = document.getElementById("pendingFilter").value;
+    async function refreshHygiene() {
+      const filter = document.getElementById("hygieneFilter").value;
       const qs = new URLSearchParams({ page: "1", limit: "50" });
-      if (filter) qs.set("status", filter);
-      const resp = await fetch(`/api/v1/tasks/pending-review?${qs.toString()}`);
+      if (filter) qs.set("interception_node", filter);
+      const resp = await fetch(`/api/v1/hygiene/interceptions?${qs.toString()}`);
       if (!resp.ok) {
-        renderPendingRows([]);
+        renderHygieneRows([]);
         return;
       }
       const data = await resp.json();
-      renderPendingRows(data);
+      renderHygieneRows(data);
     }
 
-    async function submitReview() {
-      const taskId = document.getElementById("reviewTaskId").value.trim();
-      const feedbackText = document.getElementById("feedbackJson").value.trim();
-      const regression = document.getElementById("regressionFlag").checked;
-      const resultEl = document.getElementById("reviewResult");
-      if (!taskId) {
-        resultEl.textContent = "请先输入 task_id。";
+    function getSelectedHygieneIds() {
+      const checks = Array.from(document.querySelectorAll(".hygiene-check:checked"));
+      return checks.map((x) => Number(x.getAttribute("data-id"))).filter((x) => Number.isInteger(x));
+    }
+
+    async function bulkHygieneUpdate(action) {
+      const ids = getSelectedHygieneIds();
+      if (!ids.length) return;
+      await fetch("/api/v1/hygiene/interceptions/bulk-action", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ record_ids: ids, action })
+      });
+      await refreshHygiene();
+    }
+
+    async function submitAnnotationFeedback() {
+      const taskId = document.getElementById("annotationTaskId").value.trim();
+      const regionId = document.getElementById("annotationRegionId").value.trim();
+      const regionType = document.getElementById("annotationRegionType").value;
+      const resultEl = document.getElementById("annotationResult");
+      if (!taskId || !regionId) {
+        resultEl.textContent = "请先填写 task_id 与 region_id。";
         resultEl.className = "small err";
         return;
       }
-      let feedbackObj;
+
+      let perceptionSnapshot;
+      let cognitiveSnapshot;
       try {
-        feedbackObj = JSON.parse(feedbackText);
+        perceptionSnapshot = JSON.parse(document.getElementById("perceptionSnapshotJson").value.trim());
+        cognitiveSnapshot = JSON.parse(document.getElementById("cognitiveSnapshotJson").value.trim());
       } catch (e) {
-        resultEl.textContent = "feedback JSON 格式错误: " + e;
+        resultEl.textContent = "Snapshot JSON 格式错误: " + e;
         resultEl.className = "small err";
         return;
       }
+
       const payload = {
-        human_feedback_json: feedbackObj,
-        is_regression_sample: regression
+        task_id: taskId,
+        region_id: regionId,
+        region_type: regionType,
+        image_width: Number(document.getElementById("annotationWidth").value),
+        image_height: Number(document.getElementById("annotationHeight").value),
+        bbox: {
+          x1: Number(document.getElementById("bboxX1").value),
+          y1: Number(document.getElementById("bboxY1").value),
+          x2: Number(document.getElementById("bboxX2").value),
+          y2: Number(document.getElementById("bboxY2").value),
+        },
+        teacher_text_feedback: document.getElementById("teacherFeedbackText").value.trim(),
+        expected_score: Number(document.getElementById("expectedScore").value),
+        perception_ir_snapshot: perceptionSnapshot,
+        cognitive_ir_snapshot: cognitiveSnapshot,
+        is_integrated_to_dataset: document.getElementById("integratedFlag").checked
       };
+
       try {
-        const resp = await fetch(`/api/v1/tasks/${taskId}/review`, {
+        const resp = await fetch("/api/v1/annotations/feedback", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload)
@@ -408,11 +483,22 @@
         if (!resp.ok) throw new Error("HTTP " + resp.status + " " + text);
         resultEl.textContent = "提交成功: " + text;
         resultEl.className = "small ok";
-        await refreshPending();
+        await refreshAssets();
       } catch (e) {
         resultEl.textContent = "提交失败: " + e;
         resultEl.className = "small err";
       }
+    }
+
+    async function refreshAssets() {
+      const resp = await fetch("/api/v1/annotations/assets?page=1&limit=20");
+      const preview = document.getElementById("assetsPreview");
+      if (!resp.ok) {
+        preview.value = "加载资产列表失败";
+        return;
+      }
+      const arr = await resp.json();
+      preview.value = JSON.stringify(arr, null, 2);
     }
 
     document.getElementById("uploadForm").addEventListener("submit", submitUpload);
@@ -421,12 +507,15 @@
     document.getElementById("loadRubricBtn").addEventListener("click", loadRubricDetail);
     document.getElementById("watchBtn").addEventListener("click", watchTask);
     document.getElementById("stopBtn").addEventListener("click", () => { stopSSE(); setStatus("已手动停止监听。", "warn"); });
-    document.getElementById("refreshPendingBtn").addEventListener("click", refreshPending);
-    document.getElementById("submitReviewBtn").addEventListener("click", submitReview);
+    document.getElementById("refreshHygieneBtn").addEventListener("click", refreshHygiene);
+    document.getElementById("bulkDiscardBtn").addEventListener("click", () => bulkHygieneUpdate("discard"));
+    document.getElementById("bulkManualBtn").addEventListener("click", () => bulkHygieneUpdate("manual_review"));
+    document.getElementById("submitAnnotationBtn").addEventListener("click", submitAnnotationFeedback);
+    document.getElementById("refreshAssetsBtn").addEventListener("click", refreshAssets);
 
     loadRubrics();
-    refreshPending();
+    refreshHygiene();
+    refreshAssets();
   </script>
 </body>
 </html>
-

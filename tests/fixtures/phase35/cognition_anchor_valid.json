@@ -1,0 +1,16 @@
+{
+  "status": "SCORED",
+  "step_evaluations": [
+    {
+      "reference_element_id": "region_A",
+      "is_correct": false,
+      "error_type": "CALCULATION"
+    },
+    {
+      "reference_element_id": "region_B",
+      "is_correct": false,
+      "error_type": "LOGIC"
+    }
+  ],
+  "overall_feedback": "存在定位明确的扣分点"
+}

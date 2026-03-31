@@ -125,6 +125,7 @@ class GradingWorkflow:
         # Step 3: Handle Blank Page Short-circuit (Phase 26)
         if all_pages_blank:
             return EvaluationReport(
+                status="REJECTED_UNREADABLE",
                 is_fully_correct=False,
                 total_score_deduction=0.0,
                 step_evaluations=[],

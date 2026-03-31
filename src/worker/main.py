@@ -29,6 +29,7 @@ from src.core.config import settings
 from src.core.exceptions import PerceptionShortCircuitError
 from src.core.storage_adapter import storage
 from src.db.client import update_task_status, save_grading_result
+from src.db.client import create_hygiene_interception_record
 from src.orchestration.workflow import GradingWorkflow
 from src.perception.engines.qwen_engine import QwenVLMPerceptionEngine
 from src.cognitive.engines.deepseek_engine import DeepSeekCognitiveEngine
@@ -39,6 +40,25 @@ from src.schemas.rubric_ir import TeacherRubric
 
 logger = logging.getLogger(__name__)
 configure_json_logging(level=logging.INFO)
+
+# Pipeline status (execution) and grading status (business outcome) are projected separately.
+def _project_statuses(report: Any) -> tuple[str, str]:
+    grading_status = str(getattr(report, "status", "SCORED"))
+    if grading_status == "REJECTED_UNREADABLE":
+        return "COMPLETED", "PENDING_REVIEW"
+    requires_review = bool(getattr(report, "requires_human_review", False))
+    return "COMPLETED", ("PENDING_REVIEW" if requires_review else "NOT_REQUIRED")
+
+
+def _derive_interception_node(report: Any) -> str:
+    """
+    Infer hygiene interception node for rejected unreadable outputs.
+    """
+    feedback = str(getattr(report, "overall_feedback", "") or "")
+    if "空白卷" in feedback or "未作答" in feedback:
+        return "blank"
+    return "short_circuit"
+
 
 # Celery Application Initialization
 app = Celery(
@@ -210,18 +230,42 @@ def grade_homework_task(
         # Step 5: Persist results
         student_id = reconstructed_files[0][1] if reconstructed_files else task_id
         run_async(save_grading_result(db_path, task_id, student_id, report))
-        review_status = "PENDING_REVIEW" if getattr(report, "requires_human_review", False) else "NOT_REQUIRED"
+        pipeline_status, review_status = _project_statuses(report)
+        grading_status = str(getattr(report, "status", "SCORED"))
+        if grading_status == "REJECTED_UNREADABLE":
+            first_raw_ref = file_refs[0] if file_refs else None
+            run_async(
+                create_hygiene_interception_record(
+                    db_path,
+                    trace_id=get_trace_id(),
+                    task_id=task_id,
+                    interception_node=_derive_interception_node(report),
+                    raw_image_path=first_raw_ref,
+                    action="manual_review",
+                )
+            )
         run_async(
             update_task_status(
                 db_path,
                 task_id,
-                "COMPLETED",
+                pipeline_status,
+                grading_status=grading_status,
                 review_status=review_status,
             )
         )
-        logger.info("task_status_persisted", extra={"extra_fields": {"status": "COMPLETED"}})
+        logger.info(
+            "task_status_persisted",
+            extra={"extra_fields": {"status": pipeline_status, "grading_status": grading_status}},
+        )
         # Phase 33: Publish completion event to Redis Pub/Sub
-        run_async(_publish_status(task_id, "COMPLETED", message="Grading completed successfully"))
+        run_async(
+            _publish_status(
+                task_id,
+                pipeline_status,
+                grading_status=grading_status,
+                message="Grading completed successfully",
+            )
+        )
 
         # Step 6: Cleanup via storage adapter (Phase 32)
         storage.cleanup_task(task_id)
@@ -232,19 +276,42 @@ def grade_homework_task(
     except PerceptionShortCircuitError as e:
         # Defensive rejection (HEAVILY_ALTERED, UNREADABLE, blank detection)
         logger.warning(f"[Worker] Task {task_id} rejected by perception layer: {e}")
+        first_raw_ref = payload.get("file_refs", [None])[0] if isinstance(payload, dict) else None
+        node = "unreadable" if str(e.readability_status).upper() == "UNREADABLE" else "short_circuit"
+        run_async(
+            create_hygiene_interception_record(
+                db_path,
+                trace_id=get_trace_id(),
+                task_id=task_id,
+                interception_node=node,
+                raw_image_path=first_raw_ref,
+                action="manual_review",
+            )
+        )
         run_async(
             update_task_status(
                 db_path,
                 task_id,
-                "REJECTED",
+                "COMPLETED",
                 error=f"Perception short-circuit: {e.readability_status}",
+                grading_status="REJECTED_UNREADABLE",
                 review_status="PENDING_REVIEW",
                 fallback_reason=f"PERCEPTION_SHORT_CIRCUIT:{e.readability_status}",
             )
         )
-        logger.info("task_status_persisted", extra={"extra_fields": {"status": "REJECTED"}})
+        logger.info(
+            "task_status_persisted",
+            extra={"extra_fields": {"status": "COMPLETED", "grading_status": "REJECTED_UNREADABLE"}},
+        )
         # Phase 33: Publish rejection event to Redis Pub/Sub
-        run_async(_publish_status(task_id, "REJECTED", error=str(e)))
+        run_async(
+            _publish_status(
+                task_id,
+                "COMPLETED",
+                grading_status="REJECTED_UNREADABLE",
+                error=str(e),
+            )
+        )
         # Cleanup on rejection
         storage.cleanup_task(task_id)
         return {"status": "rejected", "reason": str(e)}
@@ -287,7 +354,7 @@ async def _publish_status(task_id: str, status: str, **kwargs) -> None:
     
     Args:
         task_id: Business task UUID
-        status: Task status (PENDING, PROCESSING, COMPLETED, FAILED, REJECTED)
+        status: Task status (PENDING, PROCESSING, COMPLETED, FAILED)
         **kwargs: Additional event data (progress, error, message, etc.)
     """
     import redis.asyncio as aioredis
@@ -318,7 +385,7 @@ async def _publish_status(task_id: str, status: str, **kwargs) -> None:
     
     finally:
         if redis_client:
-            await redis_client.close()
+            await redis_client.aclose()
 
 
 def _route_to_dlq(task_id: str, payload: Dict[str, Any], db_path: str, error: str) -> None:

@@ -126,6 +126,7 @@ async def init_db(db_path: str) -> None:
         await db.executescript(schema_script)
         await _ensure_tasks_columns(db, include_celery=True)
         await _ensure_rubrics_schema(db)
+        await _ensure_domain_split_tables(db)
 
     await _execute_write_with_retry(db_path, _op)
 
@@ -150,6 +151,9 @@ async def _ensure_tasks_columns(db: aiosqlite.Connection, *, include_celery: boo
     if "rubric_id" not in column_names:
         await db.execute("ALTER TABLE tasks ADD COLUMN rubric_id TEXT")
         column_names.add("rubric_id")
+    if "grading_status" not in column_names:
+        await db.execute("ALTER TABLE tasks ADD COLUMN grading_status TEXT")
+        column_names.add("grading_status")
 
     if "review_status" not in column_names:
         await db.execute(
@@ -169,6 +173,7 @@ async def _ensure_tasks_columns(db: aiosqlite.Connection, *, include_celery: boo
         column_names.add("fallback_reason")
 
     await db.execute("CREATE INDEX IF NOT EXISTS idx_review_status ON tasks(review_status)")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_grading_status ON tasks(grading_status)")
     await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_rubric_id ON tasks(rubric_id)")
 
 
@@ -187,6 +192,56 @@ async def _ensure_rubrics_schema(db: aiosqlite.Connection) -> None:
         """
     )
     await db.execute("CREATE INDEX IF NOT EXISTS idx_rubrics_created_at ON rubrics(created_at)")
+
+
+async def _ensure_domain_split_tables(db: aiosqlite.Connection) -> None:
+    """
+    Phase 38:
+    Ensure physically isolated hygiene + golden asset tables exist for
+    data hygiene pipeline and teacher annotation asset pipeline.
+    """
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS hygiene_interception_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            trace_id TEXT NOT NULL,
+            task_id TEXT,
+            interception_node TEXT NOT NULL
+                CHECK (interception_node IN ('blank', 'short_circuit', 'unreadable')),
+            raw_image_path TEXT,
+            action TEXT NOT NULL
+                CHECK (action IN ('discard', 'manual_review')),
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS golden_annotation_assets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            trace_id TEXT NOT NULL,
+            task_id TEXT NOT NULL,
+            region_id TEXT NOT NULL,
+            region_type TEXT NOT NULL
+                CHECK (region_type IN ('question_region', 'answer_region')),
+            image_width INTEGER NOT NULL CHECK (image_width > 0),
+            image_height INTEGER NOT NULL CHECK (image_height > 0),
+            bbox_coordinates TEXT NOT NULL,
+            perception_ir_snapshot TEXT NOT NULL,
+            cognitive_ir_snapshot TEXT NOT NULL,
+            teacher_text_feedback TEXT NOT NULL,
+            expected_score REAL NOT NULL,
+            is_integrated_to_dataset INTEGER NOT NULL DEFAULT 0 CHECK (is_integrated_to_dataset IN (0, 1)),
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_hygiene_trace_id ON hygiene_interception_log(trace_id)")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_hygiene_created_at ON hygiene_interception_log(created_at)")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_golden_trace_id ON golden_annotation_assets(trace_id)")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_golden_task_id ON golden_annotation_assets(task_id)")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_golden_region_id ON golden_annotation_assets(region_id)")
 
 
 async def create_task(db_path: str, task_id: str) -> None:
@@ -217,6 +272,7 @@ async def update_task_status(
     status: str,
     error: Optional[str] = None,
     *,
+    grading_status: Optional[str] = None,
     review_status: Optional[str] = None,
     fallback_reason: Optional[str] = None,
 ) -> None:
@@ -230,6 +286,9 @@ async def update_task_status(
         if review_status is not None:
             assignments.append("review_status = ?")
             params.append(review_status)
+        if grading_status is not None:
+            assignments.append("grading_status = ?")
+            params.append(grading_status)
         if fallback_reason is not None:
             assignments.append("fallback_reason = ?")
             params.append(fallback_reason)
@@ -267,21 +326,21 @@ async def get_task(db_path: str, task_id: str) -> Optional[Dict[str, Any]]:
 async def list_pending_review_tasks(
     db_path: str,
     *,
-    status_filter: Optional[str] = None,
+    grading_status_filter: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
 ) -> List[Dict[str, Any]]:
     async with _open_connection(db_path) as db:
         db.row_factory = aiosqlite.Row
         sql = (
-            "SELECT task_id, status, rubric_id, review_status, error_message, fallback_reason, "
+            "SELECT task_id, status, grading_status, rubric_id, review_status, error_message, fallback_reason, "
             "is_regression_sample, created_at, updated_at "
             "FROM tasks WHERE review_status = 'PENDING_REVIEW'"
         )
         params: List[Any] = []
-        if status_filter:
-            sql += " AND status = ?"
-            params.append(status_filter)
+        if grading_status_filter:
+            sql += " AND grading_status = ?"
+            params.append(grading_status_filter)
         sql += " ORDER BY updated_at DESC LIMIT ? OFFSET ?"
         params.extend([limit, offset])
         async with db.execute(sql, tuple(params)) as cursor:
@@ -311,6 +370,227 @@ async def submit_task_review(
         )
 
     await _execute_write_with_retry(db_path, _op)
+
+
+async def list_regression_samples(
+    db_path: str,
+    *,
+    limit: int = 50,
+    offset: int = 0,
+) -> List[Dict[str, Any]]:
+    async with _open_connection(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        sql = (
+            "SELECT task_id, status, grading_status, review_status, rubric_id, human_feedback_json, "
+            "fallback_reason, created_at, updated_at "
+            "FROM tasks "
+            "WHERE is_regression_sample = 1 "
+            "ORDER BY updated_at DESC "
+            "LIMIT ? OFFSET ?"
+        )
+        async with db.execute(sql, (limit, offset)) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+
+async def create_hygiene_interception_record(
+    db_path: str,
+    *,
+    trace_id: str,
+    task_id: Optional[str],
+    interception_node: str,
+    raw_image_path: Optional[str],
+    action: str,
+) -> None:
+    """
+    Insert one hygiene interception record into physically isolated hygiene table.
+    """
+    async def _op(db: aiosqlite.Connection) -> None:
+        await _ensure_domain_split_tables(db)
+        await db.execute(
+            """
+            INSERT INTO hygiene_interception_log
+            (trace_id, task_id, interception_node, raw_image_path, action)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (trace_id, task_id, interception_node, raw_image_path, action),
+        )
+
+    await _execute_write_with_retry(db_path, _op)
+
+
+async def list_hygiene_interceptions(
+    db_path: str,
+    *,
+    interception_node_filter: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> List[Dict[str, Any]]:
+    async with _open_connection(db_path) as db:
+        await _ensure_domain_split_tables(db)
+        db.row_factory = aiosqlite.Row
+        sql = (
+            "SELECT id, trace_id, task_id, interception_node, raw_image_path, action, created_at "
+            "FROM hygiene_interception_log WHERE 1=1"
+        )
+        params: List[Any] = []
+        if interception_node_filter:
+            sql += " AND interception_node = ?"
+            params.append(interception_node_filter)
+        sql += " ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        async with db.execute(sql, tuple(params)) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+
+async def get_hygiene_interception_by_id(
+    db_path: str,
+    *,
+    record_id: int,
+) -> Optional[Dict[str, Any]]:
+    async with _open_connection(db_path) as db:
+        await _ensure_domain_split_tables(db)
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """
+            SELECT id, trace_id, task_id, interception_node, raw_image_path, action, created_at
+            FROM hygiene_interception_log
+            WHERE id = ?
+            """,
+            (record_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+
+async def update_hygiene_interception_action(
+    db_path: str,
+    *,
+    record_id: int,
+    action: str,
+) -> bool:
+    async def _op(db: aiosqlite.Connection) -> None:
+        await _ensure_domain_split_tables(db)
+        await db.execute(
+            "UPDATE hygiene_interception_log SET action = ? WHERE id = ?",
+            (action, record_id),
+        )
+
+    await _execute_write_with_retry(db_path, _op)
+    row = await get_hygiene_interception_by_id(db_path, record_id=record_id)
+    return bool(row)
+
+
+async def bulk_update_hygiene_interception_action(
+    db_path: str,
+    *,
+    record_ids: Sequence[int],
+    action: str,
+) -> int:
+    ids = [int(x) for x in record_ids]
+    if not ids:
+        return 0
+
+    placeholders = ",".join("?" for _ in ids)
+
+    async def _op(db: aiosqlite.Connection) -> None:
+        await _ensure_domain_split_tables(db)
+        await db.execute(
+            f"UPDATE hygiene_interception_log SET action = ? WHERE id IN ({placeholders})",
+            (action, *ids),
+        )
+
+    await _execute_write_with_retry(db_path, _op)
+
+    async with _open_connection(db_path) as db:
+        async with db.execute(
+            f"SELECT COUNT(1) FROM hygiene_interception_log WHERE id IN ({placeholders}) AND action = ?",
+            (*ids, action),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return int(row[0]) if row else 0
+
+
+async def create_golden_annotation_asset(
+    db_path: str,
+    *,
+    trace_id: str,
+    task_id: str,
+    region_id: str,
+    region_type: str,
+    image_width: int,
+    image_height: int,
+    bbox_coordinates: Any,
+    perception_ir_snapshot: Any,
+    cognitive_ir_snapshot: Any,
+    teacher_text_feedback: str,
+    expected_score: float,
+    is_integrated_to_dataset: bool = False,
+) -> None:
+    """
+    Insert one teacher feedback golden asset record.
+    """
+    bbox_str = _to_json_string(bbox_coordinates)
+    perception_snapshot_str = _to_json_string(perception_ir_snapshot)
+    cognitive_snapshot_str = _to_json_string(cognitive_ir_snapshot)
+
+    async def _op(db: aiosqlite.Connection) -> None:
+        await _ensure_domain_split_tables(db)
+        await db.execute(
+            """
+            INSERT INTO golden_annotation_assets
+            (
+                trace_id, task_id, region_id, region_type, image_width, image_height, bbox_coordinates,
+                perception_ir_snapshot, cognitive_ir_snapshot, teacher_text_feedback, expected_score,
+                is_integrated_to_dataset, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            """,
+            (
+                trace_id,
+                task_id,
+                region_id,
+                region_type,
+                image_width,
+                image_height,
+                bbox_str,
+                perception_snapshot_str,
+                cognitive_snapshot_str,
+                teacher_text_feedback,
+                expected_score,
+                1 if is_integrated_to_dataset else 0,
+            ),
+        )
+
+    await _execute_write_with_retry(db_path, _op)
+
+
+async def list_golden_annotation_assets(
+    db_path: str,
+    *,
+    task_id: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> List[Dict[str, Any]]:
+    async with _open_connection(db_path) as db:
+        await _ensure_domain_split_tables(db)
+        db.row_factory = aiosqlite.Row
+        sql = (
+            "SELECT id, trace_id, task_id, region_id, region_type, image_width, image_height, "
+            "bbox_coordinates, teacher_text_feedback, expected_score, is_integrated_to_dataset, "
+            "created_at, updated_at "
+            "FROM golden_annotation_assets WHERE 1=1"
+        )
+        params: List[Any] = []
+        if task_id:
+            sql += " AND task_id = ?"
+            params.append(task_id)
+        sql += " ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        async with db.execute(sql, tuple(params)) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
 
 
 async def save_rubric(
