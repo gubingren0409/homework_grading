@@ -133,6 +133,18 @@ uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --workers 4
 
 API 文档：http://localhost:8000/docs
 
+### 启动 Celery Worker（异步批改必需）
+
+```bash
+# Linux / macOS
+celery -A src.worker.main worker --loglevel=info --concurrency=4
+
+# Windows（强烈建议）
+celery -A src.worker.main worker --loglevel=info --pool=solo --concurrency=1
+```
+
+> 说明：Celery 官方 FAQ 标注 Windows 非正式支持；在 Windows 上使用 `solo` 池更稳定，可避免 `billiard/fast_trace_task` 类崩溃。
+
 ---
 
 ## 📖 使用指南

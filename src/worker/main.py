@@ -10,11 +10,16 @@ Phase 33 Enhancements:
 - Event-driven SSE: Sub-100ms latency vs 1s database polling
 
 Usage:
+    # Linux/macOS:
     celery -A src.worker.main worker --loglevel=info --concurrency=4
+
+    # Windows (compatibility mode):
+    celery -A src.worker.main worker --loglevel=info --pool=solo --concurrency=1
 """
 import asyncio
 import contextvars
 import logging
+import os
 import threading
 from typing import List, Tuple, Dict, Any
 
@@ -29,6 +34,7 @@ from src.perception.engines.qwen_engine import QwenVLMPerceptionEngine
 from src.cognitive.engines.deepseek_engine import DeepSeekCognitiveEngine
 from src.core.trace_context import bind_context, reset_context, get_trace_id
 from src.core.json_logging import configure_json_logging
+from src.schemas.rubric_ir import TeacherRubric
 
 
 logger = logging.getLogger(__name__)
@@ -41,8 +47,11 @@ app = Celery(
     backend=settings.redis_url,
 )
 
-# Celery Configuration (Phase 28, Phase 32: DLQ)
-app.conf.update(
+# Celery 官方 FAQ 明确 Windows 非正式支持。
+# 为避免 billiard/prefork 在 Windows 上出现 fast_trace_task 初始化异常，
+# 强制切换为 solo 池（单进程，稳定优先）。
+_is_windows = os.name == "nt"
+_worker_conf = dict(
     task_serializer="json",
     accept_content=["json"],
     result_serializer="json",
@@ -52,13 +61,19 @@ app.conf.update(
     task_acks_late=True,  # Only ack after task completion (failure-tolerant)
     worker_prefetch_multiplier=1,  # Prevent task hoarding in workers
     broker_connection_retry_on_startup=True,  # Tolerate Redis startup delays
-    
-    # Phase 32: Dead Letter Queue (DLQ) Configuration
     task_reject_on_worker_lost=True,  # Send to DLQ if worker crashes
     task_default_max_retries=2,  # Global max retries
     task_always_eager=settings.celery_task_always_eager,
     task_store_eager_result=True,
 )
+if _is_windows:
+    _worker_conf.update(
+        worker_pool="solo",
+        worker_concurrency=1,
+    )
+
+# Celery Configuration (Phase 28, Phase 32: DLQ)
+app.conf.update(**_worker_conf)
 
 # Phase 32: Dead Letter Queue Names
 DLQ_QUEUE_NAME = "grading_tasks_dlq"
@@ -185,8 +200,12 @@ def grade_homework_task(
         # Step 3: Initialize workflow (worker-local instance)
         workflow = _build_workflow()
 
-        # Step 4: Execute core grading pipeline
-        report = run_async(workflow.run_pipeline(reconstructed_files))
+        # Step 4: Execute core grading pipeline (with optional rubric binding)
+        rubric_obj = None
+        rubric_json = payload.get("rubric_json")
+        if rubric_json is not None:
+            rubric_obj = TeacherRubric.model_validate(rubric_json)
+        report = run_async(workflow.run_pipeline(reconstructed_files, rubric=rubric_obj))
 
         # Step 5: Persist results
         student_id = reconstructed_files[0][1] if reconstructed_files else task_id

@@ -124,30 +124,88 @@ async def init_db(db_path: str) -> None:
 
     async def _op(db: aiosqlite.Connection) -> None:
         await db.executescript(schema_script)
+        await _ensure_tasks_columns(db, include_celery=True)
+        await _ensure_rubrics_schema(db)
 
     await _execute_write_with_retry(db_path, _op)
 
 
+async def _get_tasks_column_names(db: aiosqlite.Connection) -> set[str]:
+    async with db.execute("PRAGMA table_info(tasks)") as cursor:
+        columns = await cursor.fetchall()
+    return {col[1] for col in columns}
+
+
+async def _ensure_tasks_columns(db: aiosqlite.Connection, *, include_celery: bool) -> None:
+    """
+    兼容历史数据库：
+    - 旧库通过 ALTER TABLE 补齐新增列
+    - 在 review_status 可用后创建索引
+    """
+    column_names = await _get_tasks_column_names(db)
+
+    if include_celery and "celery_task_id" not in column_names:
+        await db.execute("ALTER TABLE tasks ADD COLUMN celery_task_id TEXT")
+        column_names.add("celery_task_id")
+    if "rubric_id" not in column_names:
+        await db.execute("ALTER TABLE tasks ADD COLUMN rubric_id TEXT")
+        column_names.add("rubric_id")
+
+    if "review_status" not in column_names:
+        await db.execute(
+            "ALTER TABLE tasks ADD COLUMN review_status TEXT NOT NULL DEFAULT 'NOT_REQUIRED'"
+        )
+        column_names.add("review_status")
+    if "human_feedback_json" not in column_names:
+        await db.execute("ALTER TABLE tasks ADD COLUMN human_feedback_json TEXT")
+        column_names.add("human_feedback_json")
+    if "is_regression_sample" not in column_names:
+        await db.execute(
+            "ALTER TABLE tasks ADD COLUMN is_regression_sample INTEGER NOT NULL DEFAULT 0"
+        )
+        column_names.add("is_regression_sample")
+    if "fallback_reason" not in column_names:
+        await db.execute("ALTER TABLE tasks ADD COLUMN fallback_reason TEXT")
+        column_names.add("fallback_reason")
+
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_review_status ON tasks(review_status)")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_rubric_id ON tasks(rubric_id)")
+
+
+async def _ensure_rubrics_schema(db: aiosqlite.Connection) -> None:
+    """
+    兼容历史数据库：确保 rubrics 表与索引存在。
+    """
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS rubrics (
+            rubric_id TEXT PRIMARY KEY,
+            question_id TEXT,
+            rubric_json TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_rubrics_created_at ON rubrics(created_at)")
+
+
 async def create_task(db_path: str, task_id: str) -> None:
     async def _op(db: aiosqlite.Connection) -> None:
-        async with db.execute("PRAGMA table_info(tasks)") as cursor:
-            columns = await cursor.fetchall()
-        column_names = {col[1] for col in columns}
-        if "review_status" not in column_names:
-            await db.execute(
-                "ALTER TABLE tasks ADD COLUMN review_status TEXT NOT NULL DEFAULT 'NOT_REQUIRED'"
-            )
-        if "human_feedback_json" not in column_names:
-            await db.execute("ALTER TABLE tasks ADD COLUMN human_feedback_json TEXT")
-        if "is_regression_sample" not in column_names:
-            await db.execute(
-                "ALTER TABLE tasks ADD COLUMN is_regression_sample INTEGER NOT NULL DEFAULT 0"
-            )
-        if "fallback_reason" not in column_names:
-            await db.execute("ALTER TABLE tasks ADD COLUMN fallback_reason TEXT")
+        await _ensure_tasks_columns(db, include_celery=False)
         await db.execute(
             "INSERT INTO tasks (task_id, status) VALUES (?, ?)",
             (task_id, "PENDING"),
+        )
+
+    await _execute_write_with_retry(db_path, _op)
+
+
+async def set_task_rubric_id(db_path: str, task_id: str, rubric_id: str) -> None:
+    async def _op(db: aiosqlite.Connection) -> None:
+        await _ensure_tasks_columns(db, include_celery=False)
+        await db.execute(
+            "UPDATE tasks SET rubric_id = ?, updated_at = CURRENT_TIMESTAMP WHERE task_id = ?",
+            (rubric_id, task_id),
         )
 
     await _execute_write_with_retry(db_path, _op)
@@ -189,24 +247,7 @@ async def update_task_celery_id(
 ) -> None:
     """Phase 28: Update Celery task ID for potential revocation."""
     async def _op(db: aiosqlite.Connection) -> None:
-        # Compatibility migration for old DB files missing Phase 28 column.
-        async with db.execute("PRAGMA table_info(tasks)") as cursor:
-            columns = await cursor.fetchall()
-        column_names = {col[1] for col in columns}
-        if "celery_task_id" not in column_names:
-            await db.execute("ALTER TABLE tasks ADD COLUMN celery_task_id TEXT")
-        if "review_status" not in column_names:
-            await db.execute(
-                "ALTER TABLE tasks ADD COLUMN review_status TEXT NOT NULL DEFAULT 'NOT_REQUIRED'"
-            )
-        if "human_feedback_json" not in column_names:
-            await db.execute("ALTER TABLE tasks ADD COLUMN human_feedback_json TEXT")
-        if "is_regression_sample" not in column_names:
-            await db.execute(
-                "ALTER TABLE tasks ADD COLUMN is_regression_sample INTEGER NOT NULL DEFAULT 0"
-            )
-        if "fallback_reason" not in column_names:
-            await db.execute("ALTER TABLE tasks ADD COLUMN fallback_reason TEXT")
+        await _ensure_tasks_columns(db, include_celery=True)
         await db.execute(
             "UPDATE tasks SET celery_task_id = ? WHERE task_id = ?",
             (celery_task_id, task_id),
@@ -233,7 +274,7 @@ async def list_pending_review_tasks(
     async with _open_connection(db_path) as db:
         db.row_factory = aiosqlite.Row
         sql = (
-            "SELECT task_id, status, review_status, error_message, fallback_reason, "
+            "SELECT task_id, status, rubric_id, review_status, error_message, fallback_reason, "
             "is_regression_sample, created_at, updated_at "
             "FROM tasks WHERE review_status = 'PENDING_REVIEW'"
         )
@@ -270,6 +311,61 @@ async def submit_task_review(
         )
 
     await _execute_write_with_retry(db_path, _op)
+
+
+async def save_rubric(
+    db_path: str,
+    rubric_id: str,
+    question_id: Optional[str],
+    rubric_json: Any,
+) -> None:
+    rubric_str = _to_json_string(rubric_json)
+
+    async def _op(db: aiosqlite.Connection) -> None:
+        await _ensure_rubrics_schema(db)
+        await db.execute(
+            """
+            INSERT INTO rubrics (rubric_id, question_id, rubric_json)
+            VALUES (?, ?, ?)
+            """,
+            (rubric_id, question_id, rubric_str),
+        )
+
+    await _execute_write_with_retry(db_path, _op)
+
+
+async def get_rubric(db_path: str, rubric_id: str) -> Optional[Dict[str, Any]]:
+    async with _open_connection(db_path) as db:
+        await _ensure_rubrics_schema(db)
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT rubric_id, question_id, rubric_json, created_at FROM rubrics WHERE rubric_id = ?",
+            (rubric_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+
+async def list_rubrics(
+    db_path: str,
+    *,
+    limit: int = 20,
+    offset: int = 0,
+) -> List[Dict[str, Any]]:
+    async with _open_connection(db_path) as db:
+        await _ensure_rubrics_schema(db)
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """
+            SELECT rubric_id, question_id, created_at
+            FROM rubrics
+            ORDER BY created_at DESC
+            LIMIT ? OFFSET ?
+            """,
+            (limit, offset),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
 
 
 async def save_grading_result(

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>AI 批改最小复核台</title>
+  <title>AI 批改双轨复核台</title>
   <style>
     body { font-family: Arial, sans-serif; margin: 24px; background: #f7f7f9; color: #222; }
     h1 { margin-bottom: 8px; }
@@ -27,22 +27,46 @@
   </style>
 </head>
 <body>
-  <h1>AI 批改最小复核台</h1>
-  <div class="small">目标：上传 → SSE看状态 → 进入待复核池 → 提交人工修正</div>
+  <h1>AI 批改双轨复核台</h1>
+  <div class="small">目标：先生成 Rubric（标准答案）→ 再上传学生作答并绑定 Rubric → SSE看状态 → 进入待复核池</div>
 
   <div class="card">
-    <h2>1) 上传图片 / PDF</h2>
+    <h2>1) 标准答案上传（生成 Rubric）</h2>
+    <form id="rubricForm">
+      <input id="rubricFiles" type="file" name="files" multiple accept=".jpg,.jpeg,.png,.pdf" />
+      <div class="row" style="margin-top: 10px;">
+        <button id="rubricBtn" type="submit">生成 Rubric</button>
+        <button id="refreshRubricsBtn" class="secondary" type="button">刷新 Rubric 列表</button>
+      </div>
+    </form>
+    <div id="rubricResult" class="small" style="margin-top: 10px;"></div>
+    <div class="row" style="margin-top: 10px;">
+      <select id="rubricSelect"></select>
+      <button id="loadRubricBtn" class="secondary" type="button">查看 Rubric</button>
+    </div>
+    <textarea id="rubricPreview" class="small mono" readonly style="margin-top: 10px; min-height: 120px;"></textarea>
+  </div>
+
+  <div class="card">
+    <h2>2) 学生作答上传（绑定 Rubric 后批改）</h2>
     <form id="uploadForm">
       <input id="files" type="file" name="files" multiple accept=".jpg,.jpeg,.png,.pdf" />
+      <input id="selectedRubricId" type="text" placeholder="rubric_id（可从上方列表自动填充）" />
+      <label class="small" style="display:block; margin-top:8px;">
+        <input id="batchPerFile" type="checkbox" checked />
+        批量模式：多文件时“每个文件单独创建一个任务”（用于多份作业）
+      </label>
       <div class="row" style="margin-top: 10px;">
         <button id="uploadBtn" type="submit">提交批改任务</button>
       </div>
     </form>
     <div id="uploadResult" class="small" style="margin-top: 10px;"></div>
+    <div class="small" style="margin-top: 8px;">本次提交生成的 task_id 列表</div>
+    <textarea id="submittedTaskIds" class="small mono" readonly style="margin-top: 6px; min-height: 90px;"></textarea>
   </div>
 
   <div class="card">
-    <h2>2) 实时状态（SSE）</h2>
+    <h2>3) 实时状态（SSE）</h2>
     <div class="row">
       <input id="taskIdInput" type="text" placeholder="输入 task_id（上传后会自动填充）" />
       <button id="watchBtn">开始监听</button>
@@ -52,7 +76,7 @@
   </div>
 
   <div class="card">
-    <h2>3) 待人工复核任务池</h2>
+    <h2>4) 待人工复核任务池</h2>
     <div class="row">
       <select id="pendingFilter">
         <option value="">全部（PENDING_REVIEW）</option>
@@ -66,6 +90,7 @@
         <tr>
           <th>task_id</th>
           <th>status</th>
+          <th>rubric_id</th>
           <th>review_status</th>
           <th>fallback_reason</th>
           <th>error_message</th>
@@ -77,7 +102,7 @@
   </div>
 
   <div class="card">
-    <h2>4) 提交人工修正</h2>
+    <h2>5) 提交人工修正</h2>
     <div class="row">
       <input id="reviewTaskId" type="text" placeholder="task_id（可从待办列表一键填入）" />
       <label><input id="regressionFlag" type="checkbox" /> 纳入回归样本</label>
@@ -97,6 +122,76 @@
   <script>
     let currentEventSource = null;
 
+    async function loadRubrics() {
+      const select = document.getElementById("rubricSelect");
+      const resp = await fetch("/api/v1/rubrics?page=1&limit=100");
+      if (!resp.ok) {
+        select.innerHTML = "<option value=''>加载失败</option>";
+        return;
+      }
+      const arr = await resp.json();
+      select.innerHTML = "";
+      if (!arr.length) {
+        select.innerHTML = "<option value=''>暂无 Rubric</option>";
+        return;
+      }
+      for (const r of arr) {
+        const op = document.createElement("option");
+        op.value = r.rubric_id;
+        op.textContent = `${r.rubric_id} | q=${r.question_id || "-"} | ${r.created_at || ""}`;
+        select.appendChild(op);
+      }
+      document.getElementById("selectedRubricId").value = arr[0].rubric_id;
+    }
+
+    async function submitRubric(evt) {
+      evt.preventDefault();
+      const filesEl = document.getElementById("rubricFiles");
+      const resultEl = document.getElementById("rubricResult");
+      const btn = document.getElementById("rubricBtn");
+      if (!filesEl.files.length) {
+        resultEl.textContent = "请先选择标准答案文件。";
+        resultEl.className = "small err";
+        return;
+      }
+      const fd = new FormData();
+      for (const f of filesEl.files) fd.append("files", f);
+      btn.disabled = true;
+      resultEl.textContent = "生成 Rubric 中...";
+      resultEl.className = "small";
+      try {
+        const resp = await fetch("/api/v1/rubric/generate", { method: "POST", body: fd });
+        if (!resp.ok) throw new Error("HTTP " + resp.status);
+        const data = await resp.json();
+        resultEl.textContent = `Rubric 生成成功: ${data.rubric_id} (question_id=${data.question_id || "-"})`;
+        resultEl.className = "small ok";
+        document.getElementById("selectedRubricId").value = data.rubric_id;
+        await loadRubrics();
+      } catch (e) {
+        resultEl.textContent = "生成失败: " + e;
+        resultEl.className = "small err";
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function loadRubricDetail() {
+      const rubricId = document.getElementById("rubricSelect").value;
+      const preview = document.getElementById("rubricPreview");
+      if (!rubricId) {
+        preview.value = "请先选择 rubric_id";
+        return;
+      }
+      const resp = await fetch(`/api/v1/rubrics/${encodeURIComponent(rubricId)}`);
+      if (!resp.ok) {
+        preview.value = "加载 Rubric 失败";
+        return;
+      }
+      const data = await resp.json();
+      document.getElementById("selectedRubricId").value = data.rubric_id;
+      preview.value = JSON.stringify(data.rubric_json, null, 2);
+    }
+
     function setStatus(text, cls = "") {
       const el = document.getElementById("statusBox");
       el.className = "small mono " + cls;
@@ -106,26 +201,81 @@
     async function submitUpload(evt) {
       evt.preventDefault();
       const filesEl = document.getElementById("files");
+      const rubricId = document.getElementById("selectedRubricId").value.trim();
+      const batchPerFile = document.getElementById("batchPerFile").checked;
       const resultEl = document.getElementById("uploadResult");
+      const submittedEl = document.getElementById("submittedTaskIds");
       const btn = document.getElementById("uploadBtn");
+      submittedEl.value = "";
       if (!filesEl.files.length) {
         resultEl.textContent = "请选择至少一个文件。";
         resultEl.className = "small err";
         return;
       }
-      const formData = new FormData();
-      for (const f of filesEl.files) formData.append("files", f);
+      if (!rubricId) {
+        resultEl.textContent = "请先选择或输入 rubric_id。";
+        resultEl.className = "small err";
+        return;
+      }
       btn.disabled = true;
       resultEl.textContent = "提交中...";
       resultEl.className = "small";
       try {
-        const resp = await fetch("/api/v1/grade/submit", { method: "POST", body: formData });
-        if (!resp.ok) throw new Error("HTTP " + resp.status);
-        const data = await resp.json();
-        resultEl.textContent = "提交成功，task_id = " + data.task_id;
-        resultEl.className = "small ok";
-        document.getElementById("taskIdInput").value = data.task_id;
-        document.getElementById("reviewTaskId").value = data.task_id;
+        const files = Array.from(filesEl.files);
+        const created = [];
+
+        async function submitOneTask(fileList) {
+          const fd = new FormData();
+          fd.append("rubric_id", rubricId);
+          for (const f of fileList) fd.append("files", f);
+          const resp = await fetch("/api/v1/grade/submit", { method: "POST", body: fd });
+          if (!resp.ok) {
+            const txt = await resp.text();
+            throw new Error(`HTTP ${resp.status} ${txt}`);
+          }
+          return await resp.json();
+        }
+
+        if (batchPerFile && files.length > 1) {
+          let ok = 0;
+          let firstTaskId = "";
+          const lines = [];
+          for (const f of files) {
+            try {
+              const data = await submitOneTask([f]);
+              ok += 1;
+              if (!firstTaskId) firstTaskId = data.task_id;
+              created.push(data.task_id);
+              lines.push(`${f.name}\t${data.task_id}`);
+            } catch (e) {
+              lines.push(`${f.name}\t提交失败: ${String(e)}`);
+            }
+          }
+          submittedEl.value = lines.join("\n");
+          if (firstTaskId) {
+            document.getElementById("taskIdInput").value = firstTaskId;
+            document.getElementById("reviewTaskId").value = firstTaskId;
+          }
+          if (ok > 0) {
+            resultEl.textContent = `批量提交完成：共 ${files.length} 份，成功 ${ok} 份。可从下方 task_id 列表逐个监听。`;
+            resultEl.className = "small ok";
+          } else {
+            resultEl.textContent = "批量提交失败：没有成功创建任务。";
+            resultEl.className = "small err";
+          }
+        } else {
+          const data = await submitOneTask(files);
+          created.push(data.task_id);
+          submittedEl.value = `${files.map(f => f.name).join(", ")}\t${data.task_id}`;
+          resultEl.textContent = `提交成功，task_id=${data.task_id}，rubric_id=${data.rubric_id || "-"}`;
+          resultEl.className = "small ok";
+          document.getElementById("taskIdInput").value = data.task_id;
+          document.getElementById("reviewTaskId").value = data.task_id;
+        }
+
+        if (created.length) {
+          await refreshPending();
+        }
       } catch (e) {
         resultEl.textContent = "提交失败: " + e;
         resultEl.className = "small err";
@@ -194,6 +344,7 @@
         tr.innerHTML = `
           <td class="mono">${it.task_id}</td>
           <td>${it.status}</td>
+          <td class="mono">${it.rubric_id || ""}</td>
           <td>${it.review_status}</td>
           <td class="mono">${it.fallback_reason || ""}</td>
           <td class="mono">${it.error_message || ""}</td>
@@ -207,7 +358,7 @@
       }
       if (!items.length) {
         const tr = document.createElement("tr");
-        tr.innerHTML = `<td colspan="6" class="small">暂无待复核任务</td>`;
+        tr.innerHTML = `<td colspan="7" class="small">暂无待复核任务</td>`;
         body.appendChild(tr);
       }
     }
@@ -265,11 +416,15 @@
     }
 
     document.getElementById("uploadForm").addEventListener("submit", submitUpload);
+    document.getElementById("rubricForm").addEventListener("submit", submitRubric);
+    document.getElementById("refreshRubricsBtn").addEventListener("click", loadRubrics);
+    document.getElementById("loadRubricBtn").addEventListener("click", loadRubricDetail);
     document.getElementById("watchBtn").addEventListener("click", watchTask);
     document.getElementById("stopBtn").addEventListener("click", () => { stopSSE(); setStatus("已手动停止监听。", "warn"); });
     document.getElementById("refreshPendingBtn").addEventListener("click", refreshPending);
     document.getElementById("submitReviewBtn").addEventListener("click", submitReview);
 
+    loadRubrics();
     refreshPending();
   </script>
 </body>

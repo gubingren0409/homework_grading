@@ -3,6 +3,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     task_id TEXT PRIMARY KEY,
     status TEXT NOT NULL, -- PENDING, PROCESSING, COMPLETED, FAILED, REJECTED
     celery_task_id TEXT, -- Phase 28: Track Celery async task ID for revocation
+    rubric_id TEXT, -- Optional reference rubric used for grading
     error_message TEXT,
     review_status TEXT NOT NULL DEFAULT 'NOT_REQUIRED'
         CHECK (review_status IN ('NOT_REQUIRED', 'PENDING_REVIEW', 'REVIEWED')),
@@ -25,6 +26,13 @@ CREATE TABLE IF NOT EXISTS grading_results (
     FOREIGN KEY(task_id) REFERENCES tasks(task_id)
 );
 
+CREATE TABLE IF NOT EXISTS rubrics (
+    rubric_id TEXT PRIMARY KEY,
+    question_id TEXT,
+    rubric_json TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE INDEX IF NOT EXISTS idx_task_id ON grading_results(task_id);
 CREATE INDEX IF NOT EXISTS idx_status ON tasks(status);
-CREATE INDEX IF NOT EXISTS idx_review_status ON tasks(review_status);
+CREATE INDEX IF NOT EXISTS idx_rubrics_created_at ON rubrics(created_at);

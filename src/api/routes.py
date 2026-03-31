@@ -4,7 +4,7 @@ import logging
 import hashlib
 from typing import List, Optional, Dict, Any
 
-from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, Query, Request, Response
 from pydantic import BaseModel
 from slowapi import Limiter
 from slowapi.util import get_remote_address
@@ -14,15 +14,23 @@ from src.api.sse import create_sse_response
 from src.db.client import (
     create_task,
     update_task_celery_id,
+    set_task_rubric_id,
     get_task,
     fetch_results,
     list_pending_review_tasks,
     submit_task_review,
+    save_rubric,
+    get_rubric,
+    list_rubrics,
 )
 from src.worker.main import grade_homework_task
 from src.core.storage_adapter import storage
 from src.core.trace_context import get_trace_id
 from src.worker.main import emit_trace_probe
+from src.perception.engines.qwen_engine import QwenVLMPerceptionEngine
+from src.cognitive.engines.deepseek_engine import DeepSeekCognitiveEngine
+from src.orchestration.workflow import GradingWorkflow
+from src.schemas.rubric_ir import TeacherRubric
 
 
 logger = logging.getLogger(__name__)
@@ -34,10 +42,12 @@ limiter = Limiter(key_func=get_remote_address)
 class TaskResponse(BaseModel):
     task_id: str
     status: str
+    rubric_id: Optional[str] = None
 
 class TaskStatusResponse(BaseModel):
     task_id: str
     status: str
+    rubric_id: Optional[str] = None
     review_status: Optional[str] = None
     fallback_reason: Optional[str] = None
     is_regression_sample: bool = False
@@ -65,6 +75,7 @@ class TraceProbeResponse(BaseModel):
 class PendingReviewTaskItem(BaseModel):
     task_id: str
     status: str
+    rubric_id: Optional[str] = None
     review_status: str
     error_message: Optional[str] = None
     fallback_reason: Optional[str] = None
@@ -92,12 +103,102 @@ class ReviewFlowGuideResponse(BaseModel):
     notes: List[str]
 
 
+class RubricGenerateResponse(BaseModel):
+    rubric_id: str
+    question_id: Optional[str] = None
+    grading_points_count: int
+
+
+class RubricSummaryItem(BaseModel):
+    rubric_id: str
+    question_id: Optional[str] = None
+    created_at: Optional[str] = None
+
+
+class RubricDetailResponse(BaseModel):
+    rubric_id: str
+    question_id: Optional[str] = None
+    created_at: Optional[str] = None
+    rubric_json: Dict[str, Any]
+
+
 # --- API Endpoints (Phase 28: Celery-decoupled) ---
+@router.post("/rubric/generate", response_model=RubricGenerateResponse, status_code=201)
+@limiter.limit("5/minute")
+async def generate_rubric_job(
+    request: Request,
+    files: List[UploadFile] = File(...),
+    db_path: str = Depends(get_db_path),
+):
+    """
+    双轨上传-轨道1：
+    上传标准答案图片/PDF，直接生成并持久化 rubric，返回 rubric_id。
+    """
+    files_data = []
+    for file in files:
+        content = await file.read()
+        files_data.append((content, file.filename))
+
+    perception_engine = QwenVLMPerceptionEngine()
+    cognitive_agent = DeepSeekCognitiveEngine()
+    workflow = GradingWorkflow(
+        perception_engine=perception_engine,
+        cognitive_agent=cognitive_agent,
+    )
+
+    rubric: TeacherRubric = await workflow.generate_rubric_pipeline(files_data)
+    rubric_id = str(uuid.uuid4())
+    await save_rubric(
+        db_path,
+        rubric_id=rubric_id,
+        question_id=rubric.question_id,
+        rubric_json=rubric.model_dump(),
+    )
+    return RubricGenerateResponse(
+        rubric_id=rubric_id,
+        question_id=rubric.question_id,
+        grading_points_count=len(rubric.grading_points),
+    )
+
+
+@router.get("/rubrics", response_model=List[RubricSummaryItem])
+async def get_rubric_list(
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+    db_path: str = Depends(get_db_path),
+):
+    offset = (page - 1) * limit
+    rows = await list_rubrics(db_path, limit=limit, offset=offset)
+    return [RubricSummaryItem(**r) for r in rows]
+
+
+@router.get("/rubrics/{rubric_id}", response_model=RubricDetailResponse)
+async def get_rubric_detail(
+    rubric_id: str,
+    db_path: str = Depends(get_db_path),
+):
+    row = await get_rubric(db_path, rubric_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Rubric not found")
+    rubric_raw = row.get("rubric_json")
+    try:
+        rubric_obj = json.loads(rubric_raw) if isinstance(rubric_raw, str) else rubric_raw
+    except Exception:
+        rubric_obj = {}
+    return RubricDetailResponse(
+        rubric_id=row["rubric_id"],
+        question_id=row.get("question_id"),
+        created_at=row.get("created_at"),
+        rubric_json=rubric_obj,
+    )
+
+
 @router.post("/grade/submit", response_model=TaskResponse, status_code=202)
 @limiter.limit("5/minute")
 async def submit_grading_job(
     request: Request,
     files: List[UploadFile] = File(...),
+    rubric_id: Optional[str] = Form(default=None),
     db_path: str = Depends(get_db_path)
 ):
     """
@@ -126,10 +227,21 @@ async def submit_grading_job(
     
     # 3. Pre-persist task state (PENDING) BEFORE queueing
     await create_task(db_path, task_id)
+
+    bound_rubric: Optional[Dict[str, Any]] = None
+    if rubric_id:
+        rubric_row = await get_rubric(db_path, rubric_id)
+        if not rubric_row:
+            raise HTTPException(status_code=404, detail="Rubric not found")
+        rubric_raw = rubric_row.get("rubric_json")
+        bound_rubric = json.loads(rubric_raw) if isinstance(rubric_raw, str) else rubric_raw
+        await set_task_rubric_id(db_path, task_id, rubric_id)
     
     # 4. Dispatch to Celery worker queue (non-blocking)
     # Phase 32: Storage Adapter - enqueue URIs (backend-agnostic)
     payload = storage.prepare_payload(file_refs)
+    if bound_rubric is not None:
+        payload["rubric_json"] = bound_rubric
     celery_result = grade_homework_task.apply_async(
         args=[task_id, payload, db_path],
         task_id=task_id,
@@ -144,7 +256,7 @@ async def submit_grading_job(
         "task_enqueued",
         extra={"extra_fields": {"task_id": task_id, "event": "task_enqueued"}},
     )
-    return TaskResponse(task_id=task_id, status="PENDING")
+    return TaskResponse(task_id=task_id, status="PENDING", rubric_id=rubric_id)
 
 
 @router.get("/grade/{task_id}", response_model=TaskStatusResponse)
@@ -181,6 +293,7 @@ async def get_job_status_and_results(
     response_data = {
         "task_id": task["task_id"],
         "status": task["status"],
+        "rubric_id": task.get("rubric_id"),
         "review_status": task.get("review_status"),
         "fallback_reason": task.get("fallback_reason"),
         "is_regression_sample": bool(task.get("is_regression_sample", 0)),
