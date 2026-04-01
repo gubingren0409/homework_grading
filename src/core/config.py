@@ -38,8 +38,8 @@ class Settings(BaseSettings):
     aws_access_key_id: str | None = None  # S3 access key
     aws_secret_access_key: str | None = None  # S3 secret key
 
-    # Phase 35: Layout preprocessing switch (disabled by default for safe rollout)
-    enable_layout_preprocess: bool = False
+    # Phase 35: Layout preprocessing switch (must stay enabled to enforce spatial contract)
+    enable_layout_preprocess: bool = True
     
     @property
     def uploads_path(self) -> Path:

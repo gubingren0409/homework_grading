@@ -677,6 +677,7 @@ async def save_grading_result(
     *,
     question_id: Optional[str] = None,
     perception_output: Any = None,
+    cognitive_output: Any = None,
 ) -> None:
     """
     保存单条批改结果（API/单任务通道）。
@@ -685,15 +686,19 @@ async def save_grading_result(
     total_deduction = float(getattr(report, "total_score_deduction"))
     is_pass = bool(getattr(report, "is_fully_correct"))
 
-    if perception_output is None:
+    if perception_output is None and cognitive_output is None:
         report_json = _to_json_string(report)
     else:
-        report_json = _to_json_string(
-            {
-                "perception_output": _to_json_compatible(perception_output),
-                "evaluation_report": _to_json_compatible(report),
-            }
-        )
+        payload: Dict[str, Any] = {
+            "evaluation_report": _to_json_compatible(report),
+        }
+        if perception_output is not None:
+            normalized_perception = _to_json_compatible(perception_output)
+            payload["perception_output"] = normalized_perception
+            payload["perception_ir_snapshot"] = normalized_perception
+        if cognitive_output is not None:
+            payload["cognitive_ir_snapshot"] = _to_json_compatible(cognitive_output)
+        report_json = _to_json_string(payload)
 
     async def _op(db: aiosqlite.Connection) -> None:
         await db.execute(

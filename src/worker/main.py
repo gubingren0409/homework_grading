@@ -225,11 +225,30 @@ def grade_homework_task(
         rubric_json = payload.get("rubric_json")
         if rubric_json is not None:
             rubric_obj = TeacherRubric.model_validate(rubric_json)
-        report = run_async(workflow.run_pipeline(reconstructed_files, rubric=rubric_obj))
+        perception_snapshot = None
+        cognitive_snapshot = None
+        try:
+            snapshot_result = run_async(
+                workflow.run_pipeline_with_snapshots(reconstructed_files, rubric=rubric_obj)  # type: ignore[attr-defined]
+            )
+            if not isinstance(snapshot_result, tuple) or len(snapshot_result) != 3:
+                raise TypeError("run_pipeline_with_snapshots must return (report, perception, cognitive)")
+            report, perception_snapshot, cognitive_snapshot = snapshot_result
+        except (AttributeError, TypeError):
+            report = run_async(workflow.run_pipeline(reconstructed_files, rubric=rubric_obj))
 
         # Step 5: Persist results
         student_id = reconstructed_files[0][1] if reconstructed_files else task_id
-        run_async(save_grading_result(db_path, task_id, student_id, report))
+        run_async(
+            save_grading_result(
+                db_path,
+                task_id,
+                student_id,
+                report,
+                perception_output=perception_snapshot,
+                cognitive_output=cognitive_snapshot,
+            )
+        )
         pipeline_status, review_status = _project_statuses(report)
         grading_status = str(getattr(report, "status", "SCORED"))
         if grading_status == "REJECTED_UNREADABLE":
@@ -343,7 +362,8 @@ def grade_homework_task(
         return {"status": "failed", "error": str(e)}
     finally:
         reset_context(ctx_tokens)
-
+
+
 
 async def _publish_status(task_id: str, status: str, **kwargs) -> None:
     """

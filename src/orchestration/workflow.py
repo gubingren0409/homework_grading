@@ -1,5 +1,7 @@
 import asyncio
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 from src.perception.base import BasePerceptionEngine
 from src.cognitive.base import BaseCognitiveAgent
@@ -10,6 +12,16 @@ from src.core.exceptions import PerceptionShortCircuitError
 from src.core.config import settings
 from src.utils.file_parsers import process_multiple_files
 from src.utils.image_slicer import slice_image_by_layout
+
+
+@dataclass(frozen=True)
+class _SliceLayoutBinding:
+    page_index: int
+    region_id: str
+    region_type: str
+    bbox: dict[str, float]
+    image_width: int
+    image_height: int
 
 
 class GradingWorkflow:
@@ -28,6 +40,12 @@ class GradingWorkflow:
         """
         self._perception_engine = perception_engine
         self._cognitive_agent = cognitive_agent
+
+    def _enforce_phase35_contract_enabled(self) -> None:
+        if not settings.enable_layout_preprocess:
+            raise RuntimeError(
+                "PHASE35_CONTRACT_BLOCK: enable_layout_preprocess must remain enabled."
+            )
 
     async def _persist_layout_slices(self, slices: dict[str, bytes], *, task_scope: str, page_idx: int) -> list[tuple[bytes, str]]:
         """
@@ -48,21 +66,30 @@ class GradingWorkflow:
             output_files.append((content, filename))
         return output_files
 
-    async def _layout_preprocess(self, image_bytes_list: list[bytes], *, context_type: str) -> list[bytes]:
+    async def _layout_preprocess(
+        self,
+        image_bytes_list: list[bytes],
+        *,
+        context_type: str,
+    ) -> tuple[list[bytes], list[_SliceLayoutBinding], list[LayoutIR]]:
         """
-        Phase 36: Optional two-stage perception preprocessor.
+        Phase 36: Mandatory two-stage perception preprocessor.
         1) Extract LayoutIR
         2) Slice image by layout
         3) Persist slices asynchronously
-        4) Return sliced bytes (fallback to original page if slicing empty)
+        4) Return sliced bytes with strict layout bindings
         """
         processed: list[bytes] = []
+        bindings: list[_SliceLayoutBinding] = []
+        layouts: list[LayoutIR] = []
         task_scope = uuid4().hex
         engine = self._perception_engine
 
-        # Soft capability check: only Qwen engine currently exposes extract_layout
+        # Hard capability gate: no layout capability means hard block.
         if not hasattr(engine, "extract_layout"):
-            return image_bytes_list
+            raise RuntimeError(
+                "PHASE35_CONTRACT_BLOCK: perception engine lacks extract_layout capability."
+            )
 
         for page_idx, page_bytes in enumerate(image_bytes_list):
             layout: LayoutIR = await engine.extract_layout(  # type: ignore[attr-defined]
@@ -70,13 +97,201 @@ class GradingWorkflow:
                 context_type=context_type,
                 page_index=page_idx,
             )
+            image_width = int(layout.image_width or 0)
+            image_height = int(layout.image_height or 0)
+            if image_width <= 0 or image_height <= 0:
+                raise RuntimeError(
+                    f"PHASE35_CONTRACT_BLOCK: invalid layout dimensions on page {page_idx}."
+                )
+            if not layout.regions:
+                raise RuntimeError(
+                    f"PHASE35_CONTRACT_BLOCK: layout regions empty on page {page_idx}."
+                )
+
             slices = slice_image_by_layout(page_bytes, layout)
-            persisted = await self._persist_layout_slices(slices, task_scope=task_scope, page_idx=page_idx)
-            if persisted:
-                processed.extend([b for b, _ in persisted])
-            else:
-                processed.append(page_bytes)
-        return processed
+            if not slices:
+                raise RuntimeError(
+                    f"PHASE35_CONTRACT_BLOCK: slicing produced no regions on page {page_idx}."
+                )
+
+            persisted = await self._persist_layout_slices(
+                slices,
+                task_scope=task_scope,
+                page_idx=page_idx,
+            )
+            persisted_by_name = {name.rsplit(".", 1)[0]: content for content, name in persisted}
+
+            for region in layout.regions:
+                crop_bytes = persisted_by_name.get(region.target_id)
+                if crop_bytes is None:
+                    raise RuntimeError(
+                        "PHASE35_CONTRACT_BLOCK: missing sliced crop for region "
+                        f"{region.target_id} on page {page_idx}."
+                    )
+                canonical_region_id = f"p{page_idx}_{region.target_id}"
+                processed.append(crop_bytes)
+                bindings.append(
+                    _SliceLayoutBinding(
+                        page_index=page_idx,
+                        region_id=canonical_region_id,
+                        region_type=region.region_type,
+                        bbox=region.bbox.model_dump(),
+                        image_width=image_width,
+                        image_height=image_height,
+                    )
+                )
+            layouts.append(layout)
+
+        return processed, bindings, layouts
+
+    def _build_snapshot_payloads(
+        self,
+        *,
+        evaluation_report: EvaluationReport,
+        layout_bindings: list[_SliceLayoutBinding],
+        element_to_region: dict[str, str],
+        legacy_element_to_region: dict[str, str],
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        unique_regions: dict[str, _SliceLayoutBinding] = {}
+        for binding in layout_bindings:
+            unique_regions[binding.region_id] = binding
+        if not unique_regions:
+            raise RuntimeError("PHASE35_CONTRACT_BLOCK: no layout regions available for snapshot persistence.")
+
+        perception_snapshot = {
+            "context_type": "STUDENT_ANSWER",
+            "regions": [
+                {
+                    "target_id": binding.region_id,
+                    "question_no": None,
+                    "region_type": binding.region_type,
+                    "bbox": binding.bbox,
+                    "page_index": binding.page_index,
+                    "image_width": binding.image_width,
+                    "image_height": binding.image_height,
+                }
+                for binding in unique_regions.values()
+            ],
+            "warnings": [],
+        }
+
+        cognitive_snapshot = evaluation_report.model_dump()
+        steps = cognitive_snapshot.get("step_evaluations", [])
+        if not isinstance(steps, list):
+            raise RuntimeError(
+                "PHASE35_CONTRACT_BLOCK: cognitive snapshot step_evaluations malformed."
+            )
+
+        for idx, step in enumerate(steps):
+            if not isinstance(step, dict):
+                raise RuntimeError(
+                    f"PHASE35_CONTRACT_BLOCK: cognitive step[{idx}] is not an object."
+                )
+            ref = str(step.get("reference_element_id") or "")
+            if not ref:
+                raise RuntimeError(
+                    f"PHASE35_CONTRACT_BLOCK: cognitive step[{idx}] missing reference_element_id."
+                )
+            region_id = element_to_region.get(ref)
+            if region_id is None:
+                region_id = legacy_element_to_region.get(ref)
+            if region_id is None:
+                raise RuntimeError(
+                    "PHASE35_CONTRACT_BLOCK: cognitive reference cannot be mapped to a layout region: "
+                    f"{ref}."
+                )
+            step["reference_element_id"] = region_id
+
+        return perception_snapshot, cognitive_snapshot
+
+    async def _run_pipeline_internal(
+        self,
+        files_data: list[tuple[bytes, str]],
+        rubric: TeacherRubric | None = None,
+    ) -> tuple[EvaluationReport, dict[str, Any], dict[str, Any]]:
+        """
+        Internal execution path returning grading report plus persisted snapshots.
+        """
+        image_bytes_list = await process_multiple_files(files_data)
+        self._enforce_phase35_contract_enabled()
+        image_bytes_list, slice_bindings, _ = await self._layout_preprocess(
+            image_bytes_list,
+            context_type="STUDENT_ANSWER",
+        )
+
+        tasks = [
+            self._perception_engine.process_image(page_bytes)
+            for page_bytes in image_bytes_list
+        ]
+        perception_outputs = await asyncio.gather(*tasks)
+
+        all_elements = []
+        all_pages_blank = True
+        element_to_region: dict[str, str] = {}
+        legacy_element_to_region: dict[str, str] = {}
+
+        for slice_idx, perception_output in enumerate(perception_outputs):
+            is_unreadable = perception_output.readability_status in ["HEAVILY_ALTERED", "UNREADABLE"]
+            if perception_output.trigger_short_circuit or is_unreadable:
+                raise PerceptionShortCircuitError(
+                    readability_status=perception_output.readability_status,
+                    message=f"Workflow halted on page {slice_idx}: Image quality too poor."
+                )
+
+            if not perception_output.is_blank:
+                all_pages_blank = False
+
+            binding = slice_bindings[slice_idx]
+            for elem in perception_output.elements:
+                original_id = elem.element_id
+                elem.element_id = f"{binding.region_id}::{original_id}"
+                all_elements.append(elem)
+                element_to_region[elem.element_id] = binding.region_id
+                legacy_element_to_region.setdefault(original_id, binding.region_id)
+
+        if all_pages_blank:
+            report = EvaluationReport(
+                status="REJECTED_UNREADABLE",
+                is_fully_correct=False,
+                total_score_deduction=0.0,
+                step_evaluations=[],
+                overall_feedback="试卷未作答（检测到空白卷或无手写作答痕迹）。",
+                system_confidence=1.0,
+                requires_human_review=False,
+            )
+            perception_snapshot, cognitive_snapshot = self._build_snapshot_payloads(
+                evaluation_report=report,
+                layout_bindings=slice_bindings,
+                element_to_region=element_to_region,
+                legacy_element_to_region=legacy_element_to_region,
+            )
+            return report, perception_snapshot, cognitive_snapshot
+
+        global_conf = (
+            sum(p.global_confidence for p in perception_outputs) / len(perception_outputs)
+            if perception_outputs
+            else 0.0
+        )
+        merged_ir = PerceptionOutput(
+            readability_status="CLEAR",
+            elements=all_elements,
+            global_confidence=global_conf,
+            is_blank=all_pages_blank,
+            trigger_short_circuit=False,
+        )
+
+        evaluation_report = await self._cognitive_agent.evaluate_logic(merged_ir, rubric)
+
+        if global_conf < 0.80:
+            evaluation_report.requires_human_review = True
+
+        perception_snapshot, cognitive_snapshot = self._build_snapshot_payloads(
+            evaluation_report=evaluation_report,
+            layout_bindings=slice_bindings,
+            element_to_region=element_to_region,
+            legacy_element_to_region=legacy_element_to_region,
+        )
+        return evaluation_report, perception_snapshot, cognitive_snapshot
 
     async def run_pipeline(
         self, 
@@ -88,73 +303,18 @@ class GradingWorkflow:
         Aggregates multi-page IR and avoids element_id conflicts.
         Now uses asyncio.gather for parallel page perception.
         """
-        # Step 1: Flatten and normalize all inputs
-        image_bytes_list = await process_multiple_files(files_data)
-        if settings.enable_layout_preprocess:
-            image_bytes_list = await self._layout_preprocess(
-                image_bytes_list,
-                context_type="STUDENT_ANSWER",
-            )
-        
-        # Step 2: Parallel Perception (Throttled by engine-level semaphore)
-        tasks = [
-            self._perception_engine.process_image(page_bytes)
-            for page_bytes in image_bytes_list
-        ]
-        perception_outputs = await asyncio.gather(*tasks)
+        report, _, _ = await self._run_pipeline_internal(files_data, rubric=rubric)
+        return report
 
-        all_elements = []
-        all_pages_blank = True
-        
-        for page_idx, perception_output in enumerate(perception_outputs):
-            is_unreadable = perception_output.readability_status in ["HEAVILY_ALTERED", "UNREADABLE"]
-            if perception_output.trigger_short_circuit or is_unreadable:
-                raise PerceptionShortCircuitError(
-                    readability_status=perception_output.readability_status,
-                    message=f"Workflow halted on page {page_idx}: Image quality too poor."
-                )
-
-            if not perception_output.is_blank:
-                all_pages_blank = False
-
-            # Map elements with page-specific prefix
-            for elem in perception_output.elements:
-                elem.element_id = f"p{page_idx}_{elem.element_id}"
-                all_elements.append(elem)
-        
-        # Step 3: Handle Blank Page Short-circuit (Phase 26)
-        if all_pages_blank:
-            return EvaluationReport(
-                status="REJECTED_UNREADABLE",
-                is_fully_correct=False,
-                total_score_deduction=0.0,
-                step_evaluations=[],
-                overall_feedback="试卷未作答（检测到空白卷或无手写作答痕迹）。",
-                system_confidence=1.0,
-                requires_human_review=False
-            )
-
-        # Step 4: Global Perception Aggregation
-        global_conf = sum(p.global_confidence for p in perception_outputs) / len(perception_outputs) if perception_outputs else 0.0
-        merged_ir = PerceptionOutput(
-            readability_status="CLEAR",
-            elements=all_elements,
-            global_confidence=global_conf,
-            is_blank=all_pages_blank,
-            trigger_short_circuit=False
-        )
-        
-        # Step 5: Cognition (Evaluate Logic against Merged IR)
-        evaluation_report = await self._cognitive_agent.evaluate_logic(
-            merged_ir, 
-            rubric
-        )
-
-        # Task C: Defense - Force human review if perception confidence is low
-        if global_conf < 0.80:
-            evaluation_report.requires_human_review = True
-        
-        return evaluation_report
+    async def run_pipeline_with_snapshots(
+        self,
+        files_data: list[tuple[bytes, str]],
+        rubric: TeacherRubric | None = None,
+    ) -> tuple[EvaluationReport, dict[str, Any], dict[str, Any]]:
+        """
+        Execute grading pipeline and return report + persisted snapshot payloads.
+        """
+        return await self._run_pipeline_internal(files_data, rubric=rubric)
 
     async def generate_rubric_pipeline(
         self, 
@@ -167,11 +327,11 @@ class GradingWorkflow:
         """
         # Step 1: Flatten and normalize all inputs
         image_bytes_list = await process_multiple_files(files_data)
-        if settings.enable_layout_preprocess:
-            image_bytes_list = await self._layout_preprocess(
-                image_bytes_list,
-                context_type="REFERENCE",
-            )
+        self._enforce_phase35_contract_enabled()
+        image_bytes_list, _, _ = await self._layout_preprocess(
+            image_bytes_list,
+            context_type="REFERENCE",
+        )
         
         # Step 2: Parallel Perception (Throttled by engine-level semaphore)
         tasks = [
