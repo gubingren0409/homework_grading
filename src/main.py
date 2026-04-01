@@ -10,6 +10,8 @@ from src.api.routes import router as grading_router
 from src.core.exceptions import PerceptionShortCircuitError, GradingSystemError
 from src.core.json_logging import configure_json_logging
 from src.core.trace_context import bind_context, new_trace_id, reset_context
+from src.core.config import settings
+from src.core.http_limits import HardBodyLimitMiddleware
 
 configure_json_logging(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -41,6 +43,11 @@ class TraceContextMiddleware(BaseHTTPMiddleware):
 # Setup Limiter state and handlers
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(
+    HardBodyLimitMiddleware,
+    max_body_bytes=settings.max_request_body_bytes,
+    read_timeout_seconds=settings.request_body_read_timeout_seconds,
+)
 app.add_middleware(TraceContextMiddleware)
 
 # Register Routes

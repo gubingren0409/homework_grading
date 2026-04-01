@@ -15,7 +15,7 @@ import os
 import shutil
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import List, Tuple, Dict, Any
+from typing import List, Tuple, Dict, Any, BinaryIO
 from urllib.parse import urlparse, unquote
 import logging
 
@@ -45,6 +45,14 @@ class BaseStorage(ABC):
             Storage reference (e.g., "file:///path" or "s3://bucket/key")
         """
         pass
+
+    def store_fileobj(self, task_id: str, file_obj: BinaryIO, filename: str) -> str:
+        """
+        Stream-oriented upload path. Default implementation keeps backward
+        compatibility by reading bytes and delegating to store_file.
+        """
+        file_obj.seek(0)
+        return self.store_file(task_id, file_obj.read(), filename)
     
     @abstractmethod
     def retrieve_files(self, file_refs: List[str]) -> List[Tuple[bytes, str]]:
@@ -103,6 +111,20 @@ class LocalStorage(BaseStorage):
         # Return file:// URI for consistency with S3Storage
         uri = file_path.as_uri()
         logger.info(f"[LocalStorage] Stored: {uri} ({len(file_bytes)} bytes)")
+        return uri
+
+    def store_fileobj(self, task_id: str, file_obj: BinaryIO, filename: str) -> str:
+        """Store stream to local filesystem without materializing all bytes in memory."""
+        task_dir = self.base_path / task_id
+        task_dir.mkdir(parents=True, exist_ok=True)
+
+        file_path = task_dir / filename
+        file_obj.seek(0)
+        with file_path.open("wb") as out:
+            shutil.copyfileobj(file_obj, out)
+
+        uri = file_path.as_uri()
+        logger.info(f"[LocalStorage] Stored stream: {uri}")
         return uri
     
     def retrieve_files(self, file_refs: List[str]) -> List[Tuple[bytes, str]]:
@@ -214,6 +236,15 @@ class S3Storage(BaseStorage):
         # Return s3:// URI
         uri = f"s3://{self.bucket}/{object_key}"
         logger.info(f"[S3Storage] Stored: {uri} ({len(file_bytes)} bytes)")
+        return uri
+
+    def store_fileobj(self, task_id: str, file_obj: BinaryIO, filename: str) -> str:
+        """Upload stream to S3-compatible backend."""
+        object_key = f"{task_id}/{filename}"
+        file_obj.seek(0)
+        self.s3_client.upload_fileobj(file_obj, self.bucket, object_key)
+        uri = f"s3://{self.bucket}/{object_key}"
+        logger.info(f"[S3Storage] Stored stream: {uri}")
         return uri
     
     def retrieve_files(self, file_refs: List[str]) -> List[Tuple[bytes, str]]:

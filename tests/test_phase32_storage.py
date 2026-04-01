@@ -53,6 +53,21 @@ def test_local_storage_roundtrip(local_storage, temp_storage_dir):
     assert retrieved_files[0] == (file_bytes, filename)
 
 
+def test_local_storage_store_fileobj(local_storage, temp_storage_dir):
+    """
+    Test: LocalStorage can store stream objects directly.
+    """
+    import io
+
+    task_id = "stream-task-123"
+    payload = io.BytesIO(b"stream-bytes")
+    uri = local_storage.store_fileobj(task_id, payload, "stream.txt")
+    assert uri.startswith("file:///")
+    expected_path = temp_storage_dir / task_id / "stream.txt"
+    assert expected_path.exists()
+    assert expected_path.read_bytes() == b"stream-bytes"
+
+
 def test_local_storage_cleanup(local_storage, temp_storage_dir):
     """
     Test: LocalStorage cleanup deletes task directory.
@@ -120,6 +135,31 @@ def test_s3_storage_store_file(mock_settings):
     
     # Verify URI format
     assert uri == f"s3://test-bucket/{task_id}/{filename}"
+
+
+@patch.dict('sys.modules', {'boto3': Mock()})
+@patch('src.core.storage_adapter.settings')
+def test_s3_storage_store_fileobj(mock_settings):
+    """
+    Test: S3Storage uploads stream object via upload_fileobj.
+    """
+    import io
+    import sys
+
+    mock_boto3 = sys.modules['boto3']
+    mock_client = Mock()
+    mock_boto3.client.return_value = mock_client
+
+    mock_settings.s3_bucket = "test-bucket"
+    mock_settings.s3_endpoint_url = None
+    mock_settings.aws_access_key_id = "test-key"
+    mock_settings.aws_secret_access_key = "test-secret"
+
+    storage = S3Storage()
+    stream = io.BytesIO(b"s3-stream")
+    uri = storage.store_fileobj("task-stream", stream, "x.bin")
+    mock_client.upload_fileobj.assert_called_once()
+    assert uri == "s3://test-bucket/task-stream/x.bin"
 
 
 @patch.dict('sys.modules', {'boto3': Mock()})

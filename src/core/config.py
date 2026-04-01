@@ -40,6 +40,12 @@ class Settings(BaseSettings):
 
     # Phase 35: Layout preprocessing switch (must stay enabled to enforce spatial contract)
     enable_layout_preprocess: bool = True
+
+    # HTTP ingress hard limits (E05)
+    max_request_body_bytes: int = 20 * 1024 * 1024  # 20MB hard cap
+    request_body_read_timeout_seconds: float = 5.0
+    upload_chunk_size_bytes: int = 256 * 1024
+    upload_spool_max_size_bytes: int = 1 * 1024 * 1024
     
     @property
     def uploads_path(self) -> Path:

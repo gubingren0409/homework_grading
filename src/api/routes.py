@@ -3,6 +3,8 @@ import json
 import logging
 import hashlib
 import math
+import asyncio
+import tempfile
 from typing import List, Optional, Dict, Any, Literal
 
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, Query, Request, Response
@@ -37,11 +39,40 @@ from src.perception.engines.qwen_engine import QwenVLMPerceptionEngine
 from src.cognitive.engines.deepseek_engine import DeepSeekCognitiveEngine
 from src.orchestration.workflow import GradingWorkflow
 from src.schemas.rubric_ir import TeacherRubric
+from src.core.config import settings
 
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1", tags=["grading"])
 limiter = Limiter(key_func=get_remote_address)
+
+
+async def _store_upload_file_with_limits(task_id: str, upload: UploadFile) -> str:
+    filename = upload.filename or "upload.bin"
+    total_bytes = 0
+    try:
+        with tempfile.SpooledTemporaryFile(
+            max_size=settings.upload_spool_max_size_bytes,
+            mode="w+b",
+        ) as spool:
+            while True:
+                try:
+                    chunk = await asyncio.wait_for(
+                        upload.read(settings.upload_chunk_size_bytes),
+                        timeout=settings.request_body_read_timeout_seconds,
+                    )
+                except asyncio.TimeoutError as exc:
+                    raise HTTPException(status_code=408, detail="upload read timeout") from exc
+                if not chunk:
+                    break
+                total_bytes += len(chunk)
+                if total_bytes > settings.max_request_body_bytes:
+                    raise HTTPException(status_code=413, detail="file too large")
+                spool.write(chunk)
+            spool.seek(0)
+            return storage.store_fileobj(task_id, spool, filename)
+    finally:
+        await upload.close()
 
 
 # --- Schemas ---
@@ -366,9 +397,7 @@ async def submit_grading_job(
     # 2. Store uploaded files via storage adapter (Phase 32)
     file_refs = []
     for file in files:
-        content = await file.read()
-        # Storage backend writes and returns URI (file:// or s3://)
-        file_ref = storage.store_file(task_id, content, file.filename)
+        file_ref = await _store_upload_file_with_limits(task_id, file)
         file_refs.append(file_ref)
     
     # 3. Pre-persist task state (PENDING) BEFORE queueing

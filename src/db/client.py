@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import os
 import random
 import sqlite3
@@ -11,11 +12,20 @@ from typing import Any, AsyncIterator, Dict, List, Mapping, Optional, Sequence
 import aiosqlite
 
 
+logger = logging.getLogger(__name__)
+
 # 写操作锁重试参数：指数退避 + 轻微抖动，缓解高并发 "database is locked"。
 _WRITE_LOCK_MAX_RETRIES: int = 6
 _WRITE_BACKOFF_BASE_SECONDS: float = 0.05
 _WRITE_BACKOFF_MAX_SECONDS: float = 1.0
 _SQLITE_BUSY_TIMEOUT_MS: int = 5000
+
+_STATUS_WEIGHTS: Dict[str, int] = {
+    "PENDING": 0,
+    "PROCESSING": 1,
+    "COMPLETED": 2,
+    "FAILED": 3,
+}
 
 
 async def _apply_connection_pragmas(db: aiosqlite.Connection) -> None:
@@ -329,6 +339,10 @@ async def update_task_status(
     review_status: Optional[str] = None,
     fallback_reason: Optional[str] = None,
 ) -> None:
+    new_weight = _STATUS_WEIGHTS.get(status)
+    if new_weight is None:
+        raise ValueError(f"Unsupported status transition target: {status}")
+
     async def _op(db: aiosqlite.Connection) -> None:
         assignments = [
             "status = ?",
@@ -345,9 +359,28 @@ async def update_task_status(
         if fallback_reason is not None:
             assignments.append("fallback_reason = ?")
             params.append(fallback_reason)
-        params.append(task_id)
-        sql = f"UPDATE tasks SET {', '.join(assignments)} WHERE task_id = ?"
-        await db.execute(sql, params)
+        params.extend([task_id, new_weight])
+        sql = (
+            f"UPDATE tasks SET {', '.join(assignments)} "
+            "WHERE task_id = ? "
+            "AND (CASE status "
+            "WHEN 'PENDING' THEN 0 "
+            "WHEN 'PROCESSING' THEN 1 "
+            "WHEN 'COMPLETED' THEN 2 "
+            "WHEN 'FAILED' THEN 3 "
+            "ELSE -1 END) < ?"
+        )
+        cursor = await db.execute(sql, params)
+        if cursor.rowcount == 0:
+            logger.warning(
+                "task_status_transition_rejected",
+                extra={
+                    "extra_fields": {
+                        "task_id": task_id,
+                        "target_status": status,
+                    }
+                },
+            )
 
     await _execute_write_with_retry(db_path, _op)
 
