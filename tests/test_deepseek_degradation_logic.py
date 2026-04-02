@@ -5,6 +5,7 @@ import pytest
 
 from src.cognitive.engines.deepseek_engine import DeepSeekCognitiveEngine
 from src.core.config import settings
+from src.prompts.schemas import PromptResolveResult
 from src.schemas.perception_ir import PerceptionOutput, PerceptionNode
 
 
@@ -53,13 +54,34 @@ class _SequencedCompletions:
         return behavior(kwargs)
 
 
+class _FakePromptProvider:
+    async def resolve(self, req):
+        text_vars = {v.name: v.value for v in req.variables}
+        rubric_json = text_vars.get("rubric_json", "")
+        user_text = (
+            f"Perception IR:\n{text_vars.get('perception_ir_json', '')}\n\n"
+            f"Rubric JSON:\n{rubric_json}\n\n"
+            f"Target JSON Schema:\n{text_vars.get('target_json_schema', '')}"
+        )
+        return PromptResolveResult(
+            messages=[
+                {"role": "system", "content": "system"},
+                {"role": "user", "content": [{"type": "text", "text": user_text}]},
+            ],
+            asset_version="test",
+            variant_id="A",
+            token_estimate=128,
+            cache_level="SOURCE",
+        )
+
+
 def _make_engine_with_behaviors(behaviors):
     engine = DeepSeekCognitiveEngine.__new__(DeepSeekCognitiveEngine)
     engine._key_pool = _FakeKeyPool()
     completions = _SequencedCompletions(behaviors)
     engine._clients = {"k1": SimpleNamespace(chat=SimpleNamespace(completions=completions))}
     engine._circuit_breaker = _PassThroughCircuitBreaker()
-    engine._system_prompt_grading_base = "system"
+    engine._prompt_provider = _FakePromptProvider()
     return engine, completions
 
 
