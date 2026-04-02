@@ -4,7 +4,7 @@ import json
 import logging
 from pathlib import Path
 
-from src.perception.engines.qwen_engine import QwenVLMPerceptionEngine
+from src.perception.factory import create_perception_engine
 from src.utils.image_slicer import slice_image_by_layout
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -19,7 +19,7 @@ def _pick_sample_image(data_root: Path) -> Path:
 
 async def run(image_path: Path, context_type: str, target_question: str | None, out_dir: Path) -> None:
     image_bytes = image_path.read_bytes()
-    engine = QwenVLMPerceptionEngine()
+    engine = create_perception_engine()
     layout = await engine.extract_layout(
         image_bytes=image_bytes,
         context_type=context_type,

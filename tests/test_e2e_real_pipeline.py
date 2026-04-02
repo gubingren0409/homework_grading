@@ -2,7 +2,7 @@ import io
 import pytest
 from PIL import Image, ImageDraw
 from src.core.config import settings
-from src.perception.engines.qwen_engine import QwenVLMPerceptionEngine
+from src.perception.factory import create_perception_engine
 from src.cognitive.engines.deepseek_engine import DeepSeekCognitiveEngine
 from src.orchestration.workflow import GradingWorkflow
 from src.schemas.cognitive_ir import EvaluationReport
@@ -37,7 +37,7 @@ async def test_full_pipeline_with_real_engines():
     Focuses on schema integrity and system connectivity.
     """
     # 1. Setup real infrastructure
-    perception_engine = QwenVLMPerceptionEngine()
+    perception_engine = create_perception_engine()
     cognitive_agent = DeepSeekCognitiveEngine()
     
     # 2. Orchestration

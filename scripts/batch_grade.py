@@ -11,7 +11,7 @@ from src.cognitive.engines.deepseek_engine import DeepSeekCognitiveEngine
 from src.core.exceptions import PerceptionShortCircuitError
 from src.db.client import init_db, insert_grading_results
 from src.orchestration.workflow import GradingWorkflow
-from src.perception.engines.qwen_engine import QwenVLMPerceptionEngine
+from src.perception.factory import create_perception_engine
 from src.schemas.cognitive_ir import EvaluationReport
 from src.schemas.perception_ir import PerceptionOutput
 from src.schemas.rubric_ir import TeacherRubric
@@ -260,7 +260,7 @@ async def main() -> None:
         args.concurrency,
     )
 
-    perception_engine = QwenVLMPerceptionEngine()
+    perception_engine = create_perception_engine()
     cognitive_agent = DeepSeekCognitiveEngine()
     workflow = GradingWorkflow(perception_engine, cognitive_agent)
     semaphore = asyncio.Semaphore(args.concurrency)

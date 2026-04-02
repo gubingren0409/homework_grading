@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 from typing import List
 
-from src.perception.engines.qwen_engine import QwenVLMPerceptionEngine
+from src.perception.factory import create_perception_engine
 from src.orchestration.workflow import GradingWorkflow
 from src.cognitive.engines.deepseek_engine import DeepSeekCognitiveEngine
 from src.schemas.perception_ir import PerceptionOutput
@@ -24,7 +24,7 @@ async def test_rubric_extraction():
     """
     Focused test for Track 1: Rubric extraction for previously failed questions.
     """
-    perception_engine = QwenVLMPerceptionEngine()
+    perception_engine = create_perception_engine()
     # We only need perception for this test, but workflow usually needs both
     cognitive_agent = DeepSeekCognitiveEngine() 
     workflow = GradingWorkflow(perception_engine, cognitive_agent)

@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 from pydantic import ValidationError
 
-from src.perception.engines.qwen_engine import QwenVLMPerceptionEngine
+from src.perception.factory import create_perception_engine
 from src.cognitive.engines.deepseek_engine import DeepSeekCognitiveEngine
 from src.orchestration.workflow import GradingWorkflow
 from src.core.exceptions import GradingSystemError
@@ -37,7 +37,7 @@ async def run_extraction(input_files: list[str], output_file: str):
 
     # 2. Pipeline Assembly (Real Engines)
     logger.info("Initializing Real AI Engines for Multi-File Rubric Extraction...")
-    perception_engine = QwenVLMPerceptionEngine()
+    perception_engine = create_perception_engine()
     cognitive_agent = DeepSeekCognitiveEngine()
     workflow = GradingWorkflow(
         perception_engine=perception_engine,

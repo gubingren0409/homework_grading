@@ -31,7 +31,7 @@ from src.core.storage_adapter import storage
 from src.db.client import update_task_status, save_grading_result
 from src.db.client import create_hygiene_interception_record
 from src.orchestration.workflow import GradingWorkflow
-from src.perception.engines.qwen_engine import QwenVLMPerceptionEngine
+from src.perception.factory import create_perception_engine
 from src.cognitive.engines.deepseek_engine import DeepSeekCognitiveEngine
 from src.core.trace_context import bind_context, reset_context, get_trace_id
 from src.core.json_logging import configure_json_logging
@@ -125,7 +125,7 @@ def _build_workflow() -> GradingWorkflow:
     Factory function: Instantiate GradingWorkflow with fresh engine instances.
     Each worker process maintains independent engine pools.
     """
-    perception_engine = QwenVLMPerceptionEngine()
+    perception_engine = create_perception_engine()
     cognitive_agent = DeepSeekCognitiveEngine()
     return GradingWorkflow(
         perception_engine=perception_engine,

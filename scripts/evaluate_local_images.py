@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import List
 
-from src.perception.engines.qwen_engine import QwenVLMPerceptionEngine
+from src.perception.factory import create_perception_engine
 from src.cognitive.engines.deepseek_engine import DeepSeekCognitiveEngine
 from src.orchestration.workflow import GradingWorkflow
 from src.core.exceptions import PerceptionShortCircuitError, GradingSystemError
@@ -31,7 +31,7 @@ async def process_batch(input_dir: str, output_dir: str):
 
     # 1. Pipeline Assembly (Real Engines)
     logger.info("Initializing Real AI Grading Engines (Qwen-VL + DeepSeek-V3)...")
-    perception_engine = QwenVLMPerceptionEngine()
+    perception_engine = create_perception_engine()
     cognitive_agent = DeepSeekCognitiveEngine()
     workflow = GradingWorkflow(
         perception_engine=perception_engine,

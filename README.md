@@ -91,6 +91,7 @@ DEEPSEEK_API_KEYS=sk-aaa,sk-bbb,sk-ccc,sk-ddd
 
 # 模型配置（可选）
 QWEN_MODEL_NAME=qwen-vl-max
+PERCEPTION_PROVIDER=qwen
 DEEPSEEK_MODEL_NAME=deepseek-reasoner
 DEEPSEEK_USE_STREAM=false  # 推荐 false：缓存命中率更高
 ```

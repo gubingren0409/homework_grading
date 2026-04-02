@@ -35,7 +35,7 @@ from src.worker.main import grade_homework_task
 from src.core.storage_adapter import storage
 from src.core.trace_context import get_trace_id
 from src.worker.main import emit_trace_probe
-from src.perception.engines.qwen_engine import QwenVLMPerceptionEngine
+from src.perception.factory import create_perception_engine
 from src.cognitive.engines.deepseek_engine import DeepSeekCognitiveEngine
 from src.orchestration.workflow import GradingWorkflow
 from src.schemas.rubric_ir import TeacherRubric
@@ -315,7 +315,7 @@ async def generate_rubric_job(
         content = await file.read()
         files_data.append((content, file.filename))
 
-    perception_engine = QwenVLMPerceptionEngine()
+    perception_engine = create_perception_engine()
     cognitive_agent = DeepSeekCognitiveEngine()
     workflow = GradingWorkflow(
         perception_engine=perception_engine,

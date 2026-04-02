@@ -2,7 +2,7 @@ import io
 import pytest
 from PIL import Image, ImageDraw
 from src.core.config import settings
-from src.perception.engines.qwen_engine import QwenVLMPerceptionEngine
+from src.perception.factory import create_perception_engine
 from src.schemas.perception_ir import PerceptionOutput
 
 
@@ -35,7 +35,7 @@ async def test_qwen_engine_real_network_call():
     a real network request and return a valid PerceptionOutput.
     """
     # 1. Initialization
-    engine = QwenVLMPerceptionEngine()
+    engine = create_perception_engine()
     image_bytes = generate_test_image_bytes()
     
     # 2. Execution

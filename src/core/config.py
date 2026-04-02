@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     qwen_api_keys: str | None = None # Comma-separated keys
     qwen_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     qwen_model_name: str = "qwen-vl-max"
+    perception_provider: str = "qwen"
 
     # DeepSeek Configuration
     deepseek_api_key: str | None = None # Legacy support
@@ -84,6 +85,14 @@ class Settings(BaseSettings):
         if not source:
             return []
         return [k.strip() for k in source.split(",") if k.strip()]
+
+    @field_validator("perception_provider")
+    @classmethod
+    def _normalize_perception_provider(cls, value: str) -> str:
+        normalized = (value or "").strip().lower()
+        if not normalized:
+            raise ValueError("perception_provider must be a non-empty string")
+        return normalized
 
     model_config = SettingsConfigDict(
         env_file=".env",

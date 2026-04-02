@@ -12,7 +12,7 @@ from tqdm.asyncio import tqdm
 from pydantic import ValidationError
 
 # 导入现有架构组件
-from src.perception.engines.qwen_engine import QwenVLMPerceptionEngine
+from src.perception.factory import create_perception_engine
 from src.cognitive.engines.deepseek_engine import DeepSeekCognitiveEngine
 from src.orchestration.workflow import GradingWorkflow
 from src.schemas.rubric_ir import TeacherRubric
@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 class BaselineEvaluator:
     def __init__(self, concurrency: int = 2):
-        self.perception = QwenVLMPerceptionEngine()
+        self.perception = create_perception_engine()
         self.cognitive = DeepSeekCognitiveEngine()
         self.workflow = GradingWorkflow(self.perception, self.cognitive)
         self.semaphore = asyncio.Semaphore(concurrency)
