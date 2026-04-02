@@ -3,8 +3,7 @@ import logging
 import re
 import json
 import asyncio
-import itertools
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Sequence
 from io import BytesIO
 
 import openai
@@ -13,10 +12,11 @@ from src.core.config import settings
 from src.core.connection_pool import CircuitBreakerKeyPool, AllKeysExhaustedError
 from src.core.exceptions import GradingSystemError
 from src.core.circuit_breaker import CircuitBreaker, CircuitBreakerOpenError  # Phase 33
-from src.core.trace_context import outbound_trace_headers
+from src.core.trace_context import outbound_trace_headers, get_task_id, get_trace_id
 from src.perception.base import BasePerceptionEngine
 from src.schemas.perception_ir import PerceptionOutput, LayoutIR
-from src.perception.prompts import QWEN_PERCEPTION_SYSTEM_PROMPT, LAYOUT_ANALYSIS_PROMPT
+from src.prompts.provider import get_prompt_provider
+from src.prompts.schemas import PromptResolveRequest, PromptVariable
 
 
 logger = logging.getLogger(__name__)
@@ -43,8 +43,7 @@ class QwenVLMPerceptionEngine(BasePerceptionEngine):
             ) for key in keys
         }
 
-        # Use centralized system prompt from prompts.py
-        self._system_prompt = QWEN_PERCEPTION_SYSTEM_PROMPT
+        self._prompt_provider = get_prompt_provider()
         # Throttling: Max 3 concurrent physical connections to Qwen API
         self._api_semaphore = asyncio.Semaphore(3)
         
@@ -92,6 +91,35 @@ class QwenVLMPerceptionEngine(BasePerceptionEngine):
     def _image_dimensions(self, image_bytes: bytes) -> tuple[int, int]:
         with Image.open(BytesIO(image_bytes)) as img:
             return img.size  # (width, height)
+
+    def _prompt_context(self) -> tuple[str, str]:
+        trace_id = get_trace_id()
+        if not trace_id or trace_id == "-":
+            trace_id = "local-trace"
+        task_id = get_task_id()
+        bucket_key = task_id if task_id and task_id != "-" else trace_id
+        return trace_id, bucket_key
+
+    async def _resolve_prompt_messages(
+        self,
+        *,
+        prompt_key: str,
+        variables: Sequence[PromptVariable],
+    ) -> list[dict]:
+        trace_id, bucket_key = self._prompt_context()
+        prompt_bundle = await self._prompt_provider.resolve(
+            PromptResolveRequest(
+                prompt_key=prompt_key,
+                model=settings.qwen_model_name,
+                trace_id=trace_id,
+                bucket_key=bucket_key,
+                locale="zh-CN",
+                variables=list(variables),
+                max_input_tokens=8192,
+                reserve_output_tokens=1536,
+            )
+        )
+        return prompt_bundle.messages
 
     def _sanitize_layout_coordinates(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -145,9 +173,8 @@ class QwenVLMPerceptionEngine(BasePerceptionEngine):
     async def _call_qwen_json(
         self,
         *,
-        base64_image: str,
-        system_prompt: str,
-        user_text: str,
+        prompt_key: str,
+        prompt_variables: Sequence[PromptVariable],
         max_tokens: int = 2048,
         temperature: float = 0.0,
     ) -> Dict[str, Any]:
@@ -157,6 +184,10 @@ class QwenVLMPerceptionEngine(BasePerceptionEngine):
         connection_error_count = 0
         max_retries = 10
         max_connection_errors = 5
+        messages = await self._resolve_prompt_messages(
+            prompt_key=prompt_key,
+            variables=prompt_variables,
+        )
 
         for attempt in range(max_retries + 1):
             try:
@@ -175,16 +206,7 @@ class QwenVLMPerceptionEngine(BasePerceptionEngine):
                         return await client.chat.completions.create(
                             model=settings.qwen_model_name,
                             extra_headers=outbound_trace_headers(),
-                            messages=[
-                                {"role": "system", "content": system_prompt},
-                                {
-                                    "role": "user",
-                                    "content": [
-                                        {"type": "text", "text": user_text},
-                                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}},
-                                    ],
-                                },
-                            ],
+                            messages=messages,  # type: ignore[arg-type]
                             temperature=temperature,
                             max_tokens=max_tokens,
                             response_format={"type": "json_object"},
@@ -205,7 +227,7 @@ class QwenVLMPerceptionEngine(BasePerceptionEngine):
                 raise
             except openai.RateLimitError:
                 connection_error_count = 0
-                self._key_pool.report_429(current_key)  # type: ignore[name-defined]
+                self._key_pool.report_429(current_key)
                 await asyncio.sleep(0.5)
                 continue
             except (openai.APIConnectionError, openai.APITimeoutError) as net_err:
@@ -234,16 +256,15 @@ class QwenVLMPerceptionEngine(BasePerceptionEngine):
         """
         width, height = self._image_dimensions(image_bytes)
         base64_image = self._encode_image(image_bytes)
-        user_text = (
-            f"context_type={context_type}\n"
-            f"target_question_no={target_question_no if target_question_no else 'AUTO'}\n"
-            "Return only JSON following the schema."
-        )
+        target_value = target_question_no if target_question_no else "AUTO"
 
         raw = await self._call_qwen_json(
-            base64_image=base64_image,
-            system_prompt=LAYOUT_ANALYSIS_PROMPT,
-            user_text=user_text,
+            prompt_key="qwen.layout.extract",
+            prompt_variables=[
+                PromptVariable(name="context_type", kind="text", value=context_type),
+                PromptVariable(name="target_question_no", kind="text", value=target_value),
+                PromptVariable(name="image_1", kind="image_base64", value=base64_image),
+            ],
             max_tokens=2048,
             temperature=0.0,
         )
@@ -261,102 +282,19 @@ class QwenVLMPerceptionEngine(BasePerceptionEngine):
         """
         Asynchronously processes raw image bytes using Qwen-VL with Circuit-Breaker pooling (Phase 22.6).
         """
-        from src.core.connection_pool import AllKeysExhaustedError
         base64_image = self._encode_image(image_bytes)
-        
-        # Throttling and retry logic
-        max_retries = 10 
-        connection_error_count = 0
-        MAX_CONNECTION_ERRORS = 5
-        base_delay = 1.0
-        
-        for attempt in range(max_retries + 1):
-            try:
-                # 1. Get healthy key
-                key_meta = self._key_pool.get_key_metadata()
-                current_key = key_meta["key"]
-                client = self._clients[current_key]
-
-                async with self._api_semaphore:
-                    logger.info(f"Initiating VLM request to {settings.qwen_model_name} (Attempt {attempt + 1})...")
-                    logger.info(
-                        "llm_request_outbound",
-                        extra={"extra_fields": {"component": "qwen-engine", "model": settings.qwen_model_name}},
-                    )
-                    
-                    # Phase 33: Wrap API call with circuit breaker
-                    @self._circuit_breaker
-                    async def _protected_api_call():
-                        return await client.chat.completions.create(
-                            model=settings.qwen_model_name,
-                            extra_headers=outbound_trace_headers(),
-                            messages=[
-                                {"role": "system", "content": self._system_prompt},
-                                {
-                                    "role": "user",
-                                    "content": [
-                                        {"type": "text", "text": "Extract all structural elements from this homework image."},
-                                        {
-                                            "type": "image_url",
-                                            "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}
-                                        }
-                                    ]
-                                }
-                            ],
-                            temperature=0.01,
-                            response_format={"type": "json_object"}
-                        )
-                    
-                    response = await _protected_api_call()
-                    
-                    # Success: Reset network failure counter
-                    connection_error_count = 0
-                    
-                    raw_response_text = response.choices[0].message.content
-                    if not raw_response_text:
-                        raise GradingSystemError("Received empty response from Qwen-VL.")
-
-                    cleaned_text = self._clean_json_text(raw_response_text)
-                    
-                    try:
-                        parsed_dict = json.loads(cleaned_text)
-                        sanitized_dict = self._sanitize_coordinates(parsed_dict)
-                        
-                        return PerceptionOutput.model_validate(sanitized_dict)
-                        
-                    except Exception as ve:
-                        logger.error(f"Schema validation failed: {ve}\nRaw Output: {cleaned_text}")
-                        raise GradingSystemError(f"VLM output failed schema validation: {str(ve)}")
-
-            except AllKeysExhaustedError as e:
-                logger.error(f"FATAL: {e}")
-                raise GradingSystemError("All Qwen-VL API keys are rate-limited. System saturated.")
-            
-            except CircuitBreakerOpenError as e:
-                # Phase 33: Circuit breaker OPEN, service degraded
-                logger.error(f"Qwen API circuit breaker OPEN: {e}")
-                raise GradingSystemError(
-                    f"Qwen API service degraded. Circuit breaker active. {str(e)}"
-                )
-
-            except openai.RateLimitError:
-                # 2. CIRCUIT BREAKER FAILOVER
-                connection_error_count = 0
-                logger.warning(f"Rate limit hit on Qwen Key. Tripping circuit breaker... (Attempt {attempt+1})")
-                self._key_pool.report_429(current_key)
-                await asyncio.sleep(0.5) 
-                continue
-
-            except (openai.APIConnectionError, openai.APITimeoutError) as net_err:
-                connection_error_count += 1
-                if connection_error_count > MAX_CONNECTION_ERRORS:
-                    logger.error(f"Global network failure detected for Qwen (Errors: {connection_error_count}). Aborting.")
-                    raise GradingSystemError(f"Persistent network instability for Qwen: {str(net_err)}")
-                
-                logger.warning(f"Qwen Network instability (Attempt {attempt+1}, Failures: {connection_error_count}). Executing Failover...")
-                await asyncio.sleep(2.0)
-                continue
-
-            except Exception as e:
-                logger.error(f"Unexpected error in Qwen Perception Engine: {e}")
-                raise GradingSystemError(f"An unexpected error occurred during perception: {str(e)}")
+        raw = await self._call_qwen_json(
+            prompt_key="qwen.perception.extract",
+            prompt_variables=[
+                PromptVariable(name="context_type", kind="text", value="student_homework"),
+                PromptVariable(name="image_1", kind="image_base64", value=base64_image),
+            ],
+            max_tokens=2048,
+            temperature=0.01,
+        )
+        try:
+            sanitized_dict = self._sanitize_coordinates(raw)
+            return PerceptionOutput.model_validate(sanitized_dict)
+        except Exception as ve:
+            logger.error(f"Schema validation failed: {ve}\nRaw Output: {raw}")
+            raise GradingSystemError(f"VLM output failed schema validation: {str(ve)}")

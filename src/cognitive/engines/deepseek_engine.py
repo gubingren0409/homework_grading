@@ -2,20 +2,20 @@ import logging
 import re
 import json
 import asyncio
-import itertools
-from typing import Any
 
 import openai
 from pydantic import ValidationError
 from src.cognitive.base import BaseCognitiveAgent
 from src.core.config import settings
 from src.core.connection_pool import CircuitBreakerKeyPool, AllKeysExhaustedError
-from src.core.exceptions import CognitiveRefusalError, GradingSystemError
+from src.core.exceptions import GradingSystemError
 from src.core.circuit_breaker import CircuitBreaker, CircuitBreakerOpenError  # Phase 33
-from src.core.trace_context import outbound_trace_headers
+from src.core.trace_context import outbound_trace_headers, get_trace_id, get_task_id
 from src.schemas.cognitive_ir import EvaluationReport
 from src.schemas.perception_ir import PerceptionOutput
 from src.schemas.rubric_ir import TeacherRubric
+from src.prompts.provider import get_prompt_provider
+from src.prompts.schemas import PromptResolveRequest, PromptVariable
 
 
 logger = logging.getLogger(__name__)
@@ -56,36 +56,15 @@ class DeepSeekCognitiveEngine(BaseCognitiveAgent):
                 openai.InternalServerError,
             ),
         )
-        
-        # Phase 15 & 16: Hybrid Prompt with Grading Tolerance and Reasoner formatting
-        self._format_instruction = (
-            "\n\nCRITICAL CONSTRAINTS:\n"
-            "1. You MUST return ONLY a valid JSON object enclosed within ```json and ``` markdown blocks.\n"
-            "2. The JSON object MUST strictly conform to the target JSON Schema.\n"
-            "3. DO NOT output anything outside the markdown blocks after your thinking process."
-        )
+        self._prompt_provider = get_prompt_provider()
 
-        self._system_prompt_grading_base = (
-            "You are an Educational-Grade Mathematical & Logical Verification Engine.\n"
-            "Your objective is to evaluate student work based on Perception IR JSON data and a Rubric.\n\n"
-            "【阅卷规则强化 (Grading Rule Reinforcement)】：\n"
-            "1. 抗位移评判 (Anti-Shift Evaluation)：对于多空连答题，必须基于感知层提供的题号/空号（Key）进行一对一独立比对。即使存在漏答，也不得影响后续空位的独立判分。禁止根据数组索引顺序进行连坐扣分。\n"
-            "2. OCR 与笔误容忍 (OCR Tolerance)：感知层提取的文本可能存在形近字/音近字识别错误（例如将物理符号 α 识别为 'a'，或将 '增大' 识别为 '增犬'）。如果提取文本与标准答案在物理语义上等价，或差异明显属于 VLM 视觉识别误差而非学生物理概念错误，必须判定为正确，不得扣分。\n"
-            "3. 跳步与逻辑同构 (Step-skipping Acceptance)：若学生跳过基础代数化简或简单移项，只要上下文逻辑连贯、推导起止符合物理定律，判定为正确，【禁止以缺少中间步骤为由扣分】。\n"
-            "4. 严格依据 Rubric 扣分：扣分必须精确映射到传入 Rubric 的 GradingPoint 分值，禁止自创扣分项。\n\n"
-            "【人工复核触发逻辑】：\n"
-            "当且仅当 IR 数据呈现极度混乱的逻辑断层，且你无法还原学生意图，或你高度怀疑上游视觉提取发生了灾难性乱码导致信息缺失时，必须将 requires_human_review 设为 true。\n\n"
-            "【最高纪律：拒绝批改权】\n"
-            "如果感知层提取的文本属于以下情况：极度残缺导致物理逻辑断裂、毫无意义的乱码、或与本题物理考点毫无关联（如纯粹的涂鸦提取物）。\n"
-            "你必须立即停止推导，直接输出 JSON：\n"
-            "将 `status` 设为 \"REJECTED_UNREADABLE\"，`total_score_deduction` 设为 0，`is_fully_correct` 设为 false，`step_evaluations` 设为空数组 []。并在总评语中简述拒绝原因。绝对禁止试图通过猜测来强行打分。"
-        ) + self._format_instruction
-
-        self._system_prompt_rubric_base = (
-            "You are a Senior Science & Math Curriculum Expert. "
-            "Your task is to analyze a standard model answer provided as a Perception IR JSON "
-            "and generate a structured TeacherRubric."
-        ) + self._format_instruction
+    def _prompt_context(self) -> tuple[str, str]:
+        trace_id = get_trace_id()
+        if not trace_id or trace_id == "-":
+            trace_id = "local-trace"
+        task_id = get_task_id()
+        bucket_key = task_id if task_id and task_id != "-" else trace_id
+        return trace_id, bucket_key
 
     def _extract_json_content(self, text: str) -> str:
         """
@@ -119,12 +98,26 @@ class DeepSeekCognitiveEngine(BaseCognitiveAgent):
     ) -> EvaluationReport:
         """Evaluate student work with configurable stream strategy and deterministic fallback."""
         ir_json_input = perception_data.model_dump_json()
-        user_content = f"Evaluate the following Perception IR data:\n{ir_json_input}"
-        if rubric:
-            user_content = f"Rubric:\n{rubric.model_dump_json()}\n\nEvaluate work:\n{ir_json_input}"
-        
         target_schema = json.dumps(EvaluationReport.model_json_schema(), indent=2)
-        final_user_content = f"{user_content}\n\nTarget JSON Schema:\n{target_schema}"
+        rubric_json = rubric.model_dump_json() if rubric is not None else ""
+        trace_id, bucket_key = self._prompt_context()
+        prompt_provider = getattr(self, "_prompt_provider", None) or get_prompt_provider()
+        prompt_bundle = await prompt_provider.resolve(
+            PromptResolveRequest(
+                prompt_key="deepseek.cognitive.evaluate",
+                model=settings.deepseek_model_name,
+                trace_id=trace_id,
+                bucket_key=bucket_key,
+                locale="zh-CN",
+                variables=[
+                    PromptVariable(name="perception_ir_json", kind="text", value=ir_json_input),
+                    PromptVariable(name="target_json_schema", kind="text", value=target_schema),
+                    PromptVariable(name="rubric_json", kind="text", value=rubric_json),
+                ],
+                max_input_tokens=8192,
+                reserve_output_tokens=1536,
+            )
+        )
         
         max_retries = 15
         connection_error_count = 0
@@ -176,10 +169,7 @@ class DeepSeekCognitiveEngine(BaseCognitiveAgent):
                         return await client.chat.completions.create(
                             model=model_to_use,
                             extra_headers=outbound_trace_headers(),
-                            messages=[
-                                {"role": "system", "content": self._system_prompt_grading_base},
-                                {"role": "user", "content": final_user_content}
-                            ],
+                            messages=prompt_bundle.messages,  # type: ignore[arg-type]
                             temperature=None,
                             stream=True
                         )
@@ -216,10 +206,7 @@ class DeepSeekCognitiveEngine(BaseCognitiveAgent):
                         return await client.chat.completions.create(
                             model=model_to_use,
                             extra_headers=outbound_trace_headers(),
-                            messages=[
-                                {"role": "system", "content": self._system_prompt_grading_base},
-                                {"role": "user", "content": final_user_content}
-                            ],
+                            messages=prompt_bundle.messages,  # type: ignore[arg-type]
                             stream=False,
                             timeout=90.0
                         )
@@ -326,6 +313,23 @@ class DeepSeekCognitiveEngine(BaseCognitiveAgent):
         
         ir_json_input = perception_data.model_dump_json()
         target_schema = json.dumps(TeacherRubric.model_json_schema(), indent=2)
+        trace_id, bucket_key = self._prompt_context()
+        prompt_provider = getattr(self, "_prompt_provider", None) or get_prompt_provider()
+        prompt_bundle = await prompt_provider.resolve(
+            PromptResolveRequest(
+                prompt_key="deepseek.cognitive.rubric",
+                model=settings.deepseek_model_name,
+                trace_id=trace_id,
+                bucket_key=bucket_key,
+                locale="zh-CN",
+                variables=[
+                    PromptVariable(name="perception_ir_json", kind="text", value=ir_json_input),
+                    PromptVariable(name="target_json_schema", kind="text", value=target_schema),
+                ],
+                max_input_tokens=8192,
+                reserve_output_tokens=1536,
+            )
+        )
         
         try:
             logger.info("Generating TeacherRubric from model answer IR (Reasoner)...")
@@ -340,10 +344,7 @@ class DeepSeekCognitiveEngine(BaseCognitiveAgent):
                 return await client.chat.completions.create(
                     model=settings.deepseek_model_name,
                     extra_headers=outbound_trace_headers(),
-                    messages=[
-                        {"role": "system", "content": self._system_prompt_rubric_base},
-                        {"role": "user", "content": f"Extract rubric from this model answer IR:\n{ir_json_input}\n\nTarget Schema:\n{target_schema}"}
-                    ]
+                    messages=prompt_bundle.messages,  # type: ignore[arg-type]
                 )
             
             response = await _protected_rubric_call()
