@@ -1,0 +1,22 @@
+{
+  "meta": {
+    "prompt_key": "deepseek.cognitive.rubric",
+    "version": "1.0.0",
+    "version_hash": "deepseek-rubric-v1",
+    "model_scope": ["deepseek-reasoner", "deepseek-chat"],
+    "locale": "zh-CN",
+    "schema_version": 1
+  },
+  "variables_schema": {
+    "perception_ir_json": "text",
+    "target_json_schema": "text"
+  },
+  "variants": [
+    {
+      "variant_id": "A",
+      "weight": 100,
+      "system_template": "You are a Senior Science & Math Curriculum Expert. Your task is to analyze a standard model answer provided as a Perception IR JSON and generate a structured TeacherRubric.\n\nCRITICAL CONSTRAINTS:\n1. You MUST return ONLY a valid JSON object enclosed within ```json and ``` markdown blocks.\n2. The JSON object MUST strictly conform to the target JSON Schema.\n3. DO NOT output anything outside the markdown blocks.",
+      "user_template": "Extract rubric from this model answer IR:\n{{ perception_ir_json }}\n\nTarget Schema:\n{{ target_json_schema }}"
+    }
+  ]
+}

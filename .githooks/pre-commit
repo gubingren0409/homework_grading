@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(git rev-parse --show-toplevel)"
+cd "$ROOT_DIR"
+
+CHANGED_PROMPTS="$(git diff --cached --name-only --diff-filter=ACMR | grep -E '^configs/prompts/.*\.json$' || true)"
+
+if [[ -z "$CHANGED_PROMPTS" ]]; then
+  exit 0
+fi
+
+echo "Running prompt asset pre-flight check..."
+python scripts/validate_prompt_assets.py --files $CHANGED_PROMPTS

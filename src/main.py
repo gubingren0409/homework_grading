@@ -12,6 +12,7 @@ from src.core.json_logging import configure_json_logging
 from src.core.trace_context import bind_context, new_trace_id, reset_context
 from src.core.config import settings
 from src.core.http_limits import HardBodyLimitMiddleware
+from src.prompts.provider import get_prompt_provider
 
 configure_json_logging(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -23,6 +24,8 @@ app = FastAPI(
     description="Scalable API for AI-driven homework evaluation using decoupled Perception and Cognition layers.",
     version="0.1.0"
 )
+
+_prompt_provider = get_prompt_provider()
 
 
 class TraceContextMiddleware(BaseHTTPMiddleware):
@@ -52,6 +55,16 @@ app.add_middleware(TraceContextMiddleware)
 
 # Register Routes
 app.include_router(grading_router)
+
+
+@app.on_event("startup")
+async def startup_prompt_provider() -> None:
+    await _prompt_provider.start()
+
+
+@app.on_event("shutdown")
+async def shutdown_prompt_provider() -> None:
+    await _prompt_provider.stop()
 
 
 @app.exception_handler(PerceptionShortCircuitError)

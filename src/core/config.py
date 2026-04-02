@@ -46,6 +46,16 @@ class Settings(BaseSettings):
     request_body_read_timeout_seconds: float = 5.0
     upload_chunk_size_bytes: int = 256 * 1024
     upload_spool_max_size_bytes: int = 1 * 1024 * 1024
+
+    # Prompt provider foundation (Phase 41)
+    prompts_dir: str = "configs/prompts"
+    prompt_l1_ttl_seconds: int = 120
+    prompt_l1_swr_seconds: int = 30
+    prompt_l2_ttl_seconds: int = 1800
+    prompt_pull_interval_seconds: int = 30
+    prompt_l2_key_prefix: str = "prompt:l2:"
+    prompt_invalidation_channel: str = "prompt:invalidate"
+    prompt_invalidation_bus_enabled: bool = True
     
     @property
     def uploads_path(self) -> Path:
