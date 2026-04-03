@@ -357,6 +357,27 @@ async def _ensure_prompt_control_tables(db: aiosqlite.Connection) -> None:
     await db.execute("CREATE INDEX IF NOT EXISTS idx_prompt_ops_action ON prompt_ops_audit_log(action)")
     await db.execute("CREATE INDEX IF NOT EXISTS idx_prompt_ops_created_at ON prompt_ops_audit_log(created_at)")
     await db.execute("CREATE INDEX IF NOT EXISTS idx_prompt_ops_prompt_key ON prompt_ops_audit_log(prompt_key)")
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ops_feature_flags (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            deployment_environment TEXT NOT NULL DEFAULT 'dev',
+            provider_switch_enabled INTEGER NOT NULL DEFAULT 1 CHECK (provider_switch_enabled IN (0, 1)),
+            prompt_control_enabled INTEGER NOT NULL DEFAULT 1 CHECK (prompt_control_enabled IN (0, 1)),
+            router_control_enabled INTEGER NOT NULL DEFAULT 1 CHECK (router_control_enabled IN (0, 1)),
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    await db.execute(
+        """
+        INSERT INTO ops_feature_flags (
+            id, deployment_environment, provider_switch_enabled, prompt_control_enabled, router_control_enabled
+        )
+        VALUES (1, 'dev', 1, 1, 1)
+        ON CONFLICT(id) DO NOTHING
+        """
+    )
 
 
 async def _has_legacy_review_columns(db: aiosqlite.Connection) -> bool:
@@ -1527,6 +1548,80 @@ async def list_prompt_ops_audit(
             if "no such table" in str(exc).lower():
                 return []
             raise
+
+
+async def get_ops_feature_flags(db_path: str) -> Dict[str, Any]:
+    async with _open_connection(db_path) as db:
+        try:
+            await _ensure_prompt_control_tables(db)
+            async with db.execute(
+                """
+                SELECT deployment_environment, provider_switch_enabled, prompt_control_enabled, router_control_enabled, updated_at
+                FROM ops_feature_flags
+                WHERE id = 1
+                """
+            ) as cursor:
+                row = await cursor.fetchone()
+                if row is None:
+                    return {
+                        "deployment_environment": "dev",
+                        "provider_switch_enabled": True,
+                        "prompt_control_enabled": True,
+                        "router_control_enabled": True,
+                        "updated_at": None,
+                    }
+                return {
+                    "deployment_environment": str(row[0]),
+                    "provider_switch_enabled": bool(row[1]),
+                    "prompt_control_enabled": bool(row[2]),
+                    "router_control_enabled": bool(row[3]),
+                    "updated_at": row[4],
+                }
+        except (aiosqlite.OperationalError, sqlite3.OperationalError) as exc:
+            if "no such table" in str(exc).lower():
+                return {
+                    "deployment_environment": "dev",
+                    "provider_switch_enabled": True,
+                    "prompt_control_enabled": True,
+                    "router_control_enabled": True,
+                    "updated_at": None,
+                }
+            raise
+
+
+async def upsert_ops_feature_flags(
+    db_path: str,
+    *,
+    deployment_environment: str,
+    provider_switch_enabled: bool,
+    prompt_control_enabled: bool,
+    router_control_enabled: bool,
+) -> None:
+    async def _op(db: aiosqlite.Connection) -> None:
+        await _ensure_prompt_control_tables(db)
+        await db.execute(
+            """
+            INSERT INTO ops_feature_flags (
+                id, deployment_environment, provider_switch_enabled, prompt_control_enabled, router_control_enabled, updated_at
+            )
+            VALUES (1, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(id)
+            DO UPDATE SET
+                deployment_environment=excluded.deployment_environment,
+                provider_switch_enabled=excluded.provider_switch_enabled,
+                prompt_control_enabled=excluded.prompt_control_enabled,
+                router_control_enabled=excluded.router_control_enabled,
+                updated_at=CURRENT_TIMESTAMP
+            """,
+            (
+                deployment_environment,
+                1 if provider_switch_enabled else 0,
+                1 if prompt_control_enabled else 0,
+                1 if router_control_enabled else 0,
+            ),
+        )
+
+    await _execute_write_with_retry(db_path, _op)
 
 
 async def insert_skill_validation_records(

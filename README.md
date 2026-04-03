@@ -1,606 +1,256 @@
-# 🤖 AI Homework Grading System
+# AI Homework Grading System
 
 [![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Phase](https://img.shields.io/badge/Phase-27.1-brightgreen.svg)](docs/handoffs/)
+[![Phase](https://img.shields.io/badge/Phase-D%20Complete-brightgreen.svg)](docs/handoffs/)
 
-基于多模态大模型的智能作业批改系统，采用双引擎架构（Qwen-VL + DeepSeek-R1），实现自动化、高精度的理科作业评分。
-
----
-
-## ✨ 核心特性
-
-### 🎯 双引擎架构
-- **感知层 (Qwen-VL)**: 视觉信息提取，OCR + 公式识别 + 图表理解
-- **认知层 (DeepSeek-R1)**: 逻辑推理与评分，支持复杂物理/数学推导验证
-- **Skill 扩展层 (可选)**: 外部版面解析与客观校验（默认关闭，失败可回退）
-
-### 🛡️ 分层防御机制
-- **感知层防线**: 图像质量检测，拦截完全不可读的输入
-- **认知层防线**: 语义相关性判断，拒绝逻辑断裂和无关内容
-- **状态机驱动**: `SCORED` / `REJECTED_UNREADABLE` 明确区分
-
-### 🚀 生产特性
-- ⚡ **异步批量处理**: 基于 `asyncio.gather` 的高并发批改
-- 🔄 **熔断器模式**: API Key 池化 + 自动故障转移
-- 📊 **持久化存储**: SQLite 数据库 + JSON 报告双轨落盘
-- 🔍 **增量重跑**: 自动跳过已成功批改的样本
-- 📈 **降级策略**: DeepSeek-R1 → DeepSeek-Chat 自动降级
-- 🎯 **混沌工程**: 极端数据验证，100% 拦截准确率
+面向理科作业场景的多模态批改系统。当前代码已形成 **感知（Perception）+ 认知（Cognition）+ 异步编排（FastAPI + Celery + Redis）+ Prompt 控制面 + 复核运营 API** 的完整后端能力。
 
 ---
 
-## 🏗️ 架构设计
+## 1. 当前完成度（按代码现状）
 
+| 领域 | 状态 | 说明 |
+| --- | --- | --- |
+| Phase A（能力/契约/SLA） | 已完成 | 能力目录、契约目录、SLA 摘要接口均已上线 |
+| Phase B（能力库扩展） | 已完成（核心） | 多 provider、路由策略、自动熔断控制已接入 |
+| Phase C（数据与评测） | 已完成 | 数据集闭环指标、运行看板、回归矩阵自动化 |
+| Phase D（前端支撑接口） | 已完成 | D1 学生台 / D2 复核台 / D3 运营台接口收口 |
+| P0 技术债 | 已完成 | runtime telemetry 持久化 + 看板数据源硬化 |
+| P1 技术债 | 已完成 | Prompt 热更新控制面 + A/B 配置与审计 |
+| 外部 Skills 灰度 | 已落地基座 | Layout/Validation 网关可用，默认关闭外部调用 |
+
+---
+
+## 2. 架构总览
+
+1. **API Gateway（`src/api`）**  
+   负责任务提交、状态查询、SSE 推送、复核接口、运营接口与契约目录接口。
+
+2. **异步 Worker（`src/worker`）**  
+   任务入队后由 Celery 执行工作流，写入结果、快照、遥测并发布状态事件。
+
+3. **编排层（`src/orchestration/workflow.py`）**  
+   强制 Phase35 版面契约门禁（layout preprocess），输出感知/认知快照并维持区域锚点一致性。
+
+4. **算法层（`src/perception` + `src/cognitive`）**  
+   - 感知：`qwen` / `mock` provider  
+   - 认知：DeepSeek 路由与降级策略（自动熔断 + token 阈值 + fallback）
+
+5. **Prompt 控制面（`src/prompts`）**  
+   L1/L2/LKG、失效广播、热更新、forced variant、A/B 灰度与审计链路。
+
+6. **Skills 基座（`src/skills`）**  
+   支持外接 Layout Parser 与 Validation Executor，带 fail-open 与记录落库。
+
+7. **数据层（`src/db` + SQLite）**  
+   任务状态、批改结果、标注资产、卫生拦截、运行遥测、Prompt 控制与审计持久化。
+
+---
+
+## 3. 目录概览（职责维度）
+
+```text
+homework_grader_system/
+├── src/
+│   ├── api/                # FastAPI 路由、依赖、SSE
+│   ├── worker/             # Celery worker 与异步执行链路
+│   ├── orchestration/      # 端到端流程编排（Phase35 门禁 + 快照）
+│   ├── perception/         # 视觉感知引擎与 provider factory
+│   ├── cognitive/          # 认知判分引擎与路由控制
+│   ├── prompts/            # Prompt provider、缓存、A/B、失效机制
+│   ├── skills/             # 外部 skill 适配与验证落库
+│   ├── db/                 # schema 与数据访问层
+│   ├── schemas/            # IR 与 API 数据模型
+│   └── core/               # 配置、日志、限流与中间件
+├── configs/prompts/        # Prompt 资产
+├── scripts/                # 回归脚本、迁移脚本、验证脚本
+├── tests/                  # API/工作流/策略/skills 回归测试
+├── .github/workflows/      # CI（Phase C 矩阵、Prompt 预检）
+├── docker-compose.yml
+├── Dockerfile
+└── README.md
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                      API Gateway (FastAPI)                  │
-│                  /api/v1/evaluate (POST)                    │
-└────────────────────────────┬────────────────────────────────┘
-                             ↓
-┌─────────────────────────────────────────────────────────────┐
-│              Orchestration Workflow (GradingWorkflow)       │
-└────────────────────────────┬────────────────────────────────┘
-                             ↓
-                    ┌────────┴────────┐
-                    ↓                 ↓
-        ┌───────────────────┐  ┌─────────────────┐
-        │  Perception Layer │  │ Cognitive Layer │
-        │   (Qwen-VL-Max)   │  │ (DeepSeek-R1)   │
-        ├───────────────────┤  ├─────────────────┤
-        │ • OCR 识别        │  │ • 逻辑验证      │
-        │ • 公式提取        │  │ • 按 Rubric 扣分│
-        │ • 图表理解        │  │ • 语义判断      │
-        │ • 质量检测        │  │ • 拒绝权        │
-        └───────────────────┘  └─────────────────┘
-                    │                 │
-                    └────────┬────────┘
-                             ↓
-                ┌────────────────────────┐
-                │   Persistence Layer    │
-                │  • SQLite Database     │
-                │  • JSON Reports        │
-                │  • CSV Summaries       │
-                └────────────────────────┘
-```
 
 ---
 
-## 🚀 快速开始
+## 4. 快速启动
 
-### 环境要求
-- Python 3.11+
-- pip 或 conda
-
-### 安装依赖
+### 4.1 本地运行
 
 ```bash
 cd homework_grader_system
 pip install -r requirements.txt
 ```
 
-### 配置环境变量
-
-创建 `.env` 文件：
+复制 `.env.example` 为 `.env`，再启动服务：
 
 ```bash
-# Qwen-VL API Keys (支持多 Key 池化)
-QWEN_API_KEYS=sk-xxx,sk-yyy,sk-zzz
-
-# DeepSeek API Keys (支持多 Key 池化)
-DEEPSEEK_API_KEYS=sk-aaa,sk-bbb,sk-ccc,sk-ddd
-
-# 模型配置（可选）
-QWEN_MODEL_NAME=qwen-vl-max
-PERCEPTION_PROVIDER=qwen
-DEEPSEEK_MODEL_NAME=deepseek-reasoner
-DEEPSEEK_USE_STREAM=false  # 推荐 false：缓存命中率更高
-
-# Optional Skills (Phase 43, all disabled by default)
-SKILL_LAYOUT_PARSER_ENABLED=false
-SKILL_LAYOUT_PARSER_PROVIDER=none
-SKILL_LAYOUT_PARSER_API_URL=
-SKILL_LAYOUT_PARSER_API_KEY=
-SKILL_VALIDATION_ENABLED=false
-SKILL_VALIDATION_PROVIDER=none
-SKILL_VALIDATION_API_URL=
-SKILL_VALIDATION_API_KEY=
-SKILL_VALIDATION_FAIL_OPEN=true
-
-# Runtime Router / Auto Circuit (Phase B)
-AUTO_CIRCUIT_CONTROLLER_ENABLED=true
-AUTO_CIRCUIT_FAILURE_RATE_THRESHOLD=0.30
-AUTO_CIRCUIT_TOKEN_SPIKE_THRESHOLD=1.80
-AUTO_CIRCUIT_MIN_SAMPLES=20
-ROUTER_BUDGET_TOKEN_LIMIT=9000
+uvicorn src.main:app --host 0.0.0.0 --port 8000
 ```
 
-当你准备接入三方 Skill 时：
-- 版面解析：`SKILL_LAYOUT_PARSER_PROVIDER=llamaparse` 或 `unstructured`
-- 客观校验：`SKILL_VALIDATION_PROVIDER=e2b`
-- 建议先在灰度环境开启，并保留 `SKILL_VALIDATION_FAIL_OPEN=true`
-
-**⚠️ 重要：代理环境优化**
-
-如果你的系统使用了代理（如 Clash、V2Ray），强烈建议设置 `NO_PROXY` 让国内 API 直连：
-
 ```bash
-# Windows PowerShell（推荐）
-$env:NO_PROXY = "localhost,127.0.0.1,*.aliyuncs.com,*.deepseek.com,*.cn"
-[System.Environment]::SetEnvironmentVariable("NO_PROXY", "localhost,127.0.0.1,*.aliyuncs.com,*.deepseek.com,*.cn", "User")
-
 # Linux/macOS
-export NO_PROXY=localhost,127.0.0.1,*.aliyuncs.com,*.deepseek.com,*.cn
+celery -A src.worker.main worker --loglevel=info --concurrency=4
+
+# Windows（推荐）
+celery -A src.worker.main worker --loglevel=info --pool=solo --concurrency=1
 ```
 
-**效果**：响应速度提升 30-50%，稳定性显著改善。详见 [代理优化文档](docs/handoffs/proxy_optimization_2026-03-26.md)。
-
-### 运行批量批改
+### 4.2 Docker Compose
 
 ```bash
-python scripts/batch_grade.py \
-  --students_dir data/3.20_physics/question_05/students \
-  --rubric_file outputs/q5_rubric.json \
-  --output_dir outputs/batch_results/q05 \
-  --db_path outputs/grading_database.db \
-  --concurrency 3
+docker compose up --build
 ```
 
-### 启动 API 服务
+启动后：
+- OpenAPI：`http://localhost:8000/docs`
+- 健康检查：`GET /`
+
+---
+
+## 5. 关键配置项（含 Skills 说明）
+
+常规核心配置：
+- `QWEN_API_KEYS`
+- `DEEPSEEK_API_KEYS`
+- `PERCEPTION_PROVIDER`（当前支持：`qwen` / `mock`）
+- `REDIS_HOST` / `REDIS_PORT` / `REDIS_DB`
+- `SQLITE_DB_PATH`
+- `DEPLOYMENT_ENVIRONMENT`（`dev` / `staging` / `prod`）
+- `FEATURE_FLAG_PROVIDER_SWITCH`
+- `FEATURE_FLAG_PROMPT_CONTROL`
+- `FEATURE_FLAG_ROUTER_CONTROL`
+
+Skills 相关配置（见 `.env.example`）：
+- `SKILL_LAYOUT_PARSER_ENABLED`
+- `SKILL_LAYOUT_PARSER_PROVIDER`（`none` / `llamaparse` / `unstructured`）
+- `SKILL_LAYOUT_PARSER_API_URL`
+- `SKILL_VALIDATION_ENABLED`
+- `SKILL_VALIDATION_PROVIDER`（`none` / `e2b`）
+- `SKILL_VALIDATION_API_URL`
+
+默认示例中：
+- `SKILL_LAYOUT_PARSER_API_URL=http://127.0.0.1:8000/api/v1/skills/layout/parse`
+- `SKILL_VALIDATION_API_URL=http://127.0.0.1:8000/api/v1/skills/validate`
+
+这两个默认值指向**本服务内置 skill 网关接口**（用于本地联调与契约占位）；接入外部实际服务时，改为外部网关地址并设置对应 `*_PROVIDER` 与 `*_API_KEY`。
+
+---
+
+## 6. 接口总览（全局）
+
+### 6.1 Rubric 领域
+- `POST /api/v1/rubric/generate`
+- `GET /api/v1/rubrics`
+- `GET /api/v1/rubrics/{rubric_id}`
+
+### 6.2 学生任务台（D1）
+- `POST /api/v1/grade/submit`
+- `GET /api/v1/grade/flow-guide`
+- `GET /api/v1/grade/{task_id}`
+- `GET /api/v1/tasks/{task_id}/stream`（SSE）
+- `GET /api/v1/results`（支持 `task_id` 过滤）
+
+### 6.3 复核与标注（D2）
+- `GET /api/v1/tasks/pending-review`
+- `GET /api/v1/review/pending-workbench`
+- `GET /api/v1/review/flow-guide`
+- `POST /api/v1/annotations/feedback`
+- `GET /api/v1/annotations/assets`
+- `GET /api/v1/review/annotation-assets`
+- `GET /api/v1/review/annotation-assets/{asset_id}`
+- `GET /api/v1/hygiene/interceptions`
+- `POST /api/v1/hygiene/interceptions/{record_id}/action`
+- `POST /api/v1/hygiene/interceptions/bulk-action`
+
+### 6.4 运营与观测（D3 + Phase C + P0/P1）
+- `POST /api/v1/trace/probe`
+- `GET /api/v1/capabilities/catalog`
+- `GET /api/v1/contracts/catalog`
+- `GET /api/v1/sla/summary`
+- `GET /api/v1/metrics/provider-benchmark`
+- `GET /api/v1/router/policy`
+- `GET /api/v1/metrics/dataset-pipeline`
+- `GET /api/v1/metrics/runtime-dashboard`
+- `POST /api/v1/prompt/control`
+- `POST /api/v1/prompt/ab-config`
+- `POST /api/v1/prompt/refresh`
+- `POST /api/v1/prompt/invalidate`
+- `GET /api/v1/prompt/state`
+- `GET /api/v1/prompt/audit`
+- `GET /api/v1/ops/config/snapshot`
+- `GET /api/v1/ops/feature-flags`
+- `POST /api/v1/ops/feature-flags`
+- `POST /api/v1/ops/provider/switch`
+- `POST /api/v1/ops/router/control`
+- `GET /api/v1/ops/prompt/catalog`
+- `GET /api/v1/ops/audit/logs`
+
+### 6.5 Skills 内部网关
+- `POST /api/v1/skills/layout/parse`
+- `POST /api/v1/skills/validate`
+
+---
+
+## 7. 核心状态与契约要点
+
+- `task.status`: `PENDING | PROCESSING | COMPLETED | FAILED`
+- `task.grading_status`: `SCORED | REJECTED_UNREADABLE`
+- `task.review_status`: `NOT_REQUIRED | PENDING_REVIEW | REVIEWED`
+
+统一错误契约采用结构化字段（例如 `error_code/retryable/retry_hint/next_action`），完整模型可通过：
+- `GET /api/v1/contracts/catalog`
+
+---
+
+## 8. 核心数据表
+
+- `tasks`
+- `grading_results`
+- `rubrics`
+- `hygiene_interception_log`
+- `golden_annotation_assets`
+- `task_runtime_telemetry`
+- `prompt_control_state`
+- `prompt_ab_configs`
+- `prompt_ops_audit_log`
+- `skill_validation_records`
+
+DDL 位于：`src/db/schema.sql`
+
+---
+
+## 9. 测试与回归
+
+全量测试：
 
 ```bash
-# 开发模式
-python src/api/main.py
-
-# 生产模式
-uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --workers 4
+pytest tests/ -v
 ```
 
-API 文档：http://localhost:8000/docs
+常用聚焦：
 
-### 关键运维接口（Phase B）
+```bash
+pytest tests/test_api.py tests/test_phase38_domain_split_api.py -q
+pytest tests/test_prompt_provider_foundation.py tests/test_prompt_control_db.py -q
+pytest tests/test_runtime_telemetry_db.py tests/test_runtime_router.py -q
+```
 
-- `GET /api/v1/metrics/provider-benchmark`：Provider 基准视图（任务量、吞吐、失败率、fallback 率、token 分布、成本代理指标）
-- `GET /api/v1/router/policy`：运行时路由策略与实时快照（阈值、预算、是否触发自动降级）
-
-### 数据与评测接口（Phase C）
-
-- `GET /api/v1/metrics/dataset-pipeline`：样本资产闭环摘要（golden assets 总量、已入库量、待入库量、复核队列）
-- `GET /api/v1/metrics/runtime-dashboard`：在线指标看板聚合（provider 命中、fallback 触发、prompt cache 命中、人工复核率）
-
-### Phase C 回归矩阵自动化
+Phase C 回归矩阵：
 
 ```bash
 python scripts/run_phasec_regression_matrix.py
 ```
 
-默认会执行：
-- 契约/SSE 回归（包含 Phase C 新接口）
-- 状态幂等与路由回归
-- Payload 边界回归
-- 启动本地 API 并采样 `runtime-dashboard` 延迟
-
-输出报告：`outputs/phasec_regression_matrix_report.json`
-
-### Prompt 运营控制接口（Phase P1）
-
-- `POST /api/v1/prompt/control`：设置强制 variant 与 LKG 模式（热更新控制）
-- `POST /api/v1/prompt/ab-config`：设置 A/B 实验配置（启停、流量比例、权重、分段）
-- `POST /api/v1/prompt/refresh`：触发 prompt 资产刷新
-- `POST /api/v1/prompt/invalidate`：按 prompt_key 主动失效
-- `GET /api/v1/prompt/state`：查看运行态与持久态控制配置
-- `GET /api/v1/prompt/audit`：查询操作审计日志
-
-### 启动 Celery Worker（异步批改必需）
-
-```bash
-# Linux / macOS
-celery -A src.worker.main worker --loglevel=info --concurrency=4
-
-# Windows（强烈建议）
-celery -A src.worker.main worker --loglevel=info --pool=solo --concurrency=1
-```
-
-> 说明：Celery 官方 FAQ 标注 Windows 非正式支持；在 Windows 上使用 `solo` 池更稳定，可避免 `billiard/fast_trace_task` 类崩溃。
+CI 工作流：
+- `.github/workflows/phasec-regression-matrix.yml`
+- `.github/workflows/prompt-assets-preflight.yml`
 
 ---
 
-## 📖 使用指南
-
-### 1. 生成评分标准（Rubric）
-
-```bash
-python scripts/extract_rubric.py \
-  --model_answer_dir data/3.20_physics/question_05/standard \
-  --output_file outputs/q5_rubric.json
-```
-
-### 2. 批量批改
-
-```bash
-python scripts/batch_grade.py \
-  --students_dir <学生答卷目录> \
-  --rubric_file <评分标准JSON> \
-  --output_dir <输出目录> \
-  --concurrency <并发数>
-```
-
-**输出文件**：
-- `<学生ID>.json`: EvaluationReport（评分报告）
-- `<学生ID>_full.json`: 完整输出（含感知层 + 认知层）
-- `summary.csv`: 批量汇总表
-
-### 3. API 调用
-
-```bash
-curl -X POST "http://localhost:8000/api/v1/evaluate" \
-  -H "Content-Type: multipart/form-data" \
-  -F "file=@student_answer.jpg" \
-  -F "rubric=@rubric.json"
-```
-
-### 4. 单样本测试
-
-```bash
-python scripts/grade_student.py \
-  --student_file data/test/stu_ans_01.png \
-  --rubric_file outputs/q5_rubric.json
-```
-
----
-
-## 🔧 核心配置
-
-### 🌐 代理环境优化（重要！）
-
-如果系统使用了全局代理（Clash、V2Ray），**务必配置 NO_PROXY 让国内 API 直连**：
-
-```powershell
-# Windows - 永久设置
-$no_proxy = "localhost,127.0.0.1,*.aliyuncs.com,*.deepseek.com,*.cn"
-[System.Environment]::SetEnvironmentVariable("NO_PROXY", $no_proxy, "User")
-```
-
-```bash
-# Linux/macOS - 添加到 ~/.bashrc
-export NO_PROXY=localhost,127.0.0.1,*.aliyuncs.com,*.deepseek.com,*.cn
-```
-
-**为什么？**
-- 国内 API 走代理会降速 30-50% 并增加错误率
-- 之前的并发速率问题可能部分由此引起
-- 详见：[代理优化文档](docs/handoffs/proxy_optimization_2026-03-26.md)
-
----
-
-### API Key 池化（高并发）
-
-系统支持多 API Key 自动轮转和熔断器保护：
-
-```bash
-# .env 配置
-QWEN_API_KEYS=key1,key2,key3       # 逗号分隔
-DEEPSEEK_API_KEYS=key1,key2,key3,key4
-```
-
-### DeepSeek 流式开关（性能建议）
-
-```bash
-# .env 配置
-DEEPSEEK_USE_STREAM=false
-```
-
-- `false`（推荐）：非流式，缓存命中率更高，响应更稳定，避免流式 JSON 截断。
-- `true`：流式，适合需要实时 token 输出的场景，但缓存收益通常较低。
-
-**特性**：
-- 🔄 Round-Robin 轮询
-- 🚨 触发 429 自动熔断 60 秒
-- ⚡ 自动故障转移到健康 Key
-- 📊 所有 Key 耗尽时抛出明确错误
-
-### 并发控制
-
-```bash
---concurrency N  # 建议值：2-5（取决于 API Key 数量和 RPM 限制）
-```
-
----
-
-## 📊 状态机设计
-
-### EvaluationReport.status
-
-| 状态 | 含义 | 触发条件 |
-|------|------|---------|
-| `SCORED` | 正常批改 | 输入可读且逻辑完整 |
-| `REJECTED_UNREADABLE` | 拒绝批改 | 输入无法理解或逻辑断裂 |
-
-### PerceptionOutput.readability_status
-
-| 状态 | 含义 | 后续处理 |
-|------|------|---------|
-| `CLEAR` | 清晰可读 | 正常流转 |
-| `MINOR_ALTERATION` | 轻微问题 | 正常流转 |
-| `HEAVILY_ALTERED` | 严重涂改但可提取 | 放行编排层；认知层旁路到 DeepSeek-Chat 快速判定 |
-| `UNREADABLE` | 完全不可读 | 立即拦截 |
-
----
-
-## 🧪 测试
-
-### 运行单元测试
-
-```bash
-pytest tests/ -v
-```
-
-### 边界测试
-
-```bash
-# 感知层边界测试
-pytest tests/test_qwen_boundary.py -v
-
-# 认知层边界测试
-pytest tests/test_deepseek_boundary.py -v
-
-# 降级逻辑测试
-pytest tests/test_deepseek_degradation_logic.py -v
-```
-
-### 混沌工程测试
-
-```bash
-python scripts/batch_grade.py \
-  --students_dir data/3.20_physics/question_05/chaos_test_students \
-  --rubric_file outputs/q5_rubric.json \
-  --output_dir outputs/chaos_test \
-  --concurrency 1
-```
-
-验证极端样本（全黑图、噪点图、涂鸦）的拦截效果。
-
----
-
-## 📐 数据格式
-
-### 输入
-
-#### 图像格式
-- 支持：`.jpg`, `.jpeg`, `.png`, `.pdf`
-- 推荐分辨率：800x1000 以上
-- 颜色空间：RGB
-
-#### Rubric 格式
-```json
-{
-  "question_id": "5",
-  "question_type": "选择题+简答题",
-  "correct_answer": "a; clockwise",
-  "grading_points": [
-    {
-      "point_id": "1",
-      "description": "正确应用 LC 频率公式",
-      "score_if_wrong": 2.0
-    }
-  ]
-}
-```
-
-### 输出
-
-#### EvaluationReport
-```json
-{
-  "status": "SCORED",
-  "is_fully_correct": false,
-  "total_score_deduction": 2.0,
-  "step_evaluations": [...],
-  "overall_feedback": "第一步公式正确，但开关选择错误...",
-  "system_confidence": 0.85,
-  "requires_human_review": false
-}
-```
-
----
-
-## 🏛️ 技术栈
-
-| 层级 | 技术 | 用途 |
-|------|------|------|
-| **API 层** | FastAPI + Uvicorn | RESTful API 服务 |
-| **编排层** | asyncio | 异步工作流调度 |
-| **感知层** | Qwen-VL-Max | 视觉多模态理解 |
-| **认知层** | DeepSeek-R1 Reasoner | 逻辑推理与评分 |
-| **持久层** | SQLite + aiosqlite | 异步数据库 |
-| **数据层** | Pydantic | Schema 验证 |
-| **测试层** | pytest + pytest-mock | 单元测试与集成测试 |
-
----
-
-## 📂 项目结构
-
-```
-homework_grader_system/
-├── src/
-│   ├── api/              # FastAPI 路由与依赖注入
-│   ├── cognitive/        # 认知引擎（DeepSeek）
-│   ├── perception/       # 感知引擎（Qwen-VL）
-│   ├── orchestration/    # 工作流编排
-│   ├── schemas/          # Pydantic 数据模型
-│   ├── db/               # 数据库客户端
-│   ├── core/             # 核心配置与异常
-│   └── utils/            # 工具函数
-├── scripts/              # CLI 工具集
-│   ├── batch_grade.py    # 批量批改
-│   ├── extract_rubric.py # Rubric 生成
-│   └── grade_student.py  # 单样本测试
-├── tests/                # 测试套件
-│   ├── test_qwen_boundary.py
-│   ├── test_deepseek_boundary.py
-│   └── test_e2e_real_pipeline.py
-├── docs/
-│   └── handoffs/         # 30+ 阶段快照文档
-├── configs/              # 配置文件
-├── data/                 # 数据集（不入库）
-├── outputs/              # 输出结果（不入库）
-├── requirements.txt      # Python 依赖
-└── .env.example          # 环境变量模板
-```
-
----
-
-## ⚙️ 高级配置
-
-### 降级策略
-
-当 DeepSeek-R1 流式响应出现网络异常时，自动降级到 DeepSeek-Chat：
-
-```python
-# src/cognitive/engines/deepseek_engine.py
-MAX_CONNECTION_ERRORS = 1  # 触发阈值
-```
-
-### 人工复核触发
-
-```python
-# EvaluationReport 字段
-requires_human_review: bool  # True 时强制人工介入
-```
-
-触发条件：
-- 逻辑极度混乱无法还原学生意图
-- 上游视觉提取疑似发生灾难性乱码
-- 异常解法（创新或超纲）
-
----
-
-## 🔬 防御机制验证
-
-### 混沌工程测试
-
-系统通过以下极端样本验证：
-
-| 样本 | 类型 | 防线 | 结果 |
-|------|------|------|------|
-| 全黑图像 | 完全不可读 | 感知层 | ✅ 拦截 |
-| 纯噪点图 | 随机像素 | 感知层 | ✅ 拦截 |
-| 乱涂鸦图 | 逻辑断裂 | 认知层 | ✅ 拒绝 (`REJECTED_UNREADABLE`) |
-| 无关文本 | 语义不符 | 认知层 | ✅ 拒绝 (`REJECTED_UNREADABLE`) |
-
----
-
-## 📝 开发指南
-
-### 添加新的题型支持
-
-1. **扩展 Perception Prompt**（`src/perception/prompts.py`）
-2. **更新 Schema**（`src/schemas/perception_ir.py`）
-3. **添加单元测试**（`tests/test_qwen_boundary.py`）
-
-### 自定义评分规则
-
-1. 修改 `src/cognitive/engines/deepseek_engine.py` 中的 `_system_prompt_grading_base`
-2. 运行边界测试验证：`pytest tests/test_deepseek_boundary.py -v`
-
-### 贡献代码
-
-```bash
-# 创建功能分支
-git checkout -b feature/your-feature-name
-
-# 开发并测试
-pytest tests/ -v
-
-# 提交
-git commit -m "feat: your feature description"
-git push origin feature/your-feature-name
-```
-
----
-
-## 📊 已验证场景
-
-- ✅ 物理计算题（力学、电学、光学）
-- ✅ 多步推导题（公式变换、数值计算）
-- ✅ 选择题 + 简答题混合
-- ✅ 涂改容忍（OCR 误差、笔误、跳步）
-- ✅ 空白卷短路
-- ✅ 多页 PDF 合并处理
-- ⚠️ 多题同页“布局切片严格对齐”（Phase 35）已完成代码落地，尚缺真实样本验收
-
-### 🔎 Phase 35 当前状态（显式说明）
-
-- 已完成：对称布局预处理管线（`REFERENCE` / `STUDENT_ANSWER` 同一切片链路）
-- 已完成：`LayoutIR` 契约与坐标清洗、物理切片器、CLI 验证脚本
-- 未完成：缺少“多题同页+对应标准答案同页”的真实数据验收与 A/B 归档
-- 安全性：默认关闭，不影响当前主流程
-  - 配置项：`enable_layout_preprocess=false`
-
-> 说明：该能力当前属于“可灰度启用的预备能力”，不会阻塞后续功能开发。
-
----
-
-## 🛣️ 开发路线图
-
-### ✅ 已完成
-- Phase 1-14: 核心引擎与持久化
-- Phase 15-22: 稳定性与容错
-- Phase 23-26: 流式处理与降级
-- Phase 27: 拒绝机制与混沌验证
-- Phase 27.1: 防御层级优化
-
-### 🔄 进行中
-- Phase 28: 消息队列解耦（Celery + Redis）
-- Phase 29: HITL 反馈闭环（Human-in-the-Loop）
-
-### 📅 规划中
-- 动态 Few-Shot 样本库
-- 教师复核界面
-- 模型微调管道
-- 多语言支持
-
----
-
-## 📄 文档
-
-- [架构快照文档](docs/handoffs/) - 30+ 份阶段演进记录
-- [API 文档](http://localhost:8000/docs) - FastAPI 自动生成
-- [测试覆盖报告](tests/) - pytest 输出
-
----
-
-## 🤝 贡献
-
-欢迎提交 Issue 和 Pull Request！
-
-请确保：
-1. 代码通过所有测试：`pytest tests/ -v`
-2. 遵循现有代码风格
-3. 更新相关文档
-4. 提交信息清晰（参考 [Conventional Commits](https://www.conventionalcommits.org/)）
-
----
-
-## 📜 许可证
-
-MIT License - 详见 [LICENSE](LICENSE) 文件
-
----
-
-## 🙏 致谢
-
-- **Qwen-VL**: 阿里云通义千问视觉模型
-- **DeepSeek-R1**: DeepSeek Reasoner 推理引擎
-- **OpenAI SDK**: 兼容模式 API 客户端
-
----
-
-## 📧 联系
-
-- GitHub: [@gubingren0409](https://github.com/gubingren0409)
-- 仓库: [homework_grading](https://github.com/gubingren0409/homework_grading)
-
----
-
-**Built with ❤️ for Education**
+## 10. 运行与提交流程说明
+
+- 运行产物目录（`outputs/`, `data/uploads/`）默认不纳入版本提交。
+- Windows 环境建议使用 `celery --pool=solo` 提高稳定性。
+- 若走代理，建议配置 `NO_PROXY` 以降低模型 API 连接抖动。

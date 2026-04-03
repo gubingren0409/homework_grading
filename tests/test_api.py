@@ -314,6 +314,8 @@ def test_ops_console_endpoints(tmp_path):
         snapshot = snapshot_resp.json()
         assert "perception_provider" in snapshot
         assert "router_policy" in snapshot
+        assert "environment" in snapshot
+        assert "feature_flags" in snapshot
 
         switch_resp = client.post(
             "/api/v1/ops/provider/switch",
@@ -355,5 +357,68 @@ def test_ops_console_endpoints(tmp_path):
         audit_data = audit_resp.json()
         assert isinstance(audit_data["items"], list)
         assert any(item["action"] == "ops_provider_switch" for item in audit_data["items"])
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_ops_feature_flags_and_gating(tmp_path):
+    db_path = str(tmp_path / "ops_feature_flags.db")
+    asyncio.run(init_db(db_path))
+    app.dependency_overrides[get_db_path] = lambda: db_path
+    try:
+        get_resp = client.get("/api/v1/ops/feature-flags")
+        assert get_resp.status_code == 200
+        flags = get_resp.json()
+        assert flags["deployment_environment"] in {"dev", "staging", "prod"}
+
+        set_resp = client.post(
+            "/api/v1/ops/feature-flags",
+            json={
+                "deployment_environment": "staging",
+                "provider_switch_enabled": False,
+                "prompt_control_enabled": False,
+                "router_control_enabled": False,
+                "operator_id": "ops-user",
+            },
+        )
+        assert set_resp.status_code == 200
+        updated = set_resp.json()
+        assert updated["deployment_environment"] == "staging"
+        assert updated["provider_switch_enabled"] is False
+        assert updated["prompt_control_enabled"] is False
+        assert updated["router_control_enabled"] is False
+
+        blocked_switch = client.post(
+            "/api/v1/ops/provider/switch",
+            json={"provider": "mock", "operator_id": "ops-user"},
+        )
+        assert blocked_switch.status_code == 403
+        assert blocked_switch.json()["detail"]["error_code"] == "FEATURE_DISABLED"
+
+        blocked_router = client.post(
+            "/api/v1/ops/router/control",
+            json={
+                "enabled": True,
+                "failure_rate_threshold": 0.25,
+                "token_spike_threshold": 1.6,
+                "min_samples": 10,
+                "budget_token_limit": 7000,
+                "operator_id": "ops-user",
+            },
+        )
+        assert blocked_router.status_code == 403
+        assert blocked_router.json()["detail"]["error_code"] == "FEATURE_DISABLED"
+
+        blocked_prompt = client.post(
+            "/api/v1/prompt/control",
+            json={
+                "prompt_key": "deepseek.cognitive.evaluate",
+                "forced_variant_id": "A",
+                "lkg_mode": False,
+                "operator_id": "ops-user",
+            },
+        )
+        assert blocked_prompt.status_code == 403
+        assert blocked_prompt.json()["detail"]["error_code"] == "FEATURE_DISABLED"
     finally:
         app.dependency_overrides.clear()

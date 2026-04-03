@@ -68,6 +68,12 @@ class Settings(BaseSettings):
     auto_circuit_min_samples: int = 20
     router_budget_token_limit: int = 9000
 
+    # Phase E1: environment and feature-flag governance
+    deployment_environment: str = "dev"  # dev | staging | prod
+    feature_flag_provider_switch: bool = True
+    feature_flag_prompt_control: bool = True
+    feature_flag_router_control: bool = True
+
     # Optional external skills (Phase 43)
     skill_layout_parser_enabled: bool = False
     skill_layout_parser_provider: str = "none"  # none | llamaparse | unstructured
@@ -146,6 +152,14 @@ class Settings(BaseSettings):
         if value <= 0:
             raise ValueError("value must be positive")
         return value
+
+    @field_validator("deployment_environment")
+    @classmethod
+    def _normalize_deployment_environment(cls, value: str) -> str:
+        normalized = (value or "").strip().lower()
+        if normalized not in {"dev", "staging", "prod"}:
+            raise ValueError("deployment_environment must be one of: dev, staging, prod")
+        return normalized
 
     model_config = SettingsConfigDict(
         env_file=".env",

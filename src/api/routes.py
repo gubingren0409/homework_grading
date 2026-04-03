@@ -45,6 +45,8 @@ from src.db.client import (
     get_prompt_ab_config,
     append_prompt_ops_audit,
     list_prompt_ops_audit,
+    get_ops_feature_flags,
+    upsert_ops_feature_flags,
 )
 from src.worker.main import grade_homework_task
 from src.core.storage_adapter import storage
@@ -446,6 +448,8 @@ class OpsConfigSnapshotResponse(BaseModel):
     perception_provider: str
     prompt_settings: Dict[str, Any]
     router_policy: OpsRouterControlResponse
+    environment: str = "dev"
+    feature_flags: Dict[str, bool] = Field(default_factory=dict)
 
 
 class OpsAuditLogItem(BaseModel):
@@ -473,6 +477,22 @@ class OpsPromptCatalogResponse(BaseModel):
     page: int
     limit: int
     items: List[OpsPromptCatalogItem]
+
+
+class OpsFeatureFlagsRequest(BaseModel):
+    deployment_environment: Literal["dev", "staging", "prod"]
+    provider_switch_enabled: bool = True
+    prompt_control_enabled: bool = True
+    router_control_enabled: bool = True
+    operator_id: Optional[str] = None
+
+
+class OpsFeatureFlagsResponse(BaseModel):
+    deployment_environment: Literal["dev", "staging", "prod"]
+    provider_switch_enabled: bool
+    prompt_control_enabled: bool
+    router_control_enabled: bool
+    updated_at: Optional[str] = None
 
 
 def _percentile(values: List[float], p: float) -> Optional[float]:
@@ -1414,6 +1434,8 @@ async def get_capability_catalog():
                     CapabilityEndpointItem(method="GET", path="/api/v1/prompt/state"),
                     CapabilityEndpointItem(method="GET", path="/api/v1/prompt/audit", response_model="List[PromptOpsAuditItem]"),
                     CapabilityEndpointItem(method="GET", path="/api/v1/ops/config/snapshot", response_model="OpsConfigSnapshotResponse"),
+                    CapabilityEndpointItem(method="GET", path="/api/v1/ops/feature-flags", response_model="OpsFeatureFlagsResponse"),
+                    CapabilityEndpointItem(method="POST", path="/api/v1/ops/feature-flags", response_model="OpsFeatureFlagsResponse"),
                     CapabilityEndpointItem(method="POST", path="/api/v1/ops/provider/switch"),
                     CapabilityEndpointItem(method="POST", path="/api/v1/ops/router/control", response_model="OpsRouterControlResponse"),
                     CapabilityEndpointItem(method="GET", path="/api/v1/ops/prompt/catalog", response_model="OpsPromptCatalogResponse"),
@@ -1448,6 +1470,8 @@ async def get_contract_catalog():
         ContractSchemaItem(schema_name="OpsProviderSwitchRequest", fields=_schema_fields_from_model(OpsProviderSwitchRequest)),
         ContractSchemaItem(schema_name="OpsRouterControlRequest", fields=_schema_fields_from_model(OpsRouterControlRequest)),
         ContractSchemaItem(schema_name="OpsRouterControlResponse", fields=_schema_fields_from_model(OpsRouterControlResponse)),
+        ContractSchemaItem(schema_name="OpsFeatureFlagsRequest", fields=_schema_fields_from_model(OpsFeatureFlagsRequest)),
+        ContractSchemaItem(schema_name="OpsFeatureFlagsResponse", fields=_schema_fields_from_model(OpsFeatureFlagsResponse)),
         ContractSchemaItem(schema_name="OpsConfigSnapshotResponse", fields=_schema_fields_from_model(OpsConfigSnapshotResponse)),
         ContractSchemaItem(schema_name="OpsAuditLogItem", fields=_schema_fields_from_model(OpsAuditLogItem)),
         ContractSchemaItem(schema_name="OpsAuditLogResponse", fields=_schema_fields_from_model(OpsAuditLogResponse)),
@@ -1473,6 +1497,7 @@ async def get_contract_catalog():
             "FILE_TOO_LARGE",
             "ANNOTATION_ASSET_NOT_FOUND",
             "INVALID_PROVIDER",
+            "FEATURE_DISABLED",
         ],
         schemas=schemas,
     )
@@ -1637,6 +1662,17 @@ async def set_prompt_control(
     payload: PromptControlRequest,
     db_path: str = Depends(get_db_path),
 ):
+    flags = await get_ops_feature_flags(db_path)
+    if not bool(flags.get("prompt_control_enabled", settings.feature_flag_prompt_control)):
+        raise HTTPException(
+            status_code=403,
+            detail=_error_detail(
+                error_code="FEATURE_DISABLED",
+                message="prompt control is disabled by feature flag",
+                retryable=False,
+                next_action="contact_ops_admin",
+            ),
+        )
     provider = get_prompt_provider()
     provider.set_forced_variant(prompt_key=payload.prompt_key, variant_id=payload.forced_variant_id)
     provider.set_lkg_mode(prompt_key=payload.prompt_key, enabled=payload.lkg_mode)
@@ -1663,6 +1699,17 @@ async def set_prompt_ab_config(
     payload: PromptAbConfigRequest,
     db_path: str = Depends(get_db_path),
 ):
+    flags = await get_ops_feature_flags(db_path)
+    if not bool(flags.get("prompt_control_enabled", settings.feature_flag_prompt_control)):
+        raise HTTPException(
+            status_code=403,
+            detail=_error_detail(
+                error_code="FEATURE_DISABLED",
+                message="prompt control is disabled by feature flag",
+                retryable=False,
+                next_action="contact_ops_admin",
+            ),
+        )
     provider = get_prompt_provider()
     provider.set_ab_config(
         prompt_key=payload.prompt_key,
@@ -1698,6 +1745,17 @@ async def refresh_prompt_assets(
     operator_id: Optional[str] = Query(default=None),
     db_path: str = Depends(get_db_path),
 ):
+    flags = await get_ops_feature_flags(db_path)
+    if not bool(flags.get("prompt_control_enabled", settings.feature_flag_prompt_control)):
+        raise HTTPException(
+            status_code=403,
+            detail=_error_detail(
+                error_code="FEATURE_DISABLED",
+                message="prompt control is disabled by feature flag",
+                retryable=False,
+                next_action="contact_ops_admin",
+            ),
+        )
     provider = get_prompt_provider()
     report = await provider.refresh(prompt_key=prompt_key)
     await append_prompt_ops_audit(
@@ -1726,6 +1784,17 @@ async def invalidate_prompt_asset(
     operator_id: Optional[str] = Query(default=None),
     db_path: str = Depends(get_db_path),
 ):
+    flags = await get_ops_feature_flags(db_path)
+    if not bool(flags.get("prompt_control_enabled", settings.feature_flag_prompt_control)):
+        raise HTTPException(
+            status_code=403,
+            detail=_error_detail(
+                error_code="FEATURE_DISABLED",
+                message="prompt control is disabled by feature flag",
+                retryable=False,
+                next_action="contact_ops_admin",
+            ),
+        )
     provider = get_prompt_provider()
     try:
         await provider.invalidate(
@@ -1789,7 +1858,10 @@ async def get_prompt_ops_audit(
 
 
 @router.get("/ops/config/snapshot", response_model=OpsConfigSnapshotResponse)
-async def get_ops_config_snapshot():
+async def get_ops_config_snapshot(
+    db_path: str = Depends(get_db_path),
+):
+    flags = await get_ops_feature_flags(db_path)
     return OpsConfigSnapshotResponse(
         perception_provider=str(settings.perception_provider),
         prompt_settings={
@@ -1806,6 +1878,12 @@ async def get_ops_config_snapshot():
             min_samples=int(settings.auto_circuit_min_samples),
             budget_token_limit=int(settings.router_budget_token_limit),
         ),
+        environment=str(flags.get("deployment_environment") or settings.deployment_environment),
+        feature_flags={
+            "provider_switch_enabled": bool(flags.get("provider_switch_enabled", settings.feature_flag_provider_switch)),
+            "prompt_control_enabled": bool(flags.get("prompt_control_enabled", settings.feature_flag_prompt_control)),
+            "router_control_enabled": bool(flags.get("router_control_enabled", settings.feature_flag_router_control)),
+        },
     )
 
 
@@ -1814,6 +1892,17 @@ async def switch_ops_provider(
     payload: OpsProviderSwitchRequest,
     db_path: str = Depends(get_db_path),
 ):
+    flags = await get_ops_feature_flags(db_path)
+    if not bool(flags.get("provider_switch_enabled", settings.feature_flag_provider_switch)):
+        raise HTTPException(
+            status_code=403,
+            detail=_error_detail(
+                error_code="FEATURE_DISABLED",
+                message="provider switch is disabled by feature flag",
+                retryable=False,
+                next_action="contact_ops_admin",
+            ),
+        )
     provider = str(payload.provider).strip().lower()
     from src.perception.factory import list_supported_perception_providers
 
@@ -1850,6 +1939,17 @@ async def update_ops_router_control(
     payload: OpsRouterControlRequest,
     db_path: str = Depends(get_db_path),
 ):
+    flags = await get_ops_feature_flags(db_path)
+    if not bool(flags.get("router_control_enabled", settings.feature_flag_router_control)):
+        raise HTTPException(
+            status_code=403,
+            detail=_error_detail(
+                error_code="FEATURE_DISABLED",
+                message="router control is disabled by feature flag",
+                retryable=False,
+                next_action="contact_ops_admin",
+            ),
+        )
     settings.auto_circuit_controller_enabled = bool(payload.enabled)
     settings.auto_circuit_failure_rate_threshold = float(payload.failure_rate_threshold)
     settings.auto_circuit_token_spike_threshold = float(payload.token_spike_threshold)
@@ -1870,6 +1970,54 @@ async def update_ops_router_control(
         token_spike_threshold=float(settings.auto_circuit_token_spike_threshold),
         min_samples=int(settings.auto_circuit_min_samples),
         budget_token_limit=int(settings.router_budget_token_limit),
+    )
+
+
+@router.get("/ops/feature-flags", response_model=OpsFeatureFlagsResponse)
+async def get_ops_feature_flags_endpoint(
+    db_path: str = Depends(get_db_path),
+):
+    flags = await get_ops_feature_flags(db_path)
+    return OpsFeatureFlagsResponse(
+        deployment_environment=str(flags.get("deployment_environment") or "dev"),  # type: ignore[arg-type]
+        provider_switch_enabled=bool(flags.get("provider_switch_enabled", True)),
+        prompt_control_enabled=bool(flags.get("prompt_control_enabled", True)),
+        router_control_enabled=bool(flags.get("router_control_enabled", True)),
+        updated_at=flags.get("updated_at"),
+    )
+
+
+@router.post("/ops/feature-flags", response_model=OpsFeatureFlagsResponse)
+async def set_ops_feature_flags(
+    payload: OpsFeatureFlagsRequest,
+    db_path: str = Depends(get_db_path),
+):
+    settings.deployment_environment = payload.deployment_environment
+    settings.feature_flag_provider_switch = bool(payload.provider_switch_enabled)
+    settings.feature_flag_prompt_control = bool(payload.prompt_control_enabled)
+    settings.feature_flag_router_control = bool(payload.router_control_enabled)
+    await upsert_ops_feature_flags(
+        db_path,
+        deployment_environment=payload.deployment_environment,
+        provider_switch_enabled=payload.provider_switch_enabled,
+        prompt_control_enabled=payload.prompt_control_enabled,
+        router_control_enabled=payload.router_control_enabled,
+    )
+    await append_prompt_ops_audit(
+        db_path,
+        trace_id=get_trace_id(),
+        operator_id=payload.operator_id,
+        action="ops_feature_flags_update",
+        prompt_key=None,
+        payload_json=payload.model_dump(),
+    )
+    flags = await get_ops_feature_flags(db_path)
+    return OpsFeatureFlagsResponse(
+        deployment_environment=str(flags.get("deployment_environment") or payload.deployment_environment),  # type: ignore[arg-type]
+        provider_switch_enabled=bool(flags.get("provider_switch_enabled", payload.provider_switch_enabled)),
+        prompt_control_enabled=bool(flags.get("prompt_control_enabled", payload.prompt_control_enabled)),
+        router_control_enabled=bool(flags.get("router_control_enabled", payload.router_control_enabled)),
+        updated_at=flags.get("updated_at"),
     )
 
 
