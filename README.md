@@ -168,6 +168,20 @@ API 文档：http://localhost:8000/docs
 - `GET /api/v1/metrics/dataset-pipeline`：样本资产闭环摘要（golden assets 总量、已入库量、待入库量、复核队列）
 - `GET /api/v1/metrics/runtime-dashboard`：在线指标看板聚合（provider 命中、fallback 触发、prompt cache 命中、人工复核率）
 
+### Phase C 回归矩阵自动化
+
+```bash
+python scripts/run_phasec_regression_matrix.py
+```
+
+默认会执行：
+- 契约/SSE 回归（包含 Phase C 新接口）
+- 状态幂等与路由回归
+- Payload 边界回归
+- 启动本地 API 并采样 `runtime-dashboard` 延迟
+
+输出报告：`outputs/phasec_regression_matrix_report.json`
+
 ### 启动 Celery Worker（异步批改必需）
 
 ```bash
