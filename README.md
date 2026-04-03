@@ -106,6 +106,13 @@ SKILL_VALIDATION_PROVIDER=none
 SKILL_VALIDATION_API_URL=
 SKILL_VALIDATION_API_KEY=
 SKILL_VALIDATION_FAIL_OPEN=true
+
+# Runtime Router / Auto Circuit (Phase B)
+AUTO_CIRCUIT_CONTROLLER_ENABLED=true
+AUTO_CIRCUIT_FAILURE_RATE_THRESHOLD=0.30
+AUTO_CIRCUIT_TOKEN_SPIKE_THRESHOLD=1.80
+AUTO_CIRCUIT_MIN_SAMPLES=20
+ROUTER_BUDGET_TOKEN_LIMIT=9000
 ```
 
 当你准备接入三方 Skill 时：
@@ -150,6 +157,11 @@ uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --workers 4
 ```
 
 API 文档：http://localhost:8000/docs
+
+### 关键运维接口（Phase B）
+
+- `GET /api/v1/metrics/provider-benchmark`：Provider 基准视图（任务量、吞吐、失败率、fallback 率、token 分布、成本代理指标）
+- `GET /api/v1/router/policy`：运行时路由策略与实时快照（阈值、预算、是否触发自动降级）
 
 ### 启动 Celery Worker（异步批改必需）
 

@@ -129,3 +129,26 @@ def test_sla_summary_endpoint_with_empty_db(tmp_path, monkeypatch):
     data = response.json()
     assert data["version"] == "1.0"
     assert isinstance(data["observed_status_counts"], dict)
+
+
+def test_provider_benchmark_endpoint(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "benchmark.db")
+    monkeypatch.setattr("src.api.dependencies.get_db_path", lambda: db_path)
+    response = client.get("/api/v1/metrics/provider-benchmark?window_hours=24")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["version"] == "1.0"
+    assert "cognitive_router" in data
+    assert "estimated_cost" in data
+    assert "throughput_tasks_per_hour" in data
+    assert "accuracy_proxy" in data["cognitive_router"]
+    assert "failure_rate" in data["cognitive_router"]
+
+
+def test_router_policy_endpoint():
+    response = client.get("/api/v1/router/policy")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["version"] == "1.0"
+    assert "policy" in data
+    assert "live_snapshot" in data

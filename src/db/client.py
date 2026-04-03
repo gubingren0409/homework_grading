@@ -898,6 +898,41 @@ async def get_completion_latencies_seconds(
             raise
 
 
+async def get_task_volume_stats(
+    db_path: str,
+    *,
+    lookback_hours: int = 24,
+) -> Dict[str, int]:
+    async with _open_connection(db_path) as db:
+        try:
+            async with db.execute(
+                """
+                SELECT
+                    COUNT(1) AS total_count,
+                    SUM(CASE WHEN status = 'COMPLETED' THEN 1 ELSE 0 END) AS completed_count,
+                    SUM(CASE WHEN status = 'FAILED' THEN 1 ELSE 0 END) AS failed_count
+                FROM tasks
+                WHERE created_at >= datetime('now', ?)
+                """,
+                (f"-{int(lookback_hours)} hours",),
+            ) as cursor:
+                row = await cursor.fetchone()
+                if not row:
+                    return {"total_count": 0, "completed_count": 0, "failed_count": 0}
+                total_count = int(row[0] or 0)
+                completed_count = int(row[1] or 0)
+                failed_count = int(row[2] or 0)
+                return {
+                    "total_count": total_count,
+                    "completed_count": completed_count,
+                    "failed_count": failed_count,
+                }
+        except (aiosqlite.OperationalError, sqlite3.OperationalError) as exc:
+            if "no such table" in str(exc).lower():
+                return {"total_count": 0, "completed_count": 0, "failed_count": 0}
+            raise
+
+
 async def insert_skill_validation_records(
     db_path: str,
     records: Sequence[Mapping[str, Any]],

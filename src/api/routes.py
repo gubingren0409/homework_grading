@@ -32,6 +32,7 @@ from src.db.client import (
     list_golden_annotation_assets,
     get_task_status_counts,
     get_completion_latencies_seconds,
+    get_task_volume_stats,
 )
 from src.worker.main import grade_homework_task
 from src.core.storage_adapter import storage
@@ -42,6 +43,7 @@ from src.cognitive.engines.deepseek_engine import DeepSeekCognitiveEngine
 from src.orchestration.workflow import GradingWorkflow
 from src.schemas.rubric_ir import TeacherRubric
 from src.core.config import settings
+from src.core.runtime_router import get_runtime_router_controller
 from src.skills.service import SkillService
 from src.skills.interfaces import ValidationInput
 
@@ -272,6 +274,23 @@ class SlaSummaryResponse(BaseModel):
     observed_status_counts: Dict[str, int]
     observed_completion_seconds_p50: Optional[float] = None
     observed_completion_seconds_p95: Optional[float] = None
+    notes: List[str] = Field(default_factory=list)
+
+
+class ProviderBenchmarkResponse(BaseModel):
+    version: str
+    window_hours: int
+    task_volume: Dict[str, int]
+    throughput_tasks_per_hour: float
+    cognitive_router: Dict[str, Any]
+    estimated_cost: Dict[str, float]
+    notes: List[str] = Field(default_factory=list)
+
+
+class RouterPolicyResponse(BaseModel):
+    version: str
+    policy: Dict[str, Any]
+    live_snapshot: Dict[str, Any]
     notes: List[str] = Field(default_factory=list)
 
 
@@ -908,6 +927,8 @@ async def get_capability_catalog():
                     CapabilityEndpointItem(method="POST", path="/api/v1/trace/probe", response_model="TraceProbeResponse"),
                     CapabilityEndpointItem(method="GET", path="/api/v1/sla/summary", response_model="SlaSummaryResponse"),
                     CapabilityEndpointItem(method="GET", path="/api/v1/contracts/catalog", response_model="ApiContractCatalogResponse"),
+                    CapabilityEndpointItem(method="GET", path="/api/v1/metrics/provider-benchmark", response_model="ProviderBenchmarkResponse"),
+                    CapabilityEndpointItem(method="GET", path="/api/v1/router/policy", response_model="RouterPolicyResponse"),
                 ],
             ),
         ],
@@ -924,6 +945,8 @@ async def get_contract_catalog():
         ContractSchemaItem(schema_name="PendingReviewTaskItem", fields=_schema_fields_from_model(PendingReviewTaskItem)),
         ContractSchemaItem(schema_name="AnnotationFeedbackRequest", fields=_schema_fields_from_model(AnnotationFeedbackRequest)),
         ContractSchemaItem(schema_name="AnnotationFeedbackResponse", fields=_schema_fields_from_model(AnnotationFeedbackResponse)),
+        ContractSchemaItem(schema_name="ProviderBenchmarkResponse", fields=_schema_fields_from_model(ProviderBenchmarkResponse)),
+        ContractSchemaItem(schema_name="RouterPolicyResponse", fields=_schema_fields_from_model(RouterPolicyResponse)),
     ]
     return ApiContractCatalogResponse(
         version="1.0",
@@ -964,6 +987,73 @@ async def get_sla_summary(
             "queue latency target measures submit->worker-processing transition.",
             "completion latency uses task.created_at to first grading_results.created_at.",
             "SSE reliability should be monitored with disconnect/error event ratio dashboard.",
+        ],
+    )
+
+
+@router.get("/metrics/provider-benchmark", response_model=ProviderBenchmarkResponse)
+async def get_provider_benchmark(
+    db_path: str = Depends(get_db_path),
+    window_hours: int = Query(24, ge=1, le=168),
+):
+    volume = await get_task_volume_stats(db_path, lookback_hours=window_hours)
+    router_snapshot = get_runtime_router_controller().snapshot()
+    completed = int(volume.get("completed_count", 0))
+    failed = int(volume.get("failed_count", 0))
+    total_count = int(volume.get("total_count", 0))
+    fallback_rate = float(router_snapshot.get("fallback_rate", 0.0))
+    # Cost proxy (placeholder): relative unit cost where reasoner=1.0 and chat=0.35.
+    estimated_reasoner_units = max(completed - int(completed * fallback_rate), 0)
+    estimated_chat_units = int(completed * fallback_rate)
+    estimated_cost_units = float(estimated_reasoner_units) * 1.0 + float(estimated_chat_units) * 0.35
+    failure_rate = float(router_snapshot.get("failure_rate", 0.0))
+    success_rate = 1.0 - failure_rate if failure_rate <= 1.0 else 0.0
+    throughput = float(total_count) / float(window_hours)
+    return ProviderBenchmarkResponse(
+        version="1.0",
+        window_hours=window_hours,
+        task_volume=volume,
+        throughput_tasks_per_hour=throughput,
+        cognitive_router={
+            "requested_model": settings.deepseek_model_name,
+            "fallback_model": "deepseek-chat",
+            "sample_count": int(router_snapshot.get("sample_count", 0)),
+            "failure_rate": failure_rate,
+            "fallback_rate": fallback_rate,
+            "accuracy_proxy": success_rate,
+            "token_median": float(router_snapshot.get("token_median", 0.0)),
+            "token_p95": float(router_snapshot.get("token_p95", 0.0)),
+        },
+        estimated_cost={
+            "reasoner_units": float(estimated_reasoner_units),
+            "chat_units": float(estimated_chat_units),
+            "total_units": estimated_cost_units,
+        },
+        notes=[
+            "Cost is an internal proxy unit and not a billing invoice.",
+            "Fallback rate comes from runtime router event stream in process memory.",
+        ],
+    )
+
+
+@router.get("/router/policy", response_model=RouterPolicyResponse)
+async def get_router_policy():
+    live = get_runtime_router_controller().snapshot()
+    return RouterPolicyResponse(
+        version="1.0",
+        policy={
+            "auto_controller_enabled": settings.auto_circuit_controller_enabled,
+            "failure_rate_threshold": settings.auto_circuit_failure_rate_threshold,
+            "token_spike_threshold": settings.auto_circuit_token_spike_threshold,
+            "min_samples": settings.auto_circuit_min_samples,
+            "budget_token_limit": settings.router_budget_token_limit,
+            "default_model": settings.deepseek_model_name,
+            "fallback_model": "deepseek-chat",
+        },
+        live_snapshot=live,
+        notes=[
+            "When thresholds are exceeded, cognitive route is forced to fallback model.",
+            "Token spike compares incoming estimate against rolling median.",
         ],
     )
 
