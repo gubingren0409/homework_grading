@@ -10,6 +10,7 @@ from src.core.config import settings
 from src.core.connection_pool import CircuitBreakerKeyPool, AllKeysExhaustedError
 from src.core.exceptions import GradingSystemError
 from src.core.circuit_breaker import CircuitBreaker, CircuitBreakerOpenError  # Phase 33
+from src.core.runtime_router import get_runtime_router_controller
 from src.core.trace_context import outbound_trace_headers, get_trace_id, get_task_id
 from src.schemas.cognitive_ir import EvaluationReport
 from src.schemas.perception_ir import PerceptionOutput
@@ -118,6 +119,8 @@ class DeepSeekCognitiveEngine(BaseCognitiveAgent):
                 reserve_output_tokens=1536,
             )
         )
+        token_estimate = int(prompt_bundle.token_estimate)
+        runtime_router = get_runtime_router_controller()
         
         max_retries = 15
         connection_error_count = 0
@@ -134,28 +137,24 @@ class DeepSeekCognitiveEngine(BaseCognitiveAgent):
 
                 # 2. Primary model path + deterministic fallback.
                 # Stream mode is configurable to balance latency/caching vs token streaming.
-                should_degrade = connection_error_count >= MAX_CONNECTION_ERRORS
-                should_bypass_reasoner = perception_data.readability_status == "HEAVILY_ALTERED"
+                route_decision = runtime_router.decide_cognitive_route(
+                    readability_status=perception_data.readability_status,
+                    incoming_token_estimate=token_estimate,
+                    requested_model=settings.deepseek_model_name,
+                )
+                should_degrade = connection_error_count >= MAX_CONNECTION_ERRORS or route_decision.force_degrade_to_chat
                 if should_degrade:
                     logger.warning(
-                        "Switching to deepseek-chat fallback (attempt=%s, net_failures=%s).",
+                        "Switching to deepseek-chat fallback (attempt=%s, net_failures=%s, reason=%s).",
                         attempt + 1,
                         connection_error_count,
-                    )
-                    model_to_use = "deepseek-chat"
-                    use_stream = False
-                elif should_bypass_reasoner:
-                    logger.warning(
-                        "Bypassing reasoner for HEAVILY_ALTERED input (attempt=%s, confidence=%.2f). "
-                        "Routing directly to deepseek-chat.",
-                        attempt + 1,
-                        perception_data.global_confidence,
+                        route_decision.reason,
                     )
                     model_to_use = "deepseek-chat"
                     use_stream = False
                 else:
-                    model_to_use = settings.deepseek_model_name
-                    use_stream = settings.deepseek_use_stream
+                    model_to_use = route_decision.cognitive_model
+                    use_stream = route_decision.stream
 
                 # 3. Execute request
                 if use_stream:
@@ -224,16 +223,36 @@ class DeepSeekCognitiveEngine(BaseCognitiveAgent):
                     parsed_data = parsed_data["evaluation_report"]
                 elif len(parsed_data) == 1 and isinstance(list(parsed_data.values())[0], dict):
                     parsed_data = list(parsed_data.values())[0]
-
+                runtime_router.record_event(
+                    model=model_to_use,
+                    success=True,
+                    token_estimate=token_estimate,
+                    fallback_used=(model_to_use == "deepseek-chat"),
+                    reason="ok",
+                )
                 return EvaluationReport.model_validate(parsed_data)
 
             except AllKeysExhaustedError as e:
                 logger.error(f"FATAL: {e}")
+                runtime_router.record_event(
+                    model=settings.deepseek_model_name,
+                    success=False,
+                    token_estimate=token_estimate,
+                    fallback_used=True,
+                    reason="all_keys_exhausted",
+                )
                 raise GradingSystemError("All DeepSeek API keys are rate-limited. System saturated.")
             
             except CircuitBreakerOpenError as e:
                 # Phase 33: Circuit breaker OPEN, service degraded
                 logger.error(f"DeepSeek API circuit breaker OPEN: {e}")
+                runtime_router.record_event(
+                    model=settings.deepseek_model_name,
+                    success=False,
+                    token_estimate=token_estimate,
+                    fallback_used=True,
+                    reason="circuit_open",
+                )
                 raise GradingSystemError(
                     f"DeepSeek API service degraded. Circuit breaker active. {str(e)}"
                 )
@@ -242,6 +261,13 @@ class DeepSeekCognitiveEngine(BaseCognitiveAgent):
                 connection_error_count = 0
                 logger.warning(f"Rate limit hit on DeepSeek Key. Tripping circuit breaker... (Attempt {attempt+1})")
                 self._key_pool.report_429(current_key)
+                runtime_router.record_event(
+                    model=settings.deepseek_model_name,
+                    success=False,
+                    token_estimate=token_estimate,
+                    fallback_used=False,
+                    reason="rate_limit",
+                )
                 await asyncio.sleep(0.5)
                 continue
 
@@ -254,6 +280,13 @@ class DeepSeekCognitiveEngine(BaseCognitiveAgent):
                     connection_error_count,
                     net_err,
                 )
+                runtime_router.record_event(
+                    model=settings.deepseek_model_name,
+                    success=False,
+                    token_estimate=token_estimate,
+                    fallback_used=False,
+                    reason="network_error",
+                )
                 await asyncio.sleep(2.0)
                 continue
 
@@ -265,6 +298,13 @@ class DeepSeekCognitiveEngine(BaseCognitiveAgent):
                     attempt + 1,
                     connection_error_count,
                     api_err,
+                )
+                runtime_router.record_event(
+                    model=settings.deepseek_model_name,
+                    success=False,
+                    token_estimate=token_estimate,
+                    fallback_used=False,
+                    reason="api_error",
                 )
                 await asyncio.sleep(2.0)
                 continue
@@ -279,6 +319,13 @@ class DeepSeekCognitiveEngine(BaseCognitiveAgent):
                 )
                 logger.error("Raw Output Snippet: %s", full_raw_text[:200])
                 connection_error_count += 1
+                runtime_router.record_event(
+                    model=settings.deepseek_model_name if not should_degrade else "deepseek-chat",
+                    success=False,
+                    token_estimate=token_estimate,
+                    fallback_used=should_degrade,
+                    reason="parse_error",
+                )
                 await asyncio.sleep(1.0)
                 continue
 
@@ -294,9 +341,23 @@ class DeepSeekCognitiveEngine(BaseCognitiveAgent):
                         connection_error_count,
                         e,
                     )
+                    runtime_router.record_event(
+                        model=settings.deepseek_model_name,
+                        success=False,
+                        token_estimate=token_estimate,
+                        fallback_used=False,
+                        reason="transport_error",
+                    )
                     await asyncio.sleep(2.0)
                     continue
                 logger.error(f"Logic evaluation failed: {e}")
+                runtime_router.record_event(
+                    model=settings.deepseek_model_name,
+                    success=False,
+                    token_estimate=token_estimate,
+                    fallback_used=False,
+                    reason="unexpected_error",
+                )
                 raise GradingSystemError(f"Cognitive evaluation error: {error_text}")
 
         raise GradingSystemError(

@@ -61,6 +61,13 @@ class Settings(BaseSettings):
     prompt_invalidation_channel: str = "prompt:invalidate"
     prompt_invalidation_bus_enabled: bool = True
 
+    # Phase 45: runtime router/circuit controller
+    auto_circuit_controller_enabled: bool = True
+    auto_circuit_failure_rate_threshold: float = 0.30
+    auto_circuit_token_spike_threshold: float = 1.80
+    auto_circuit_min_samples: int = 20
+    router_budget_token_limit: int = 9000
+
     # Optional external skills (Phase 43)
     skill_layout_parser_enabled: bool = False
     skill_layout_parser_provider: str = "none"  # none | llamaparse | unstructured
@@ -124,6 +131,20 @@ class Settings(BaseSettings):
     def _validate_skill_timeout(cls, value: float) -> float:
         if value <= 0:
             raise ValueError("skill timeout must be positive")
+        return value
+
+    @field_validator("auto_circuit_failure_rate_threshold", "auto_circuit_token_spike_threshold")
+    @classmethod
+    def _validate_ratio_threshold(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError("threshold must be positive")
+        return value
+
+    @field_validator("auto_circuit_min_samples", "router_budget_token_limit")
+    @classmethod
+    def _validate_positive_int(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("value must be positive")
         return value
 
     model_config = SettingsConfigDict(
