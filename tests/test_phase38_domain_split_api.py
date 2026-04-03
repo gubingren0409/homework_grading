@@ -395,3 +395,134 @@ def test_phase38_annotation_feedback_rejects_out_of_bounds_anchor(tmp_path: Path
         assert resp.status_code == 422
     finally:
         app.dependency_overrides.clear()
+
+
+def test_phaseD2_review_pending_workbench_filter_and_sort(tmp_path: Path):
+    db_path = str(tmp_path / "phaseD2_pending_workbench.db")
+    asyncio.run(init_db(db_path))
+    asyncio.run(create_task(db_path, "review-task-a"))
+    asyncio.run(create_task(db_path, "review-task-b"))
+    asyncio.run(
+        update_task_status(
+            db_path,
+            "review-task-a",
+            "COMPLETED",
+            grading_status="REJECTED_UNREADABLE",
+            review_status="PENDING_REVIEW",
+            fallback_reason="PERCEPTION_SHORT_CIRCUIT:UNREADABLE",
+        )
+    )
+    asyncio.run(
+        update_task_status(
+            db_path,
+            "review-task-b",
+            "COMPLETED",
+            grading_status="SCORED",
+            review_status="PENDING_REVIEW",
+        )
+    )
+
+    client = _setup_client(db_path)
+    try:
+        resp = client.get(
+            "/api/v1/review/pending-workbench"
+            "?status=REJECTED_UNREADABLE&task_id=review-task-a&sort_by=task_id&sort_direction=asc&page=1&limit=20"
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["page"] == 1
+        assert data["limit"] == 20
+        assert len(data["items"]) == 1
+        assert data["items"][0]["task_id"] == "review-task-a"
+        assert data["items"][0]["review_status"] == "PENDING_REVIEW"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_phaseD2_review_annotation_assets_list_and_detail(tmp_path: Path):
+    db_path = str(tmp_path / "phaseD2_annotation_assets.db")
+    asyncio.run(init_db(db_path))
+    task_id = "phaseD2-asset-task-1"
+    asyncio.run(create_task(db_path, task_id))
+    asyncio.run(
+        update_task_status(
+            db_path,
+            task_id,
+            "COMPLETED",
+            grading_status="SCORED",
+            review_status="NOT_REQUIRED",
+        )
+    )
+
+    payload = {
+        "task_id": task_id,
+        "region_id": "region_x",
+        "region_type": "answer_region",
+        "image_width": 1200,
+        "image_height": 900,
+        "bbox": {"x1": 100, "y1": 120, "x2": 500, "y2": 360},
+        "teacher_text_feedback": "步骤2漏写单位。",
+        "expected_score": 7.5,
+        "perception_ir_snapshot": {
+            "context_type": "STUDENT_ANSWER",
+            "regions": [
+                {
+                    "target_id": "region_x",
+                    "region_type": "answer_region",
+                    "bbox": {"x_min": 0.05, "y_min": 0.1, "x_max": 0.6, "y_max": 0.5},
+                }
+            ],
+        },
+        "cognitive_ir_snapshot": {
+            "status": "SCORED",
+            "step_evaluations": [
+                {"reference_element_id": "region_x", "is_correct": False, "error_type": "LOGIC"}
+            ],
+            "overall_feedback": "存在可修正问题",
+        },
+        "is_integrated_to_dataset": True,
+    }
+
+    client = _setup_client(db_path)
+    try:
+        submit_resp = client.post("/api/v1/annotations/feedback", json=payload)
+        assert submit_resp.status_code == 200
+
+        list_resp = client.get(
+            "/api/v1/review/annotation-assets"
+            "?task_id=phaseD2-asset-task-1&region_id=region_x&region_type=answer_region"
+            "&integrated_only=true&sort_by=id&sort_direction=desc&page=1&limit=20"
+        )
+        assert list_resp.status_code == 200
+        list_data = list_resp.json()
+        assert list_data["page"] == 1
+        assert list_data["limit"] == 20
+        assert len(list_data["items"]) == 1
+        asset = list_data["items"][0]
+        assert asset["task_id"] == task_id
+        assert asset["region_id"] == "region_x"
+        assert asset["is_integrated_to_dataset"] is True
+
+        detail_resp = client.get(f"/api/v1/review/annotation-assets/{asset['id']}")
+        assert detail_resp.status_code == 200
+        detail = detail_resp.json()
+        assert detail["id"] == asset["id"]
+        assert detail["perception_ir_snapshot"]["regions"][0]["target_id"] == "region_x"
+        assert detail["cognitive_ir_snapshot"]["step_evaluations"][0]["reference_element_id"] == "region_x"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_phaseD2_review_annotation_asset_detail_not_found(tmp_path: Path):
+    db_path = str(tmp_path / "phaseD2_annotation_detail_not_found.db")
+    asyncio.run(init_db(db_path))
+
+    client = _setup_client(db_path)
+    try:
+        resp = client.get("/api/v1/review/annotation-assets/999999")
+        assert resp.status_code == 404
+        detail = resp.json()["detail"]
+        assert detail["error_code"] == "ANNOTATION_ASSET_NOT_FOUND"
+        assert detail["retryable"] is False
+    finally:
+        app.dependency_overrides.clear()

@@ -521,6 +521,9 @@ async def list_pending_review_tasks(
     db_path: str,
     *,
     grading_status_filter: Optional[str] = None,
+    task_id: Optional[str] = None,
+    order_by: str = "updated_at",
+    order_direction: str = "desc",
     limit: int = 50,
     offset: int = 0,
 ) -> List[Dict[str, Any]]:
@@ -532,10 +535,20 @@ async def list_pending_review_tasks(
             "FROM tasks WHERE review_status = 'PENDING_REVIEW'"
         )
         params: List[Any] = []
+        if task_id:
+            sql += " AND task_id = ?"
+            params.append(task_id)
         if grading_status_filter:
             sql += " AND grading_status = ?"
             params.append(grading_status_filter)
-        sql += " ORDER BY updated_at DESC LIMIT ? OFFSET ?"
+        order_candidates = {
+            "updated_at": "updated_at",
+            "created_at": "created_at",
+            "task_id": "task_id",
+        }
+        normalized_order = order_candidates.get(str(order_by).strip().lower(), "updated_at")
+        normalized_direction = "ASC" if str(order_direction).strip().lower() == "asc" else "DESC"
+        sql += f" ORDER BY {normalized_order} {normalized_direction}, task_id DESC LIMIT ? OFFSET ?"
         params.extend([limit, offset])
         async with db.execute(sql, tuple(params)) as cursor:
             rows = await cursor.fetchall()
@@ -732,6 +745,11 @@ async def list_golden_annotation_assets(
     db_path: str,
     *,
     task_id: Optional[str] = None,
+    region_id: Optional[str] = None,
+    region_type: Optional[str] = None,
+    integrated_only: Optional[bool] = None,
+    order_by: str = "created_at",
+    order_direction: str = "desc",
     limit: int = 50,
     offset: int = 0,
 ) -> List[Dict[str, Any]]:
@@ -748,11 +766,51 @@ async def list_golden_annotation_assets(
         if task_id:
             sql += " AND task_id = ?"
             params.append(task_id)
-        sql += " ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?"
+        if region_id:
+            sql += " AND region_id = ?"
+            params.append(region_id)
+        if region_type:
+            sql += " AND region_type = ?"
+            params.append(region_type)
+        if integrated_only is not None:
+            sql += " AND is_integrated_to_dataset = ?"
+            params.append(1 if integrated_only else 0)
+
+        order_candidates = {
+            "created_at": "created_at",
+            "updated_at": "updated_at",
+            "id": "id",
+        }
+        normalized_order = order_candidates.get(str(order_by).strip().lower(), "created_at")
+        normalized_direction = "ASC" if str(order_direction).strip().lower() == "asc" else "DESC"
+        sql += f" ORDER BY {normalized_order} {normalized_direction}, id DESC LIMIT ? OFFSET ?"
         params.extend([limit, offset])
         async with db.execute(sql, tuple(params)) as cursor:
             rows = await cursor.fetchall()
             return [dict(r) for r in rows]
+
+
+async def get_annotation_asset_by_id(
+    db_path: str,
+    *,
+    asset_id: int,
+) -> Optional[Dict[str, Any]]:
+    async with _open_connection(db_path) as db:
+        await _ensure_domain_split_tables(db)
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """
+            SELECT id, trace_id, task_id, region_id, region_type, image_width, image_height,
+                   bbox_coordinates, perception_ir_snapshot, cognitive_ir_snapshot,
+                   teacher_text_feedback, expected_score, is_integrated_to_dataset,
+                   created_at, updated_at
+            FROM golden_annotation_assets
+            WHERE id = ?
+            """,
+            (asset_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
 
 
 async def save_rubric(

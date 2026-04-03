@@ -1,7 +1,11 @@
 import base64
+import asyncio
+from unittest.mock import patch, Mock
 from fastapi.testclient import TestClient
 from src.main import app
 from src.schemas.perception_ir import LayoutIR
+from src.db.client import init_db, create_task, update_task_status
+from src.api.dependencies import get_db_path
 client = TestClient(app)
 
 
@@ -14,13 +18,17 @@ def test_grade_endpoint_happy_path():
     files = [("files", ("test_hw.jpg", b"fake_image_bytes", "image/jpeg"))]
 
     # 2. Execute POST
-    response = client.post("/api/v1/grade/submit", files=files)
+    with patch("src.api.routes.grade_homework_task.apply_async", return_value=Mock(id="mock-celery-id")):
+        response = client.post("/api/v1/grade/submit", files=files)
 
     # 3. Assertions
     assert response.status_code == 202
     data = response.json()
     assert "task_id" in data
     assert data["status"] == "PENDING"
+    assert data["status_endpoint"] == f"/api/v1/grade/{data['task_id']}"
+    assert data["stream_endpoint"] == f"/api/v1/tasks/{data['task_id']}/stream"
+    assert data["suggested_poll_interval_seconds"] == 2
 
 
 def test_grade_endpoint_circuit_breaker_422():
@@ -29,7 +37,8 @@ def test_grade_endpoint_circuit_breaker_422():
     to an HTTP 422 Unprocessable Entity response using Dependency Overrides.
     """
     files = [("files", ("dirty_hw.jpg", b"dirty_bytes", "image/jpeg"))]
-    response = client.post("/api/v1/grade/submit", files=files)
+    with patch("src.api.routes.grade_homework_task.apply_async", return_value=Mock(id="mock-celery-id")):
+        response = client.post("/api/v1/grade/submit", files=files)
     assert response.status_code == 202
 
 
@@ -119,21 +128,85 @@ def test_contract_catalog_endpoint():
     assert "schemas" in data
     schema_names = {item["schema_name"] for item in data["schemas"]}
     assert "TaskStatusResponse" in schema_names
+    assert "GradeFlowGuideResponse" in schema_names
+
+
+def test_grade_flow_guide_endpoint():
+    response = client.get("/api/v1/grade/flow-guide")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["submit_endpoint"] == "/api/v1/grade/submit"
+    assert data["status_endpoint_template"] == "/api/v1/grade/{task_id}"
+    assert data["stream_endpoint_template"] == "/api/v1/tasks/{task_id}/stream"
+    assert "SSE_BACKEND_UNAVAILABLE" in data["error_code_actions"]
+    assert data["error_code_actions"]["SSE_BACKEND_UNAVAILABLE"] == "fallback_to_polling"
+
+
+def test_grade_status_not_found_error_contract(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "grade_status_not_found.db")
+    asyncio.run(init_db(db_path))
+    app.dependency_overrides[get_db_path] = lambda: db_path
+    response = client.get("/api/v1/grade/task-not-found")
+    assert response.status_code == 404
+    detail = response.json()["detail"]
+    assert detail["error_code"] == "TASK_NOT_FOUND"
+    assert detail["retryable"] is False
+    assert detail["next_action"] == "submit_new_task"
+    app.dependency_overrides.clear()
+
+
+def test_results_by_task_requires_completed_state(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "results_by_task.db")
+    asyncio.run(init_db(db_path))
+    app.dependency_overrides[get_db_path] = lambda: db_path
+
+    missing_resp = client.get("/api/v1/results?task_id=missing-task&page=1&limit=10")
+    assert missing_resp.status_code == 404
+    missing_detail = missing_resp.json()["detail"]
+    assert missing_detail["error_code"] == "TASK_NOT_FOUND"
+
+    asyncio.run(create_task(db_path, "pending-task"))
+    pending_resp = client.get("/api/v1/results?task_id=pending-task&page=1&limit=10")
+    assert pending_resp.status_code == 409
+    pending_detail = pending_resp.json()["detail"]
+    assert pending_detail["error_code"] == "TASK_NOT_COMPLETED"
+    assert pending_detail["retryable"] is True
+    assert pending_detail["next_action"] == "wait_for_completion"
+    app.dependency_overrides.clear()
+
+
+def test_grade_status_failed_retry_hints(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "grade_status_failed.db")
+    asyncio.run(init_db(db_path))
+    app.dependency_overrides[get_db_path] = lambda: db_path
+    asyncio.run(create_task(db_path, "failed-task"))
+    asyncio.run(update_task_status(db_path, "failed-task", "FAILED", error="network timeout"))
+
+    response = client.get("/api/v1/grade/failed-task")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "FAILED"
+    assert data["error_code"] == "TASK_FAILED"
+    assert data["retryable"] is True
+    assert data["retry_hint"] == "retry_submit"
+    assert data["next_action"] == "retry_upload"
+    app.dependency_overrides.clear()
 
 
 def test_sla_summary_endpoint_with_empty_db(tmp_path, monkeypatch):
     db_path = str(tmp_path / "empty_sla.db")
-    monkeypatch.setattr("src.api.dependencies.get_db_path", lambda: db_path)
+    app.dependency_overrides[get_db_path] = lambda: db_path
     response = client.get("/api/v1/sla/summary")
     assert response.status_code == 200
     data = response.json()
     assert data["version"] == "1.0"
     assert isinstance(data["observed_status_counts"], dict)
+    app.dependency_overrides.clear()
 
 
 def test_provider_benchmark_endpoint(tmp_path, monkeypatch):
     db_path = str(tmp_path / "benchmark.db")
-    monkeypatch.setattr("src.api.dependencies.get_db_path", lambda: db_path)
+    app.dependency_overrides[get_db_path] = lambda: db_path
     response = client.get("/api/v1/metrics/provider-benchmark?window_hours=24")
     assert response.status_code == 200
     data = response.json()
@@ -143,6 +216,7 @@ def test_provider_benchmark_endpoint(tmp_path, monkeypatch):
     assert "throughput_tasks_per_hour" in data
     assert "accuracy_proxy" in data["cognitive_router"]
     assert "failure_rate" in data["cognitive_router"]
+    app.dependency_overrides.clear()
 
 
 def test_router_policy_endpoint():
@@ -156,7 +230,7 @@ def test_router_policy_endpoint():
 
 def test_dataset_pipeline_summary_endpoint(tmp_path, monkeypatch):
     db_path = str(tmp_path / "dataset_pipeline.db")
-    monkeypatch.setattr("src.api.dependencies.get_db_path", lambda: db_path)
+    app.dependency_overrides[get_db_path] = lambda: db_path
     response = client.get("/api/v1/metrics/dataset-pipeline?window_hours=24")
     assert response.status_code == 200
     data = response.json()
@@ -164,11 +238,12 @@ def test_dataset_pipeline_summary_endpoint(tmp_path, monkeypatch):
     assert "dataset_assets" in data
     assert "review_queue" in data
     assert "pending_assets" in data["dataset_assets"]
+    app.dependency_overrides.clear()
 
 
 def test_runtime_dashboard_endpoint(tmp_path, monkeypatch):
     db_path = str(tmp_path / "runtime_dashboard.db")
-    monkeypatch.setattr("src.api.dependencies.get_db_path", lambda: db_path)
+    app.dependency_overrides[get_db_path] = lambda: db_path
     response = client.get("/api/v1/metrics/runtime-dashboard?window_hours=24")
     assert response.status_code == 200
     data = response.json()
@@ -177,11 +252,12 @@ def test_runtime_dashboard_endpoint(tmp_path, monkeypatch):
     assert "fallback_triggers" in data
     assert "prompt_cache_hits" in data
     assert "human_review_rate" in data
+    app.dependency_overrides.clear()
 
 
 def test_prompt_control_endpoints(tmp_path, monkeypatch):
     db_path = str(tmp_path / "prompt_control_api.db")
-    monkeypatch.setattr("src.api.dependencies.get_db_path", lambda: db_path)
+    app.dependency_overrides[get_db_path] = lambda: db_path
 
     set_resp = client.post(
         "/api/v1/prompt/control",
@@ -225,3 +301,59 @@ def test_prompt_control_endpoints(tmp_path, monkeypatch):
     rows = audit_resp.json()
     assert isinstance(rows, list)
     assert len(rows) >= 1
+    app.dependency_overrides.clear()
+
+
+def test_ops_console_endpoints(tmp_path):
+    db_path = str(tmp_path / "ops_console_api.db")
+    asyncio.run(init_db(db_path))
+    app.dependency_overrides[get_db_path] = lambda: db_path
+    try:
+        snapshot_resp = client.get("/api/v1/ops/config/snapshot")
+        assert snapshot_resp.status_code == 200
+        snapshot = snapshot_resp.json()
+        assert "perception_provider" in snapshot
+        assert "router_policy" in snapshot
+
+        switch_resp = client.post(
+            "/api/v1/ops/provider/switch",
+            json={"provider": "mock", "operator_id": "ops-user"},
+        )
+        assert switch_resp.status_code == 200
+        assert switch_resp.json()["provider"] == "mock"
+
+        invalid_switch = client.post(
+            "/api/v1/ops/provider/switch",
+            json={"provider": "unknown-provider", "operator_id": "ops-user"},
+        )
+        assert invalid_switch.status_code == 422
+        assert invalid_switch.json()["detail"]["error_code"] == "INVALID_PROVIDER"
+
+        router_resp = client.post(
+            "/api/v1/ops/router/control",
+            json={
+                "enabled": True,
+                "failure_rate_threshold": 0.25,
+                "token_spike_threshold": 1.6,
+                "min_samples": 10,
+                "budget_token_limit": 7000,
+                "operator_id": "ops-user",
+            },
+        )
+        assert router_resp.status_code == 200
+        router_data = router_resp.json()
+        assert router_data["failure_rate_threshold"] == 0.25
+        assert router_data["budget_token_limit"] == 7000
+
+        catalog_resp = client.get("/api/v1/ops/prompt/catalog?page=1&limit=20")
+        assert catalog_resp.status_code == 200
+        catalog_data = catalog_resp.json()
+        assert "items" in catalog_data
+
+        audit_resp = client.get("/api/v1/ops/audit/logs?page=1&limit=20")
+        assert audit_resp.status_code == 200
+        audit_data = audit_resp.json()
+        assert isinstance(audit_data["items"], list)
+        assert any(item["action"] == "ops_provider_switch" for item in audit_data["items"])
+    finally:
+        app.dependency_overrides.clear()

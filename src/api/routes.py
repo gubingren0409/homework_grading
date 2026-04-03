@@ -30,6 +30,7 @@ from src.db.client import (
     bulk_update_hygiene_interception_action,
     create_golden_annotation_asset,
     list_golden_annotation_assets,
+    get_annotation_asset_by_id,
     get_task_status_counts,
     get_completion_latencies_seconds,
     get_task_volume_stats,
@@ -49,7 +50,6 @@ from src.worker.main import grade_homework_task
 from src.core.storage_adapter import storage
 from src.core.trace_context import get_trace_id
 from src.worker.main import emit_trace_probe
-from src.perception.factory import create_perception_engine
 from src.cognitive.engines.deepseek_engine import DeepSeekCognitiveEngine
 from src.orchestration.workflow import GradingWorkflow
 from src.schemas.rubric_ir import TeacherRubric
@@ -59,6 +59,7 @@ from src.skills.service import SkillService
 from src.skills.interfaces import ValidationInput
 from src.prompts.provider import get_prompt_provider
 from src.prompts.schemas import PromptInvalidationEvent
+from src.perception.factory import create_perception_engine
 
 
 logger = logging.getLogger(__name__)
@@ -81,12 +82,30 @@ async def _store_upload_file_with_limits(task_id: str, upload: UploadFile) -> st
                         timeout=settings.request_body_read_timeout_seconds,
                     )
                 except asyncio.TimeoutError as exc:
-                    raise HTTPException(status_code=408, detail="upload read timeout") from exc
+                    raise HTTPException(
+                        status_code=408,
+                        detail=_error_detail(
+                            error_code="UPLOAD_TIMEOUT",
+                            message="upload read timeout",
+                            retryable=True,
+                            retry_hint="retry_submit",
+                            next_action="retry_upload",
+                        ),
+                    ) from exc
                 if not chunk:
                     break
                 total_bytes += len(chunk)
                 if total_bytes > settings.max_request_body_bytes:
-                    raise HTTPException(status_code=413, detail="file too large")
+                    raise HTTPException(
+                        status_code=413,
+                        detail=_error_detail(
+                            error_code="FILE_TOO_LARGE",
+                            message="file too large",
+                            retryable=False,
+                            retry_hint="compress_or_split_file",
+                            next_action="adjust_file",
+                        ),
+                    )
                 spool.write(chunk)
             spool.seek(0)
             return storage.store_fileobj(task_id, spool, filename)
@@ -99,6 +118,9 @@ class TaskResponse(BaseModel):
     task_id: str
     status: str
     rubric_id: Optional[str] = None
+    status_endpoint: Optional[str] = None
+    stream_endpoint: Optional[str] = None
+    suggested_poll_interval_seconds: Optional[int] = None
 
 class TaskStatusResponse(BaseModel):
     task_id: str
@@ -111,6 +133,12 @@ class TaskStatusResponse(BaseModel):
     error_code: Optional[str] = None  # Phase 29: Sanitized error codes
     progress: Optional[float] = None  # Phase 29: Progress percentage (0.0-1.0)
     eta_seconds: Optional[int] = None  # Phase 29: Estimated time to completion
+    retryable: Optional[bool] = None
+    retry_hint: Optional[str] = None
+    next_action: Optional[str] = None
+    status_endpoint: Optional[str] = None
+    stream_endpoint: Optional[str] = None
+    suggested_poll_interval_seconds: Optional[int] = None
     results: Optional[List[Dict[str, Any]]] = None
 
 class GradingResultItem(BaseModel):
@@ -140,10 +168,26 @@ class PendingReviewTaskItem(BaseModel):
     updated_at: Optional[str] = None
 
 
+class PendingReviewTasksResponse(BaseModel):
+    page: int
+    limit: int
+    items: List[PendingReviewTaskItem]
+
+
 class ReviewFlowGuideResponse(BaseModel):
     pending_list_endpoint: str
     task_status_enum: List[str]
     grading_status_enum: List[str]
+    notes: List[str]
+
+
+class GradeFlowGuideResponse(BaseModel):
+    submit_endpoint: str
+    status_endpoint_template: str
+    stream_endpoint_template: str
+    task_status_enum: List[str]
+    terminal_statuses: List[str]
+    error_code_actions: Dict[str, str]
     notes: List[str]
 
 
@@ -227,6 +271,30 @@ class GoldenAnnotationAssetItem(BaseModel):
     is_integrated_to_dataset: bool
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
+
+
+class AnnotationAssetDetailResponse(BaseModel):
+    id: int
+    trace_id: str
+    task_id: str
+    region_id: str
+    region_type: str
+    image_width: int
+    image_height: int
+    bbox_coordinates: List[float]
+    teacher_text_feedback: str
+    expected_score: float
+    is_integrated_to_dataset: bool
+    perception_ir_snapshot: Dict[str, Any]
+    cognitive_ir_snapshot: Dict[str, Any]
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class AnnotationAssetListResponse(BaseModel):
+    page: int
+    limit: int
+    items: List[GoldenAnnotationAssetItem]
 
 
 class SkillLayoutParseRequest(BaseModel):
@@ -352,6 +420,61 @@ class PromptOpsAuditItem(BaseModel):
     created_at: Optional[str] = None
 
 
+class OpsProviderSwitchRequest(BaseModel):
+    provider: str
+    operator_id: Optional[str] = None
+
+
+class OpsRouterControlRequest(BaseModel):
+    enabled: bool
+    failure_rate_threshold: float = Field(..., gt=0.0)
+    token_spike_threshold: float = Field(..., gt=0.0)
+    min_samples: int = Field(..., ge=1)
+    budget_token_limit: int = Field(..., ge=1)
+    operator_id: Optional[str] = None
+
+
+class OpsRouterControlResponse(BaseModel):
+    enabled: bool
+    failure_rate_threshold: float
+    token_spike_threshold: float
+    min_samples: int
+    budget_token_limit: int
+
+
+class OpsConfigSnapshotResponse(BaseModel):
+    perception_provider: str
+    prompt_settings: Dict[str, Any]
+    router_policy: OpsRouterControlResponse
+
+
+class OpsAuditLogItem(BaseModel):
+    trace_id: str
+    operator_id: Optional[str] = None
+    action: str
+    component: str
+    payload: Dict[str, Any]
+
+
+class OpsAuditLogResponse(BaseModel):
+    page: int
+    limit: int
+    items: List[OpsAuditLogItem]
+
+
+class OpsPromptCatalogItem(BaseModel):
+    prompt_key: str
+    control_state: Dict[str, Any]
+    ab_state: Dict[str, Any]
+    runtime_state: Dict[str, Any]
+
+
+class OpsPromptCatalogResponse(BaseModel):
+    page: int
+    limit: int
+    items: List[OpsPromptCatalogItem]
+
+
 def _percentile(values: List[float], p: float) -> Optional[float]:
     if not values:
         return None
@@ -374,6 +497,32 @@ def _schema_fields_from_model(model: type[BaseModel]) -> List[ContractFieldItem]
             )
         )
     return fields
+
+
+def _error_detail(
+    *,
+    error_code: str,
+    message: str,
+    retryable: bool = False,
+    retry_hint: Optional[str] = None,
+    next_action: Optional[str] = None,
+) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {
+        "error_code": error_code,
+        "message": message,
+        "retryable": retryable,
+    }
+    if retry_hint:
+        payload["retry_hint"] = retry_hint
+    if next_action:
+        payload["next_action"] = next_action
+    return payload
+
+
+def _load_settings_from_env() -> None:
+    settings.__dict__.clear()
+    refreshed = settings.__class__()  # type: ignore[call-arg]
+    settings.__dict__.update(refreshed.__dict__)
 
 
 def _validate_bbox_in_image_space(*, bbox: BoundingBoxInput, image_width: int, image_height: int) -> List[float]:
@@ -522,7 +671,15 @@ async def get_rubric_detail(
 ):
     row = await get_rubric(db_path, rubric_id)
     if not row:
-        raise HTTPException(status_code=404, detail="Rubric not found")
+        raise HTTPException(
+            status_code=404,
+            detail=_error_detail(
+                error_code="RUBRIC_NOT_FOUND",
+                message="Rubric not found",
+                retryable=False,
+                next_action="select_valid_rubric",
+            ),
+        )
     rubric_raw = row.get("rubric_json")
     try:
         rubric_obj = json.loads(rubric_raw) if isinstance(rubric_raw, str) else rubric_raw
@@ -574,7 +731,15 @@ async def submit_grading_job(
     if rubric_id:
         rubric_row = await get_rubric(db_path, rubric_id)
         if not rubric_row:
-            raise HTTPException(status_code=404, detail="Rubric not found")
+            raise HTTPException(
+                status_code=404,
+                detail=_error_detail(
+                    error_code="RUBRIC_NOT_FOUND",
+                    message="Rubric not found",
+                    retryable=False,
+                    next_action="select_valid_rubric",
+                ),
+            )
         rubric_raw = rubric_row.get("rubric_json")
         bound_rubric = json.loads(rubric_raw) if isinstance(rubric_raw, str) else rubric_raw
         await set_task_rubric_id(db_path, task_id, rubric_id)
@@ -598,7 +763,44 @@ async def submit_grading_job(
         "task_enqueued",
         extra={"extra_fields": {"task_id": task_id, "event": "task_enqueued"}},
     )
-    return TaskResponse(task_id=task_id, status="PENDING", rubric_id=rubric_id)
+    return TaskResponse(
+        task_id=task_id,
+        status="PENDING",
+        rubric_id=rubric_id,
+        status_endpoint=f"/api/v1/grade/{task_id}",
+        stream_endpoint=f"/api/v1/tasks/{task_id}/stream",
+        suggested_poll_interval_seconds=2,
+    )
+
+
+@router.get("/grade/flow-guide", response_model=GradeFlowGuideResponse)
+async def get_grade_flow_guide():
+    """
+    学生任务台对接辅助接口：
+    提供提交、轮询、SSE 与错误处理的最小状态机约定。
+    """
+    return GradeFlowGuideResponse(
+        submit_endpoint="/api/v1/grade/submit",
+        status_endpoint_template="/api/v1/grade/{task_id}",
+        stream_endpoint_template="/api/v1/tasks/{task_id}/stream",
+        task_status_enum=["PENDING", "PROCESSING", "COMPLETED", "FAILED"],
+        terminal_statuses=["COMPLETED", "FAILED"],
+        error_code_actions={
+            "UPLOAD_TIMEOUT": "retry_upload",
+            "FILE_TOO_LARGE": "adjust_file",
+            "TASK_NOT_FOUND": "submit_new_task",
+            "TASK_NOT_COMPLETED": "wait_for_completion",
+            "INPUT_REJECTED": "retry_upload",
+            "TASK_FAILED": "retry_upload",
+            "INTERNAL_ERROR": "contact_support",
+            "SSE_BACKEND_UNAVAILABLE": "fallback_to_polling",
+        },
+        notes=[
+            "优先使用 SSE，若出现 SSE_BACKEND_UNAVAILABLE 则回退到状态轮询。",
+            "状态轮询建议间隔 2 秒；可配合 ETag 条件请求降低带宽。",
+            "FAILED 与 REJECTED_UNREADABLE 默认允许重新提交。",
+        ],
+    )
 
 
 @router.get("/grade/{task_id}", response_model=TaskStatusResponse)
@@ -629,7 +831,15 @@ async def get_job_status_and_results(
     """
     task = await get_task(db_path, task_id)
     if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
+        raise HTTPException(
+            status_code=404,
+            detail=_error_detail(
+                error_code="TASK_NOT_FOUND",
+                message="Task not found",
+                retryable=False,
+                next_action="submit_new_task",
+            ),
+        )
     
     # Base response structure
     response_data = {
@@ -639,6 +849,10 @@ async def get_job_status_and_results(
         "rubric_id": task.get("rubric_id"),
         "review_status": task.get("review_status"),
         "fallback_reason": task.get("fallback_reason"),
+        "retryable": False,
+        "status_endpoint": f"/api/v1/grade/{task_id}",
+        "stream_endpoint": f"/api/v1/tasks/{task_id}/stream",
+        "suggested_poll_interval_seconds": 2,
     }
     
     # Phase 29: Status-specific enrichment
@@ -646,10 +860,14 @@ async def get_job_status_and_results(
         # TODO: Implement progress tracking via Redis/Celery backend
         response_data["progress"] = 0.5 if task["status"] == "PROCESSING" else 0.0
         response_data["eta_seconds"] = 45  # Placeholder: avg grading time
+        response_data["next_action"] = "wait_for_completion"
     
     elif task["status"] == "FAILED":
         # Sanitize error messages: strip internal stack traces
         raw_error = task.get("error_message", "Unknown error")
+        response_data["retryable"] = True
+        response_data["retry_hint"] = "retry_submit"
+        response_data["next_action"] = "retry_upload"
         if "Traceback" in raw_error or "File " in raw_error:
             response_data["error_code"] = "INTERNAL_ERROR"
             response_data["error_message"] = "Internal processing error. Contact support."
@@ -661,6 +879,11 @@ async def get_job_status_and_results(
         if task.get("grading_status") == "REJECTED_UNREADABLE":
             response_data["error_code"] = "INPUT_REJECTED"
             response_data["error_message"] = task.get("error_message", "Input quality too low")
+            response_data["retryable"] = True
+            response_data["retry_hint"] = "resubmit_with_clearer_image"
+            response_data["next_action"] = "retry_upload"
+        else:
+            response_data["next_action"] = "view_results"
         # Retrieve results associated with this task
         from src.db.client import _open_connection, aiosqlite
         async with _open_connection(db_path) as db:
@@ -735,26 +958,79 @@ async def stream_task_status(
     # Verify task exists before opening SSE stream
     task = await get_task(db_path, task_id)
     if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
+        raise HTTPException(
+            status_code=404,
+            detail=_error_detail(
+                error_code="TASK_NOT_FOUND",
+                message="Task not found",
+                retryable=False,
+                next_action="submit_new_task",
+            ),
+        )
     
     return create_sse_response(db_path, task_id)
 
 
 @router.get("/results", response_model=List[GradingResultItem])
 async def get_all_results(
+    task_id: Optional[str] = Query(default=None),
     page: int = Query(1, ge=1),
     limit: int = Query(10, ge=1, le=100),
     db_path: str = Depends(get_db_path)
 ):
     """Paginated result retrieval."""
+    if task_id:
+        task = await get_task(db_path, task_id)
+        if not task:
+            raise HTTPException(
+                status_code=404,
+                detail=_error_detail(
+                    error_code="TASK_NOT_FOUND",
+                    message="Task not found",
+                    retryable=False,
+                    next_action="submit_new_task",
+                ),
+            )
+        if task.get("status") != "COMPLETED":
+            raise HTTPException(
+                status_code=409,
+                detail=_error_detail(
+                    error_code="TASK_NOT_COMPLETED",
+                    message="Task is not completed yet",
+                    retryable=True,
+                    retry_hint="wait_and_poll_status",
+                    next_action="wait_for_completion",
+                ),
+            )
     offset = (page - 1) * limit
-    results = await fetch_results(db_path, limit, offset)
+    if task_id:
+        from src.db.client import _open_connection, aiosqlite
+
+        async with _open_connection(db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                """
+                SELECT id, student_id, total_deduction, is_pass, report_json
+                FROM grading_results
+                WHERE task_id = ?
+                ORDER BY created_at DESC
+                LIMIT ? OFFSET ?
+                """,
+                (task_id, limit, offset),
+            ) as cursor:
+                rows = await cursor.fetchall()
+                results = [dict(r) for r in rows]
+    else:
+        results = await fetch_results(db_path, limit, offset)
     return [GradingResultItem(**r) for r in results]
 
 
 @router.get("/tasks/pending-review", response_model=List[PendingReviewTaskItem])
 async def get_pending_review_tasks(
     status: Optional[str] = Query(default=None, pattern="^(SCORED|REJECTED_UNREADABLE)$"),
+    task_id: Optional[str] = Query(default=None),
+    sort_by: str = Query(default="updated_at", pattern="^(updated_at|created_at|task_id)$"),
+    sort_direction: str = Query(default="desc", pattern="^(asc|desc)$"),
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
     db_path: str = Depends(get_db_path),
@@ -763,7 +1039,10 @@ async def get_pending_review_tasks(
     # status query maps to grading_status filter to keep pipeline status and business status separated.
     rows = await list_pending_review_tasks(
         db_path,
+        task_id=task_id,
         grading_status_filter=status,
+        order_by=sort_by,
+        order_direction=sort_direction,
         limit=limit,
         offset=offset,
     )
@@ -771,6 +1050,33 @@ async def get_pending_review_tasks(
     for row in rows:
         normalized.append(PendingReviewTaskItem(**row))
     return normalized
+
+
+@router.get("/review/pending-workbench", response_model=PendingReviewTasksResponse)
+async def get_pending_review_workbench(
+    status: Optional[str] = Query(default=None, pattern="^(SCORED|REJECTED_UNREADABLE)$"),
+    task_id: Optional[str] = Query(default=None),
+    sort_by: str = Query(default="updated_at", pattern="^(updated_at|created_at|task_id)$"),
+    sort_direction: str = Query(default="desc", pattern="^(asc|desc)$"),
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+    db_path: str = Depends(get_db_path),
+):
+    offset = (page - 1) * limit
+    rows = await list_pending_review_tasks(
+        db_path,
+        task_id=task_id,
+        grading_status_filter=status,
+        order_by=sort_by,
+        order_direction=sort_direction,
+        limit=limit,
+        offset=offset,
+    )
+    return PendingReviewTasksResponse(
+        page=page,
+        limit=limit,
+        items=[PendingReviewTaskItem(**row) for row in rows],
+    )
 
 
 @router.get("/hygiene/interceptions", response_model=List[HygieneInterceptionItem])
@@ -867,6 +1173,11 @@ async def submit_annotation_feedback(
 @router.get("/annotations/assets", response_model=List[GoldenAnnotationAssetItem])
 async def get_annotation_assets(
     task_id: Optional[str] = Query(default=None),
+    region_id: Optional[str] = Query(default=None),
+    region_type: Optional[str] = Query(default=None, pattern="^(question_region|answer_region)$"),
+    integrated_only: Optional[bool] = Query(default=None),
+    sort_by: str = Query(default="created_at", pattern="^(created_at|updated_at|id)$"),
+    sort_direction: str = Query(default="desc", pattern="^(asc|desc)$"),
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
     db_path: str = Depends(get_db_path),
@@ -875,6 +1186,11 @@ async def get_annotation_assets(
     rows = await list_golden_annotation_assets(
         db_path,
         task_id=task_id,
+        region_id=region_id,
+        region_type=region_type,
+        integrated_only=integrated_only,
+        order_by=sort_by,
+        order_direction=sort_direction,
         limit=limit,
         offset=offset,
     )
@@ -893,6 +1209,104 @@ async def get_annotation_assets(
         row["is_integrated_to_dataset"] = bool(row.get("is_integrated_to_dataset", 0))
         result.append(GoldenAnnotationAssetItem(**row))
     return result
+
+
+@router.get("/review/annotation-assets", response_model=AnnotationAssetListResponse)
+async def get_review_annotation_assets(
+    task_id: Optional[str] = Query(default=None),
+    region_id: Optional[str] = Query(default=None),
+    region_type: Optional[str] = Query(default=None, pattern="^(question_region|answer_region)$"),
+    integrated_only: Optional[bool] = Query(default=None),
+    sort_by: str = Query(default="created_at", pattern="^(created_at|updated_at|id)$"),
+    sort_direction: str = Query(default="desc", pattern="^(asc|desc)$"),
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+    db_path: str = Depends(get_db_path),
+):
+    offset = (page - 1) * limit
+    rows = await list_golden_annotation_assets(
+        db_path,
+        task_id=task_id,
+        region_id=region_id,
+        region_type=region_type,
+        integrated_only=integrated_only,
+        order_by=sort_by,
+        order_direction=sort_direction,
+        limit=limit,
+        offset=offset,
+    )
+    items: List[GoldenAnnotationAssetItem] = []
+    for row in rows:
+        raw_bbox = row.get("bbox_coordinates")
+        bbox_coordinates: List[float] = []
+        if isinstance(raw_bbox, str):
+            try:
+                parsed = json.loads(raw_bbox)
+                if isinstance(parsed, list):
+                    bbox_coordinates = [float(v) for v in parsed]
+            except Exception:
+                bbox_coordinates = []
+        row["bbox_coordinates"] = bbox_coordinates
+        row["is_integrated_to_dataset"] = bool(row.get("is_integrated_to_dataset", 0))
+        items.append(GoldenAnnotationAssetItem(**row))
+    return AnnotationAssetListResponse(page=page, limit=limit, items=items)
+
+
+@router.get("/review/annotation-assets/{asset_id}", response_model=AnnotationAssetDetailResponse)
+async def get_review_annotation_asset_detail(
+    asset_id: int,
+    db_path: str = Depends(get_db_path),
+):
+    row = await get_annotation_asset_by_id(db_path, asset_id=asset_id)
+    if not row:
+        raise HTTPException(
+            status_code=404,
+            detail=_error_detail(
+                error_code="ANNOTATION_ASSET_NOT_FOUND",
+                message="Annotation asset not found",
+                retryable=False,
+                next_action="refresh_asset_list",
+            ),
+        )
+
+    raw_bbox = row.get("bbox_coordinates")
+    bbox_coordinates: List[float] = []
+    if isinstance(raw_bbox, str):
+        try:
+            parsed = json.loads(raw_bbox)
+            if isinstance(parsed, list):
+                bbox_coordinates = [float(v) for v in parsed]
+        except Exception:
+            bbox_coordinates = []
+
+    raw_perception = row.get("perception_ir_snapshot")
+    raw_cognitive = row.get("cognitive_ir_snapshot")
+    try:
+        perception_snapshot = json.loads(raw_perception) if isinstance(raw_perception, str) else raw_perception
+    except Exception:
+        perception_snapshot = {}
+    try:
+        cognitive_snapshot = json.loads(raw_cognitive) if isinstance(raw_cognitive, str) else raw_cognitive
+    except Exception:
+        cognitive_snapshot = {}
+
+    return AnnotationAssetDetailResponse(
+        id=int(row["id"]),
+        trace_id=str(row["trace_id"]),
+        task_id=str(row["task_id"]),
+        region_id=str(row["region_id"]),
+        region_type=str(row["region_type"]),
+        image_width=int(row["image_width"]),
+        image_height=int(row["image_height"]),
+        bbox_coordinates=bbox_coordinates,
+        teacher_text_feedback=str(row["teacher_text_feedback"]),
+        expected_score=float(row["expected_score"]),
+        is_integrated_to_dataset=bool(row.get("is_integrated_to_dataset", 0)),
+        perception_ir_snapshot=perception_snapshot if isinstance(perception_snapshot, dict) else {},
+        cognitive_ir_snapshot=cognitive_snapshot if isinstance(cognitive_snapshot, dict) else {},
+        created_at=row.get("created_at"),
+        updated_at=row.get("updated_at"),
+    )
 
 
 @router.get("/review/flow-guide", response_model=ReviewFlowGuideResponse)
@@ -954,6 +1368,7 @@ async def get_capability_catalog():
                     CapabilityEndpointItem(method="POST", path="/api/v1/grade/submit", response_model="TaskResponse"),
                     CapabilityEndpointItem(method="GET", path="/api/v1/grade/{task_id}", response_model="TaskStatusResponse"),
                     CapabilityEndpointItem(method="GET", path="/api/v1/tasks/{task_id}/stream", notes="SSE stream"),
+                    CapabilityEndpointItem(method="GET", path="/api/v1/grade/flow-guide", response_model="GradeFlowGuideResponse"),
                     CapabilityEndpointItem(method="GET", path="/api/v1/results", response_model="List[GradingResultItem]"),
                 ],
             ),
@@ -961,6 +1376,9 @@ async def get_capability_catalog():
                 domain="review",
                 endpoints=[
                     CapabilityEndpointItem(method="GET", path="/api/v1/tasks/pending-review", response_model="List[PendingReviewTaskItem]"),
+                    CapabilityEndpointItem(method="GET", path="/api/v1/review/pending-workbench", response_model="PendingReviewTasksResponse"),
+                    CapabilityEndpointItem(method="GET", path="/api/v1/review/annotation-assets", response_model="AnnotationAssetListResponse"),
+                    CapabilityEndpointItem(method="GET", path="/api/v1/review/annotation-assets/{asset_id}", response_model="AnnotationAssetDetailResponse"),
                     CapabilityEndpointItem(method="GET", path="/api/v1/review/flow-guide", response_model="ReviewFlowGuideResponse"),
                 ],
             ),
@@ -995,6 +1413,11 @@ async def get_capability_catalog():
                     CapabilityEndpointItem(method="POST", path="/api/v1/prompt/invalidate"),
                     CapabilityEndpointItem(method="GET", path="/api/v1/prompt/state"),
                     CapabilityEndpointItem(method="GET", path="/api/v1/prompt/audit", response_model="List[PromptOpsAuditItem]"),
+                    CapabilityEndpointItem(method="GET", path="/api/v1/ops/config/snapshot", response_model="OpsConfigSnapshotResponse"),
+                    CapabilityEndpointItem(method="POST", path="/api/v1/ops/provider/switch"),
+                    CapabilityEndpointItem(method="POST", path="/api/v1/ops/router/control", response_model="OpsRouterControlResponse"),
+                    CapabilityEndpointItem(method="GET", path="/api/v1/ops/prompt/catalog", response_model="OpsPromptCatalogResponse"),
+                    CapabilityEndpointItem(method="GET", path="/api/v1/ops/audit/logs", response_model="OpsAuditLogResponse"),
                 ],
             ),
         ],
@@ -1006,9 +1429,13 @@ async def get_contract_catalog():
     schemas = [
         ContractSchemaItem(schema_name="TaskResponse", fields=_schema_fields_from_model(TaskResponse)),
         ContractSchemaItem(schema_name="TaskStatusResponse", fields=_schema_fields_from_model(TaskStatusResponse)),
+        ContractSchemaItem(schema_name="GradeFlowGuideResponse", fields=_schema_fields_from_model(GradeFlowGuideResponse)),
         ContractSchemaItem(schema_name="RubricGenerateResponse", fields=_schema_fields_from_model(RubricGenerateResponse)),
         ContractSchemaItem(schema_name="RubricDetailResponse", fields=_schema_fields_from_model(RubricDetailResponse)),
         ContractSchemaItem(schema_name="PendingReviewTaskItem", fields=_schema_fields_from_model(PendingReviewTaskItem)),
+        ContractSchemaItem(schema_name="PendingReviewTasksResponse", fields=_schema_fields_from_model(PendingReviewTasksResponse)),
+        ContractSchemaItem(schema_name="AnnotationAssetListResponse", fields=_schema_fields_from_model(AnnotationAssetListResponse)),
+        ContractSchemaItem(schema_name="AnnotationAssetDetailResponse", fields=_schema_fields_from_model(AnnotationAssetDetailResponse)),
         ContractSchemaItem(schema_name="AnnotationFeedbackRequest", fields=_schema_fields_from_model(AnnotationFeedbackRequest)),
         ContractSchemaItem(schema_name="AnnotationFeedbackResponse", fields=_schema_fields_from_model(AnnotationFeedbackResponse)),
         ContractSchemaItem(schema_name="ProviderBenchmarkResponse", fields=_schema_fields_from_model(ProviderBenchmarkResponse)),
@@ -1018,6 +1445,14 @@ async def get_contract_catalog():
         ContractSchemaItem(schema_name="PromptControlRequest", fields=_schema_fields_from_model(PromptControlRequest)),
         ContractSchemaItem(schema_name="PromptAbConfigRequest", fields=_schema_fields_from_model(PromptAbConfigRequest)),
         ContractSchemaItem(schema_name="PromptOpsAuditItem", fields=_schema_fields_from_model(PromptOpsAuditItem)),
+        ContractSchemaItem(schema_name="OpsProviderSwitchRequest", fields=_schema_fields_from_model(OpsProviderSwitchRequest)),
+        ContractSchemaItem(schema_name="OpsRouterControlRequest", fields=_schema_fields_from_model(OpsRouterControlRequest)),
+        ContractSchemaItem(schema_name="OpsRouterControlResponse", fields=_schema_fields_from_model(OpsRouterControlResponse)),
+        ContractSchemaItem(schema_name="OpsConfigSnapshotResponse", fields=_schema_fields_from_model(OpsConfigSnapshotResponse)),
+        ContractSchemaItem(schema_name="OpsAuditLogItem", fields=_schema_fields_from_model(OpsAuditLogItem)),
+        ContractSchemaItem(schema_name="OpsAuditLogResponse", fields=_schema_fields_from_model(OpsAuditLogResponse)),
+        ContractSchemaItem(schema_name="OpsPromptCatalogItem", fields=_schema_fields_from_model(OpsPromptCatalogItem)),
+        ContractSchemaItem(schema_name="OpsPromptCatalogResponse", fields=_schema_fields_from_model(OpsPromptCatalogResponse)),
     ]
     return ApiContractCatalogResponse(
         version="1.0",
@@ -1028,6 +1463,7 @@ async def get_contract_catalog():
         },
         error_codes=[
             "TASK_NOT_FOUND",
+            "TASK_NOT_COMPLETED",
             "RUBRIC_NOT_FOUND",
             "INPUT_REJECTED",
             "TASK_FAILED",
@@ -1035,6 +1471,8 @@ async def get_contract_catalog():
             "SSE_BACKEND_UNAVAILABLE",
             "UPLOAD_TIMEOUT",
             "FILE_TOO_LARGE",
+            "ANNOTATION_ASSET_NOT_FOUND",
+            "INVALID_PROVIDER",
         ],
         schemas=schemas,
     )
@@ -1348,6 +1786,183 @@ async def get_prompt_ops_audit(
         offset=offset,
     )
     return [PromptOpsAuditItem(**r) for r in rows]
+
+
+@router.get("/ops/config/snapshot", response_model=OpsConfigSnapshotResponse)
+async def get_ops_config_snapshot():
+    return OpsConfigSnapshotResponse(
+        perception_provider=str(settings.perception_provider),
+        prompt_settings={
+            "prompts_dir": settings.prompts_dir,
+            "pull_interval_seconds": settings.prompt_pull_interval_seconds,
+            "l1_ttl_seconds": settings.prompt_l1_ttl_seconds,
+            "l2_ttl_seconds": settings.prompt_l2_ttl_seconds,
+            "invalidation_bus_enabled": settings.prompt_invalidation_bus_enabled,
+        },
+        router_policy=OpsRouterControlResponse(
+            enabled=bool(settings.auto_circuit_controller_enabled),
+            failure_rate_threshold=float(settings.auto_circuit_failure_rate_threshold),
+            token_spike_threshold=float(settings.auto_circuit_token_spike_threshold),
+            min_samples=int(settings.auto_circuit_min_samples),
+            budget_token_limit=int(settings.router_budget_token_limit),
+        ),
+    )
+
+
+@router.post("/ops/provider/switch")
+async def switch_ops_provider(
+    payload: OpsProviderSwitchRequest,
+    db_path: str = Depends(get_db_path),
+):
+    provider = str(payload.provider).strip().lower()
+    from src.perception.factory import list_supported_perception_providers
+
+    supported = list_supported_perception_providers()
+    if provider not in supported:
+        raise HTTPException(
+            status_code=422,
+            detail=_error_detail(
+                error_code="INVALID_PROVIDER",
+                message=f"Unsupported perception provider: {provider}",
+                retryable=False,
+                next_action="choose_supported_provider",
+            ),
+        )
+
+    settings.perception_provider = provider
+    _load_settings_from_env()
+    settings.perception_provider = provider
+    _ = create_perception_engine()
+
+    await append_prompt_ops_audit(
+        db_path,
+        trace_id=get_trace_id(),
+        operator_id=payload.operator_id,
+        action="ops_provider_switch",
+        prompt_key=None,
+        payload_json={"provider": provider},
+    )
+    return {"status": "ok", "provider": provider}
+
+
+@router.post("/ops/router/control", response_model=OpsRouterControlResponse)
+async def update_ops_router_control(
+    payload: OpsRouterControlRequest,
+    db_path: str = Depends(get_db_path),
+):
+    settings.auto_circuit_controller_enabled = bool(payload.enabled)
+    settings.auto_circuit_failure_rate_threshold = float(payload.failure_rate_threshold)
+    settings.auto_circuit_token_spike_threshold = float(payload.token_spike_threshold)
+    settings.auto_circuit_min_samples = int(payload.min_samples)
+    settings.router_budget_token_limit = int(payload.budget_token_limit)
+
+    await append_prompt_ops_audit(
+        db_path,
+        trace_id=get_trace_id(),
+        operator_id=payload.operator_id,
+        action="ops_router_control_update",
+        prompt_key=None,
+        payload_json=payload.model_dump(),
+    )
+    return OpsRouterControlResponse(
+        enabled=bool(settings.auto_circuit_controller_enabled),
+        failure_rate_threshold=float(settings.auto_circuit_failure_rate_threshold),
+        token_spike_threshold=float(settings.auto_circuit_token_spike_threshold),
+        min_samples=int(settings.auto_circuit_min_samples),
+        budget_token_limit=int(settings.router_budget_token_limit),
+    )
+
+
+@router.get("/ops/prompt/catalog", response_model=OpsPromptCatalogResponse)
+async def get_ops_prompt_catalog(
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+    db_path: str = Depends(get_db_path),
+):
+    provider = get_prompt_provider()
+    offset = (page - 1) * limit
+    rows = await list_prompt_ops_audit(
+        db_path,
+        prompt_key=None,
+        limit=limit * 10,
+        offset=offset,
+    )
+    prompt_keys: List[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        key = row.get("prompt_key")
+        if isinstance(key, str) and key and key not in seen:
+            seen.add(key)
+            prompt_keys.append(key)
+    prompt_keys = prompt_keys[:limit]
+
+    items: List[OpsPromptCatalogItem] = []
+    for key in prompt_keys:
+        control_state = await get_prompt_control_state(db_path, prompt_key=key)
+        ab_state = await get_prompt_ab_config(db_path, prompt_key=key)
+        runtime_state = {
+            "forced_variant_id": provider.get_forced_variant(prompt_key=key),
+            "lkg_mode": provider.get_lkg_mode(prompt_key=key),
+            "ab_config": provider.get_ab_config(prompt_key=key),
+        }
+        items.append(
+            OpsPromptCatalogItem(
+                prompt_key=key,
+                control_state=control_state,
+                ab_state=ab_state,
+                runtime_state=runtime_state,
+            )
+        )
+
+    return OpsPromptCatalogResponse(page=page, limit=limit, items=items)
+
+
+@router.get("/ops/audit/logs", response_model=OpsAuditLogResponse)
+async def get_ops_audit_logs(
+    prompt_key: Optional[str] = Query(default=None),
+    action_prefix: Optional[str] = Query(default=None),
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+    db_path: str = Depends(get_db_path),
+):
+    offset = (page - 1) * limit
+    rows = await list_prompt_ops_audit(
+        db_path,
+        prompt_key=prompt_key,
+        limit=limit * 3,
+        offset=offset,
+    )
+    items: List[OpsAuditLogItem] = []
+    for row in rows:
+        action = str(row.get("action") or "")
+        if action_prefix and not action.startswith(action_prefix):
+            continue
+        payload_raw = row.get("payload_json")
+        payload_obj: Dict[str, Any] = {}
+        if isinstance(payload_raw, str):
+            try:
+                parsed = json.loads(payload_raw)
+                if isinstance(parsed, dict):
+                    payload_obj = parsed
+            except Exception:
+                payload_obj = {"raw": payload_raw}
+        elif isinstance(payload_raw, dict):
+            payload_obj = payload_raw
+        component = "prompt-control"
+        if action.startswith("ops_"):
+            component = "ops-control"
+        items.append(
+            OpsAuditLogItem(
+                trace_id=str(row.get("trace_id") or ""),
+                operator_id=row.get("operator_id"),
+                action=action,
+                component=component,
+                payload=payload_obj,
+            )
+        )
+        if len(items) >= limit:
+            break
+    return OpsAuditLogResponse(page=page, limit=limit, items=items)
 
 
 @router.post("/skills/layout/parse")
