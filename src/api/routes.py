@@ -36,6 +36,8 @@ from src.db.client import (
     get_annotation_dataset_stats,
     get_review_queue_stats,
     get_prompt_cache_level_stats,
+    get_runtime_telemetry_model_hits,
+    get_runtime_telemetry_fallback_stats,
 )
 from src.worker.main import grade_homework_task
 from src.core.storage_adapter import storage
@@ -1107,27 +1109,24 @@ async def get_runtime_dashboard(
     db_path: str = Depends(get_db_path),
     window_hours: int = Query(24, ge=1, le=168),
 ):
-    router_snapshot = get_runtime_router_controller().snapshot()
     review_queue = await get_review_queue_stats(db_path, lookback_hours=window_hours)
     volume = await get_task_volume_stats(db_path, lookback_hours=window_hours)
     prompt_cache = await get_prompt_cache_level_stats(db_path, lookback_hours=window_hours)
+    provider_hits = await get_runtime_telemetry_model_hits(db_path, lookback_hours=window_hours)
+    fallback_stats = await get_runtime_telemetry_fallback_stats(db_path, lookback_hours=window_hours)
 
     pending_review = int(review_queue.get("pending_review_count", 0))
     reviewed = int(review_queue.get("reviewed_count", 0))
     review_base = pending_review + reviewed
     human_review_rate = (float(pending_review) / float(review_base)) if review_base > 0 else 0.0
 
-    provider_hits = router_snapshot.get("model_hits")
-    if not isinstance(provider_hits, dict):
-        provider_hits = {}
-
-    reason_hits = router_snapshot.get("reason_hits")
+    reason_hits = fallback_stats.get("reason_hits")
     if not isinstance(reason_hits, dict):
         reason_hits = {}
 
     fallback_triggers = {
-        "fallback_rate": float(router_snapshot.get("fallback_rate", 0.0)),
-        "fallback_trigger_count": int(router_snapshot.get("fallback_trigger_count", 0)),
+        "fallback_rate": float(fallback_stats.get("fallback_rate", 0.0)),
+        "fallback_trigger_count": int(fallback_stats.get("fallback_count", 0)),
         "network_error": int(reason_hits.get("network_error", 0)),
         "api_error": int(reason_hits.get("api_error", 0)),
         "parse_error": int(reason_hits.get("parse_error", 0)),
@@ -1140,12 +1139,12 @@ async def get_runtime_dashboard(
     return RuntimeDashboardResponse(
         version="1.0",
         window_hours=window_hours,
-        provider_hits={str(k): int(v) for k, v in provider_hits.items()},
+        provider_hits={str(k): int(v) for k, v in provider_hits.items()} if isinstance(provider_hits, dict) else {},
         fallback_triggers=fallback_triggers,
         prompt_cache_hits=prompt_cache,
         human_review_rate=human_review_rate,
         notes=[
-            "fallback_rate is scaled by 1e4 in fallback_triggers for integer transport.",
+            "runtime dashboard now reads durable telemetry from DB.",
             f"task_volume_total={int(volume.get('total_count', 0))}",
         ],
     )

@@ -30,6 +30,7 @@ from src.core.exceptions import PerceptionShortCircuitError
 from src.core.storage_adapter import storage
 from src.db.client import update_task_status, save_grading_result
 from src.db.client import create_hygiene_interception_record
+from src.db.client import upsert_task_runtime_telemetry
 from src.orchestration.workflow import GradingWorkflow
 from src.perception.factory import create_perception_engine
 from src.cognitive.engines.deepseek_engine import DeepSeekCognitiveEngine
@@ -242,6 +243,35 @@ def grade_homework_task(
 
         # Step 5: Persist results
         student_id = reconstructed_files[0][1] if reconstructed_files else task_id
+        runtime_telemetry = None
+        cognitive_agent = getattr(workflow, "_cognitive_agent", None)
+        if cognitive_agent is not None:
+            telemetry_fn = getattr(cognitive_agent, "get_last_runtime_telemetry", None)
+            if callable(telemetry_fn):
+                runtime_telemetry = telemetry_fn()
+        if isinstance(runtime_telemetry, dict):
+            run_async(
+                upsert_task_runtime_telemetry(
+                    db_path,
+                    task_id=task_id,
+                    trace_id=get_trace_id(),
+                    requested_model=str(runtime_telemetry.get("requested_model") or settings.deepseek_model_name),
+                    model_used=str(runtime_telemetry.get("model_used") or settings.deepseek_model_name),
+                    route_reason=str(runtime_telemetry.get("route_reason") or "default"),
+                    fallback_used=bool(runtime_telemetry.get("fallback_used", False)),
+                    fallback_reason=(
+                        str(runtime_telemetry.get("fallback_reason"))
+                        if runtime_telemetry.get("fallback_reason") is not None
+                        else None
+                    ),
+                    prompt_key=str(runtime_telemetry.get("prompt_key") or "deepseek.cognitive.evaluate"),
+                    prompt_asset_version=str(runtime_telemetry.get("prompt_asset_version") or "unknown"),
+                    prompt_variant_id=str(runtime_telemetry.get("prompt_variant_id") or "unknown"),
+                    prompt_cache_level=str(runtime_telemetry.get("prompt_cache_level") or "SOURCE"),
+                    prompt_token_estimate=int(runtime_telemetry.get("prompt_token_estimate") or 0),
+                    succeeded=bool(runtime_telemetry.get("succeeded", True)),
+                )
+            )
         run_async(
             save_grading_result(
                 db_path,

@@ -2,6 +2,7 @@ import logging
 import re
 import json
 import asyncio
+from typing import Any
 
 import openai
 from pydantic import ValidationError
@@ -58,6 +59,7 @@ class DeepSeekCognitiveEngine(BaseCognitiveAgent):
             ),
         )
         self._prompt_provider = get_prompt_provider()
+        self._last_runtime_telemetry: dict[str, Any] | None = None
 
     def _prompt_context(self) -> tuple[str, str]:
         trace_id = get_trace_id()
@@ -91,6 +93,11 @@ class DeepSeekCognitiveEngine(BaseCognitiveAgent):
         # 3. Last ditch: Strip <think> and return remaining
         cleaned = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
         return cleaned
+
+    def get_last_runtime_telemetry(self) -> dict[str, Any] | None:
+        if self._last_runtime_telemetry is None:
+            return None
+        return dict(self._last_runtime_telemetry)
 
     async def evaluate_logic(
         self, 
@@ -144,15 +151,19 @@ class DeepSeekCognitiveEngine(BaseCognitiveAgent):
                 )
                 should_degrade = connection_error_count >= MAX_CONNECTION_ERRORS or route_decision.force_degrade_to_chat
                 if should_degrade:
+                    fallback_reason = route_decision.reason
+                    if connection_error_count >= MAX_CONNECTION_ERRORS and not route_decision.force_degrade_to_chat:
+                        fallback_reason = "network_error_threshold"
                     logger.warning(
                         "Switching to deepseek-chat fallback (attempt=%s, net_failures=%s, reason=%s).",
                         attempt + 1,
                         connection_error_count,
-                        route_decision.reason,
+                        fallback_reason,
                     )
                     model_to_use = "deepseek-chat"
                     use_stream = False
                 else:
+                    fallback_reason = None
                     model_to_use = route_decision.cognitive_model
                     use_stream = route_decision.stream
 
@@ -230,6 +241,19 @@ class DeepSeekCognitiveEngine(BaseCognitiveAgent):
                     fallback_used=(model_to_use == "deepseek-chat"),
                     reason="ok",
                 )
+                self._last_runtime_telemetry = {
+                    "requested_model": settings.deepseek_model_name,
+                    "model_used": model_to_use,
+                    "route_reason": fallback_reason if should_degrade else "default",
+                    "fallback_used": bool(model_to_use == "deepseek-chat"),
+                    "fallback_reason": fallback_reason if should_degrade else None,
+                    "prompt_key": "deepseek.cognitive.evaluate",
+                    "prompt_asset_version": str(prompt_bundle.asset_version),
+                    "prompt_variant_id": str(prompt_bundle.variant_id),
+                    "prompt_cache_level": str(prompt_bundle.cache_level),
+                    "prompt_token_estimate": int(prompt_bundle.token_estimate),
+                    "succeeded": True,
+                }
                 return EvaluationReport.model_validate(parsed_data)
 
             except AllKeysExhaustedError as e:
@@ -241,6 +265,19 @@ class DeepSeekCognitiveEngine(BaseCognitiveAgent):
                     fallback_used=True,
                     reason="all_keys_exhausted",
                 )
+                self._last_runtime_telemetry = {
+                    "requested_model": settings.deepseek_model_name,
+                    "model_used": settings.deepseek_model_name,
+                    "route_reason": "all_keys_exhausted",
+                    "fallback_used": True,
+                    "fallback_reason": "all_keys_exhausted",
+                    "prompt_key": "deepseek.cognitive.evaluate",
+                    "prompt_asset_version": str(prompt_bundle.asset_version),
+                    "prompt_variant_id": str(prompt_bundle.variant_id),
+                    "prompt_cache_level": str(prompt_bundle.cache_level),
+                    "prompt_token_estimate": int(prompt_bundle.token_estimate),
+                    "succeeded": False,
+                }
                 raise GradingSystemError("All DeepSeek API keys are rate-limited. System saturated.")
             
             except CircuitBreakerOpenError as e:
@@ -253,6 +290,19 @@ class DeepSeekCognitiveEngine(BaseCognitiveAgent):
                     fallback_used=True,
                     reason="circuit_open",
                 )
+                self._last_runtime_telemetry = {
+                    "requested_model": settings.deepseek_model_name,
+                    "model_used": settings.deepseek_model_name,
+                    "route_reason": "circuit_open",
+                    "fallback_used": True,
+                    "fallback_reason": "circuit_open",
+                    "prompt_key": "deepseek.cognitive.evaluate",
+                    "prompt_asset_version": str(prompt_bundle.asset_version),
+                    "prompt_variant_id": str(prompt_bundle.variant_id),
+                    "prompt_cache_level": str(prompt_bundle.cache_level),
+                    "prompt_token_estimate": int(prompt_bundle.token_estimate),
+                    "succeeded": False,
+                }
                 raise GradingSystemError(
                     f"DeepSeek API service degraded. Circuit breaker active. {str(e)}"
                 )

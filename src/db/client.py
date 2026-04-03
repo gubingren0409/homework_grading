@@ -138,6 +138,7 @@ async def init_db(db_path: str) -> None:
         await _ensure_rubrics_schema(db)
         await _ensure_domain_split_tables(db)
         await _ensure_skill_validation_tables(db)
+        await _ensure_runtime_telemetry_table(db)
         if await _has_legacy_review_columns(db):
             await _migrate_drop_legacy_review_columns(db)
 
@@ -276,6 +277,39 @@ async def _ensure_skill_validation_tables(db: aiosqlite.Connection) -> None:
     )
     await db.execute("CREATE INDEX IF NOT EXISTS idx_skill_validation_task_id ON skill_validation_records(task_id)")
     await db.execute("CREATE INDEX IF NOT EXISTS idx_skill_validation_checker ON skill_validation_records(checker)")
+
+
+async def _ensure_runtime_telemetry_table(db: aiosqlite.Connection) -> None:
+    """
+    Phase P0:
+    Ensure runtime telemetry table exists for durable model/prompt observability.
+    """
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS task_runtime_telemetry (
+            task_id TEXT PRIMARY KEY,
+            trace_id TEXT NOT NULL,
+            requested_model TEXT NOT NULL,
+            model_used TEXT NOT NULL,
+            route_reason TEXT NOT NULL,
+            fallback_used INTEGER NOT NULL CHECK (fallback_used IN (0, 1)),
+            fallback_reason TEXT,
+            prompt_key TEXT NOT NULL,
+            prompt_asset_version TEXT NOT NULL,
+            prompt_variant_id TEXT NOT NULL,
+            prompt_cache_level TEXT NOT NULL
+                CHECK (prompt_cache_level IN ('L1', 'L2', 'SOURCE', 'LKG')),
+            prompt_token_estimate INTEGER NOT NULL CHECK (prompt_token_estimate >= 0),
+            succeeded INTEGER NOT NULL CHECK (succeeded IN (0, 1)),
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(task_id) REFERENCES tasks(task_id)
+        )
+        """
+    )
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_runtime_telemetry_model_used ON task_runtime_telemetry(model_used)")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_runtime_telemetry_created_at ON task_runtime_telemetry(created_at)")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_runtime_telemetry_cache_level ON task_runtime_telemetry(prompt_cache_level)")
 
 
 async def _has_legacy_review_columns(db: aiosqlite.Connection) -> bool:
@@ -1004,11 +1038,11 @@ async def get_prompt_cache_level_stats(
             async with db.execute(
                 """
                 SELECT
-                    SUM(CASE WHEN report_json LIKE '%"prompt_cache_level":"L1"%' THEN 1 ELSE 0 END) AS l1_count,
-                    SUM(CASE WHEN report_json LIKE '%"prompt_cache_level":"L2"%' THEN 1 ELSE 0 END) AS l2_count,
-                    SUM(CASE WHEN report_json LIKE '%"prompt_cache_level":"LKG"%' THEN 1 ELSE 0 END) AS lkg_count,
-                    SUM(CASE WHEN report_json LIKE '%"prompt_cache_level":"SOURCE"%' THEN 1 ELSE 0 END) AS source_count
-                FROM grading_results
+                    SUM(CASE WHEN prompt_cache_level = 'L1' THEN 1 ELSE 0 END) AS l1_count,
+                    SUM(CASE WHEN prompt_cache_level = 'L2' THEN 1 ELSE 0 END) AS l2_count,
+                    SUM(CASE WHEN prompt_cache_level = 'LKG' THEN 1 ELSE 0 END) AS lkg_count,
+                    SUM(CASE WHEN prompt_cache_level = 'SOURCE' THEN 1 ELSE 0 END) AS source_count
+                FROM task_runtime_telemetry
                 WHERE created_at >= datetime('now', ?)
                 """,
                 (f"-{int(lookback_hours)} hours",),
@@ -1023,6 +1057,139 @@ async def get_prompt_cache_level_stats(
         except (aiosqlite.OperationalError, sqlite3.OperationalError) as exc:
             if "no such table" in str(exc).lower():
                 return {"l1_count": 0, "l2_count": 0, "lkg_count": 0, "source_count": 0}
+            raise
+
+
+async def upsert_task_runtime_telemetry(
+    db_path: str,
+    *,
+    task_id: str,
+    trace_id: str,
+    requested_model: str,
+    model_used: str,
+    route_reason: str,
+    fallback_used: bool,
+    fallback_reason: Optional[str],
+    prompt_key: str,
+    prompt_asset_version: str,
+    prompt_variant_id: str,
+    prompt_cache_level: str,
+    prompt_token_estimate: int,
+    succeeded: bool,
+) -> None:
+    async def _op(db: aiosqlite.Connection) -> None:
+        await _ensure_runtime_telemetry_table(db)
+        await db.execute(
+            """
+            INSERT INTO task_runtime_telemetry (
+                task_id, trace_id, requested_model, model_used, route_reason, fallback_used, fallback_reason,
+                prompt_key, prompt_asset_version, prompt_variant_id, prompt_cache_level,
+                prompt_token_estimate, succeeded, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(task_id)
+            DO UPDATE SET
+                trace_id=excluded.trace_id,
+                requested_model=excluded.requested_model,
+                model_used=excluded.model_used,
+                route_reason=excluded.route_reason,
+                fallback_used=excluded.fallback_used,
+                fallback_reason=excluded.fallback_reason,
+                prompt_key=excluded.prompt_key,
+                prompt_asset_version=excluded.prompt_asset_version,
+                prompt_variant_id=excluded.prompt_variant_id,
+                prompt_cache_level=excluded.prompt_cache_level,
+                prompt_token_estimate=excluded.prompt_token_estimate,
+                succeeded=excluded.succeeded,
+                updated_at=CURRENT_TIMESTAMP
+            """,
+            (
+                task_id,
+                trace_id,
+                requested_model,
+                model_used,
+                route_reason,
+                1 if fallback_used else 0,
+                fallback_reason,
+                prompt_key,
+                prompt_asset_version,
+                prompt_variant_id,
+                prompt_cache_level,
+                int(prompt_token_estimate),
+                1 if succeeded else 0,
+            ),
+        )
+
+    await _execute_write_with_retry(db_path, _op)
+
+
+async def get_runtime_telemetry_model_hits(
+    db_path: str,
+    *,
+    lookback_hours: int = 24,
+) -> Dict[str, int]:
+    async with _open_connection(db_path) as db:
+        try:
+            async with db.execute(
+                """
+                SELECT model_used, COUNT(1) AS cnt
+                FROM task_runtime_telemetry
+                WHERE created_at >= datetime('now', ?)
+                GROUP BY model_used
+                """,
+                (f"-{int(lookback_hours)} hours",),
+            ) as cursor:
+                rows = await cursor.fetchall()
+                return {str(model): int(cnt) for model, cnt in rows}
+        except (aiosqlite.OperationalError, sqlite3.OperationalError) as exc:
+            if "no such table" in str(exc).lower():
+                return {}
+            raise
+
+
+async def get_runtime_telemetry_fallback_stats(
+    db_path: str,
+    *,
+    lookback_hours: int = 24,
+) -> Dict[str, Any]:
+    async with _open_connection(db_path) as db:
+        try:
+            async with db.execute(
+                """
+                SELECT
+                    COUNT(1) AS total_count,
+                    SUM(CASE WHEN fallback_used = 1 THEN 1 ELSE 0 END) AS fallback_count
+                FROM task_runtime_telemetry
+                WHERE created_at >= datetime('now', ?)
+                """,
+                (f"-{int(lookback_hours)} hours",),
+            ) as cursor:
+                row = await cursor.fetchone()
+                total_count = int((row[0] if row else 0) or 0)
+                fallback_count = int((row[1] if row else 0) or 0)
+
+            async with db.execute(
+                """
+                SELECT route_reason, COUNT(1) AS cnt
+                FROM task_runtime_telemetry
+                WHERE created_at >= datetime('now', ?)
+                GROUP BY route_reason
+                """,
+                (f"-{int(lookback_hours)} hours",),
+            ) as cursor:
+                reason_rows = await cursor.fetchall()
+                reason_hits = {str(reason): int(cnt) for reason, cnt in reason_rows}
+
+            fallback_rate = (float(fallback_count) / float(total_count)) if total_count > 0 else 0.0
+            return {
+                "total_count": total_count,
+                "fallback_count": fallback_count,
+                "fallback_rate": fallback_rate,
+                "reason_hits": reason_hits,
+            }
+        except (aiosqlite.OperationalError, sqlite3.OperationalError) as exc:
+            if "no such table" in str(exc).lower():
+                return {"total_count": 0, "fallback_count": 0, "fallback_rate": 0.0, "reason_hits": {}}
             raise
 
 

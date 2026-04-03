@@ -59,6 +59,27 @@ CREATE TABLE IF NOT EXISTS grading_results (
     FOREIGN KEY(task_id) REFERENCES tasks(task_id)
 );
 
+-- Phase P0: Runtime telemetry persistence for dashboard-grade observability
+CREATE TABLE IF NOT EXISTS task_runtime_telemetry (
+    task_id TEXT PRIMARY KEY,
+    trace_id TEXT NOT NULL,
+    requested_model TEXT NOT NULL,
+    model_used TEXT NOT NULL,
+    route_reason TEXT NOT NULL,
+    fallback_used INTEGER NOT NULL CHECK (fallback_used IN (0, 1)),
+    fallback_reason TEXT,
+    prompt_key TEXT NOT NULL,
+    prompt_asset_version TEXT NOT NULL,
+    prompt_variant_id TEXT NOT NULL,
+    prompt_cache_level TEXT NOT NULL
+        CHECK (prompt_cache_level IN ('L1', 'L2', 'SOURCE', 'LKG')),
+    prompt_token_estimate INTEGER NOT NULL CHECK (prompt_token_estimate >= 0),
+    succeeded INTEGER NOT NULL CHECK (succeeded IN (0, 1)),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(task_id) REFERENCES tasks(task_id)
+);
+
 -- Phase 43: External skill validation records (objective checker trace)
 CREATE TABLE IF NOT EXISTS skill_validation_records (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -83,6 +104,9 @@ CREATE TABLE IF NOT EXISTS rubrics (
 
 CREATE INDEX IF NOT EXISTS idx_task_id ON grading_results(task_id);
 CREATE INDEX IF NOT EXISTS idx_status ON tasks(status);
+CREATE INDEX IF NOT EXISTS idx_runtime_telemetry_model_used ON task_runtime_telemetry(model_used);
+CREATE INDEX IF NOT EXISTS idx_runtime_telemetry_created_at ON task_runtime_telemetry(created_at);
+CREATE INDEX IF NOT EXISTS idx_runtime_telemetry_cache_level ON task_runtime_telemetry(prompt_cache_level);
 CREATE INDEX IF NOT EXISTS idx_skill_validation_task_id ON skill_validation_records(task_id);
 CREATE INDEX IF NOT EXISTS idx_skill_validation_checker ON skill_validation_records(checker);
 CREATE INDEX IF NOT EXISTS idx_rubrics_created_at ON rubrics(created_at);
