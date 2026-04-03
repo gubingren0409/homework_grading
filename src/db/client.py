@@ -137,6 +137,7 @@ async def init_db(db_path: str) -> None:
         await _ensure_tasks_columns(db, include_celery=True)
         await _ensure_rubrics_schema(db)
         await _ensure_domain_split_tables(db)
+        await _ensure_skill_validation_tables(db)
         if await _has_legacy_review_columns(db):
             await _migrate_drop_legacy_review_columns(db)
 
@@ -249,6 +250,32 @@ async def _ensure_domain_split_tables(db: aiosqlite.Connection) -> None:
     await db.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS uq_golden_trace_region ON golden_annotation_assets(trace_id, region_id)"
     )
+
+
+async def _ensure_skill_validation_tables(db: aiosqlite.Connection) -> None:
+    """
+    Phase 43:
+    Ensure external skill validation records table exists.
+    """
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS skill_validation_records (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT NOT NULL,
+            student_id TEXT NOT NULL,
+            question_id TEXT,
+            checker TEXT NOT NULL,
+            status TEXT NOT NULL
+                CHECK (status IN ('ok', 'mismatch', 'error')),
+            confidence REAL NOT NULL CHECK (confidence >= 0.0 AND confidence <= 1.0),
+            details_json TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(task_id) REFERENCES tasks(task_id)
+        )
+        """
+    )
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_skill_validation_task_id ON skill_validation_records(task_id)")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_skill_validation_checker ON skill_validation_records(checker)")
 
 
 async def _has_legacy_review_columns(db: aiosqlite.Connection) -> bool:
@@ -819,3 +846,57 @@ async def fetch_results(db_path: str, limit: int = 10, offset: int = 0) -> List[
         ) as cursor:
             rows = await cursor.fetchall()
             return [dict(r) for r in rows]
+
+
+async def insert_skill_validation_records(
+    db_path: str,
+    records: Sequence[Mapping[str, Any]],
+) -> int:
+    if not records:
+        return 0
+
+    rows_to_insert: List[tuple[Any, ...]] = []
+    for record in records:
+        task_id = str(record.get("task_id") or "").strip()
+        student_id = str(record.get("student_id") or "").strip()
+        checker = str(record.get("checker") or "").strip()
+        status = str(record.get("status") or "").strip().lower()
+        if not task_id:
+            raise ValueError("skill validation record requires task_id")
+        if not student_id:
+            raise ValueError("skill validation record requires student_id")
+        if not checker:
+            raise ValueError("skill validation record requires checker")
+        if status not in {"ok", "mismatch", "error"}:
+            raise ValueError(f"invalid skill validation status: {status}")
+
+        confidence = float(record.get("confidence", 0.0))
+        if confidence < 0.0 or confidence > 1.0:
+            raise ValueError("skill validation confidence must be within [0, 1]")
+
+        details_json = _to_json_string(record.get("details_json", {}))
+        rows_to_insert.append(
+            (
+                task_id,
+                student_id,
+                record.get("question_id"),
+                checker,
+                status,
+                confidence,
+                details_json,
+            )
+        )
+
+    async def _op(db: aiosqlite.Connection) -> None:
+        await _ensure_skill_validation_tables(db)
+        await db.executemany(
+            """
+            INSERT INTO skill_validation_records
+            (task_id, student_id, question_id, checker, status, confidence, details_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows_to_insert,
+        )
+
+    await _execute_write_with_retry(db_path, _op)
+    return len(rows_to_insert)

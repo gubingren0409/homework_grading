@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     redis_port: int = 6379
     redis_db: int = 0
     celery_task_always_eager: bool = False
+
+    # Database configuration
+    sqlite_db_path: str = "outputs/grading_database.db"
     
     # File Storage Configuration (Phase 31: Claim Check Pattern)
     uploads_dir: str = "data/uploads"  # Temporary file storage (LocalStorage)
@@ -57,6 +60,20 @@ class Settings(BaseSettings):
     prompt_l2_key_prefix: str = "prompt:l2:"
     prompt_invalidation_channel: str = "prompt:invalidate"
     prompt_invalidation_bus_enabled: bool = True
+
+    # Optional external skills (Phase 43)
+    skill_layout_parser_enabled: bool = False
+    skill_layout_parser_provider: str = "none"  # none | llamaparse | unstructured
+    skill_layout_parser_api_url: str | None = None
+    skill_layout_parser_api_key: str | None = None
+    skill_layout_parser_timeout_seconds: float = 20.0
+
+    skill_validation_enabled: bool = False
+    skill_validation_provider: str = "none"  # none | e2b
+    skill_validation_api_url: str | None = None
+    skill_validation_api_key: str | None = None
+    skill_validation_timeout_seconds: float = 20.0
+    skill_validation_fail_open: bool = True
     
     @property
     def uploads_path(self) -> Path:
@@ -93,6 +110,21 @@ class Settings(BaseSettings):
         if not normalized:
             raise ValueError("perception_provider must be a non-empty string")
         return normalized
+
+    @field_validator("skill_layout_parser_provider", "skill_validation_provider")
+    @classmethod
+    def _normalize_skill_provider(cls, value: str) -> str:
+        normalized = (value or "").strip().lower()
+        if not normalized:
+            raise ValueError("skill provider must be a non-empty string")
+        return normalized
+
+    @field_validator("skill_layout_parser_timeout_seconds", "skill_validation_timeout_seconds")
+    @classmethod
+    def _validate_skill_timeout(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError("skill timeout must be positive")
+        return value
 
     model_config = SettingsConfigDict(
         env_file=".env",

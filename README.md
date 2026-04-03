@@ -13,6 +13,7 @@
 ### 🎯 双引擎架构
 - **感知层 (Qwen-VL)**: 视觉信息提取，OCR + 公式识别 + 图表理解
 - **认知层 (DeepSeek-R1)**: 逻辑推理与评分，支持复杂物理/数学推导验证
+- **Skill 扩展层 (可选)**: 外部版面解析与客观校验（默认关闭，失败可回退）
 
 ### 🛡️ 分层防御机制
 - **感知层防线**: 图像质量检测，拦截完全不可读的输入
@@ -94,7 +95,23 @@ QWEN_MODEL_NAME=qwen-vl-max
 PERCEPTION_PROVIDER=qwen
 DEEPSEEK_MODEL_NAME=deepseek-reasoner
 DEEPSEEK_USE_STREAM=false  # 推荐 false：缓存命中率更高
+
+# Optional Skills (Phase 43, all disabled by default)
+SKILL_LAYOUT_PARSER_ENABLED=false
+SKILL_LAYOUT_PARSER_PROVIDER=none
+SKILL_LAYOUT_PARSER_API_URL=
+SKILL_LAYOUT_PARSER_API_KEY=
+SKILL_VALIDATION_ENABLED=false
+SKILL_VALIDATION_PROVIDER=none
+SKILL_VALIDATION_API_URL=
+SKILL_VALIDATION_API_KEY=
+SKILL_VALIDATION_FAIL_OPEN=true
 ```
+
+当你准备接入三方 Skill 时：
+- 版面解析：`SKILL_LAYOUT_PARSER_PROVIDER=llamaparse` 或 `unstructured`
+- 客观校验：`SKILL_VALIDATION_PROVIDER=e2b`
+- 建议先在灰度环境开启，并保留 `SKILL_VALIDATION_FAIL_OPEN=true`
 
 **⚠️ 重要：代理环境优化**
 

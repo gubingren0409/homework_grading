@@ -59,6 +59,21 @@ CREATE TABLE IF NOT EXISTS grading_results (
     FOREIGN KEY(task_id) REFERENCES tasks(task_id)
 );
 
+-- Phase 43: External skill validation records (objective checker trace)
+CREATE TABLE IF NOT EXISTS skill_validation_records (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT NOT NULL,
+    student_id TEXT NOT NULL,
+    question_id TEXT,
+    checker TEXT NOT NULL,
+    status TEXT NOT NULL
+        CHECK (status IN ('ok', 'mismatch', 'error')),
+    confidence REAL NOT NULL CHECK (confidence >= 0.0 AND confidence <= 1.0),
+    details_json TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(task_id) REFERENCES tasks(task_id)
+);
+
 CREATE TABLE IF NOT EXISTS rubrics (
     rubric_id TEXT PRIMARY KEY,
     question_id TEXT,
@@ -68,6 +83,8 @@ CREATE TABLE IF NOT EXISTS rubrics (
 
 CREATE INDEX IF NOT EXISTS idx_task_id ON grading_results(task_id);
 CREATE INDEX IF NOT EXISTS idx_status ON tasks(status);
+CREATE INDEX IF NOT EXISTS idx_skill_validation_task_id ON skill_validation_records(task_id);
+CREATE INDEX IF NOT EXISTS idx_skill_validation_checker ON skill_validation_records(checker);
 CREATE INDEX IF NOT EXISTS idx_rubrics_created_at ON rubrics(created_at);
 CREATE INDEX IF NOT EXISTS idx_hygiene_trace_id ON hygiene_interception_log(trace_id);
 CREATE INDEX IF NOT EXISTS idx_hygiene_created_at ON hygiene_interception_log(created_at);

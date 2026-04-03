@@ -40,6 +40,8 @@ from src.cognitive.engines.deepseek_engine import DeepSeekCognitiveEngine
 from src.orchestration.workflow import GradingWorkflow
 from src.schemas.rubric_ir import TeacherRubric
 from src.core.config import settings
+from src.skills.service import SkillService
+from src.skills.interfaces import ValidationInput
 
 
 logger = logging.getLogger(__name__)
@@ -210,6 +212,21 @@ class GoldenAnnotationAssetItem(BaseModel):
     updated_at: Optional[str] = None
 
 
+class SkillLayoutParseRequest(BaseModel):
+    image_base64: str = Field(..., min_length=1)
+    context_type: str = Field(default="STUDENT_ANSWER")
+    page_index: int = Field(default=0, ge=0)
+    target_question_no: Optional[str] = None
+
+
+class SkillValidationRequest(BaseModel):
+    task_id: str
+    question_id: Optional[str] = None
+    perception_payload: Dict[str, Any]
+    evaluation_payload: Dict[str, Any]
+    rubric_payload: Optional[Dict[str, Any]] = None
+
+
 def _validate_bbox_in_image_space(*, bbox: BoundingBoxInput, image_width: int, image_height: int) -> List[float]:
     if image_width <= 0 or image_height <= 0:
         raise HTTPException(status_code=422, detail="image_width and image_height must be positive")
@@ -320,6 +337,7 @@ async def generate_rubric_job(
     workflow = GradingWorkflow(
         perception_engine=perception_engine,
         cognitive_agent=cognitive_agent,
+        skill_service=SkillService(db_path=db_path),
     )
 
     rubric: TeacherRubric = await workflow.generate_rubric_pipeline(files_data)
@@ -766,3 +784,65 @@ async def trace_probe():
         celery_task_id=result.id,
         status="ENQUEUED",
     )
+
+
+@router.post("/skills/layout/parse")
+async def skill_layout_parse(payload: SkillLayoutParseRequest):
+    """
+    Internal skill gateway endpoint.
+    Used when SKILL_LAYOUT_PARSER_API_URL points to local service.
+    """
+    import base64
+
+    try:
+        image_bytes = base64.b64decode(payload.image_base64, validate=True)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail="invalid image_base64") from exc
+
+    engine = create_perception_engine()
+    if not hasattr(engine, "extract_layout"):
+        raise HTTPException(status_code=501, detail="perception engine does not support layout extraction")
+
+    layout = await engine.extract_layout(
+        image_bytes,
+        context_type=payload.context_type,
+        target_question_no=payload.target_question_no,
+        page_index=payload.page_index,
+    )
+    return {
+        "context_type": layout.context_type,
+        "target_question_no": layout.target_question_no,
+        "page_index": layout.page_index,
+        "regions": [
+            {
+                "target_id": item.target_id,
+                "question_no": item.question_no,
+                "region_type": item.region_type,
+                "bbox": item.bbox.model_dump(),
+            }
+            for item in layout.regions
+        ],
+        "warnings": list(layout.warnings),
+    }
+
+
+@router.post("/skills/validate")
+async def skill_validate(payload: SkillValidationRequest):
+    """
+    Internal validation gateway endpoint.
+    Default implementation is contract-only and returns deterministic structure.
+    """
+    validation_input = ValidationInput(
+        task_id=payload.task_id,
+        question_id=payload.question_id,
+        perception_payload=payload.perception_payload,
+        evaluation_payload=payload.evaluation_payload,
+        rubric_payload=payload.rubric_payload,
+    )
+    del validation_input
+    return {
+        "status": "ok",
+        "confidence": 0.0,
+        "details": {"mode": "gateway_stub"},
+        "warnings": ["No external validator configured, stub response used."],
+    }

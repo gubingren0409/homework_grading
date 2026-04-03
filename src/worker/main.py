@@ -36,10 +36,12 @@ from src.cognitive.engines.deepseek_engine import DeepSeekCognitiveEngine
 from src.core.trace_context import bind_context, reset_context, get_trace_id
 from src.core.json_logging import configure_json_logging
 from src.schemas.rubric_ir import TeacherRubric
+from src.skills.service import SkillService
 
 
 logger = logging.getLogger(__name__)
 configure_json_logging(level=logging.INFO)
+_SKILL_SERVICE = SkillService(db_path=settings.sqlite_db_path)
 
 # Pipeline status (execution) and grading status (business outcome) are projected separately.
 def _project_statuses(report: Any) -> tuple[str, str]:
@@ -130,6 +132,7 @@ def _build_workflow() -> GradingWorkflow:
     return GradingWorkflow(
         perception_engine=perception_engine,
         cognitive_agent=cognitive_agent,
+        skill_service=_SKILL_SERVICE,
     )
 
 
@@ -285,6 +288,34 @@ def grade_homework_task(
                 message="Grading completed successfully",
             )
         )
+
+        # Optional external validation skill (fail-open by default)
+        try:
+            validation_service = SkillService(db_path=db_path)
+            validation_outcome = run_async(
+                validation_service.run_validation(
+                    task_id=task_id,
+                    student_id=student_id,
+                    question_id=None,
+                    perception_payload=perception_snapshot or {},
+                    evaluation_payload=report.model_dump() if hasattr(report, "model_dump") else {},
+                    rubric_payload=rubric_json if isinstance(rubric_json, dict) else None,
+                )
+            )
+            if validation_outcome.applied and validation_outcome.result is not None:
+                logger.info(
+                    "external_validation_recorded",
+                    extra={
+                        "extra_fields": {
+                            "task_id": task_id,
+                            "checker": validation_outcome.result.checker,
+                            "status": validation_outcome.result.status,
+                            "confidence": validation_outcome.result.confidence,
+                        }
+                    },
+                )
+        except Exception as skill_exc:
+            logger.warning(f"external validation skill failed: {skill_exc}")
 
         # Step 6: Cleanup via storage adapter (Phase 32)
         storage.cleanup_task(task_id)

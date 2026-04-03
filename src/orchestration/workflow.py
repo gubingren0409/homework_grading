@@ -1,8 +1,11 @@
 import asyncio
+import logging
 from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 from uuid import uuid4
+from PIL import Image
 from src.perception.base import BasePerceptionEngine
 from src.cognitive.base import BaseCognitiveAgent
 from src.schemas.cognitive_ir import EvaluationReport
@@ -12,6 +15,9 @@ from src.core.exceptions import PerceptionShortCircuitError
 from src.core.config import settings
 from src.utils.file_parsers import process_multiple_files
 from src.utils.image_slicer import slice_image_by_layout
+from src.skills.service import SkillService
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -33,13 +39,43 @@ class GradingWorkflow:
     def __init__(
         self,
         perception_engine: BasePerceptionEngine,
-        cognitive_agent: BaseCognitiveAgent
+        cognitive_agent: BaseCognitiveAgent,
+        *,
+        skill_service: Optional[SkillService] = None,
     ):
         """
         Initialize the workflow with injected engine instances.
         """
         self._perception_engine = perception_engine
         self._cognitive_agent = cognitive_agent
+        self._skill_service = skill_service
+
+    @staticmethod
+    def _image_dimensions(image_bytes: bytes) -> tuple[int, int]:
+        with Image.open(BytesIO(image_bytes)) as img:
+            return img.size
+
+    def _build_layout_from_skill_result(self, *, image_bytes: bytes, layout_result: Any) -> LayoutIR:
+        width, height = self._image_dimensions(image_bytes)
+        target_question_no = None
+        if hasattr(layout_result, "target_question_no"):
+            target_question_no = layout_result.target_question_no
+        payload = {
+            "context_type": layout_result.context_type,
+            "target_question_no": target_question_no,
+            "page_index": layout_result.page_index,
+            "regions": [
+                {
+                    "target_id": region.target_id,
+                    "question_no": region.question_no,
+                    "region_type": region.region_type,
+                    "bbox": region.bbox,
+                }
+                for region in layout_result.regions
+            ],
+            "warnings": list(layout_result.warnings),
+        }
+        return LayoutIR.model_validate(payload, context={"image_width": width, "image_height": height})
 
     def _enforce_phase35_contract_enabled(self) -> None:
         if not settings.enable_layout_preprocess:
@@ -92,11 +128,27 @@ class GradingWorkflow:
             )
 
         for page_idx, page_bytes in enumerate(image_bytes_list):
-            layout: LayoutIR = await engine.extract_layout(  # type: ignore[attr-defined]
-                page_bytes,
-                context_type=context_type,
-                page_index=page_idx,
-            )
+            layout: Optional[LayoutIR] = None
+            if self._skill_service is not None:
+                skill_layout = await self._skill_service.try_parse_layout(
+                    page_bytes,
+                    context_type=context_type,
+                    page_index=page_idx,
+                )
+                if skill_layout is not None:
+                    try:
+                        layout = self._build_layout_from_skill_result(
+                            image_bytes=page_bytes,
+                            layout_result=skill_layout,
+                        )
+                    except Exception as exc:
+                        logger.warning("layout skill output invalid, fallback to engine layout: %s", exc)
+            if layout is None:
+                layout = await engine.extract_layout(  # type: ignore[attr-defined]
+                    page_bytes,
+                    context_type=context_type,
+                    page_index=page_idx,
+                )
             image_width = int(layout.image_width or 0)
             image_height = int(layout.image_height or 0)
             if image_width <= 0 or image_height <= 0:
