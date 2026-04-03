@@ -30,6 +30,8 @@ from src.db.client import (
     bulk_update_hygiene_interception_action,
     create_golden_annotation_asset,
     list_golden_annotation_assets,
+    get_task_status_counts,
+    get_completion_latencies_seconds,
 )
 from src.worker.main import grade_homework_task
 from src.core.storage_adapter import storage
@@ -225,6 +227,76 @@ class SkillValidationRequest(BaseModel):
     perception_payload: Dict[str, Any]
     evaluation_payload: Dict[str, Any]
     rubric_payload: Optional[Dict[str, Any]] = None
+
+
+class CapabilityEndpointItem(BaseModel):
+    method: str
+    path: str
+    response_model: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class CapabilityDomainItem(BaseModel):
+    domain: str
+    endpoints: List[CapabilityEndpointItem]
+
+
+class CapabilityCatalogResponse(BaseModel):
+    version: str
+    domains: List[CapabilityDomainItem]
+
+
+class ContractFieldItem(BaseModel):
+    name: str
+    type: str
+    required: bool
+
+
+class ContractSchemaItem(BaseModel):
+    schema_name: str
+    fields: List[ContractFieldItem]
+
+
+class ApiContractCatalogResponse(BaseModel):
+    version: str
+    status_enums: Dict[str, List[str]]
+    error_codes: List[str]
+    schemas: List[ContractSchemaItem]
+
+
+class SlaSummaryResponse(BaseModel):
+    version: str
+    queue_latency_target_ms: int
+    completion_target_seconds_p95: int
+    sse_reliability_target: str
+    observed_status_counts: Dict[str, int]
+    observed_completion_seconds_p50: Optional[float] = None
+    observed_completion_seconds_p95: Optional[float] = None
+    notes: List[str] = Field(default_factory=list)
+
+
+def _percentile(values: List[float], p: float) -> Optional[float]:
+    if not values:
+        return None
+    sorted_values = sorted(values)
+    idx = int(round((len(sorted_values) - 1) * p))
+    idx = max(0, min(idx, len(sorted_values) - 1))
+    return float(sorted_values[idx])
+
+
+def _schema_fields_from_model(model: type[BaseModel]) -> List[ContractFieldItem]:
+    fields: List[ContractFieldItem] = []
+    for name, field in model.model_fields.items():
+        required = field.is_required()
+        annotation = field.annotation
+        fields.append(
+            ContractFieldItem(
+                name=name,
+                type=str(annotation),
+                required=required,
+            )
+        )
+    return fields
 
 
 def _validate_bbox_in_image_space(*, bbox: BoundingBoxInput, image_width: int, image_height: int) -> List[float]:
@@ -783,6 +855,116 @@ async def trace_probe():
         task_id=task_id,
         celery_task_id=result.id,
         status="ENQUEUED",
+    )
+
+
+@router.get("/capabilities/catalog", response_model=CapabilityCatalogResponse)
+async def get_capability_catalog():
+    return CapabilityCatalogResponse(
+        version="1.0",
+        domains=[
+            CapabilityDomainItem(
+                domain="rubric",
+                endpoints=[
+                    CapabilityEndpointItem(method="POST", path="/api/v1/rubric/generate", response_model="RubricGenerateResponse"),
+                    CapabilityEndpointItem(method="GET", path="/api/v1/rubrics", response_model="List[RubricSummaryItem]"),
+                    CapabilityEndpointItem(method="GET", path="/api/v1/rubrics/{rubric_id}", response_model="RubricDetailResponse"),
+                ],
+            ),
+            CapabilityDomainItem(
+                domain="grade",
+                endpoints=[
+                    CapabilityEndpointItem(method="POST", path="/api/v1/grade/submit", response_model="TaskResponse"),
+                    CapabilityEndpointItem(method="GET", path="/api/v1/grade/{task_id}", response_model="TaskStatusResponse"),
+                    CapabilityEndpointItem(method="GET", path="/api/v1/tasks/{task_id}/stream", notes="SSE stream"),
+                    CapabilityEndpointItem(method="GET", path="/api/v1/results", response_model="List[GradingResultItem]"),
+                ],
+            ),
+            CapabilityDomainItem(
+                domain="review",
+                endpoints=[
+                    CapabilityEndpointItem(method="GET", path="/api/v1/tasks/pending-review", response_model="List[PendingReviewTaskItem]"),
+                    CapabilityEndpointItem(method="GET", path="/api/v1/review/flow-guide", response_model="ReviewFlowGuideResponse"),
+                ],
+            ),
+            CapabilityDomainItem(
+                domain="annotation",
+                endpoints=[
+                    CapabilityEndpointItem(method="POST", path="/api/v1/annotations/feedback", response_model="AnnotationFeedbackResponse"),
+                    CapabilityEndpointItem(method="GET", path="/api/v1/annotations/assets", response_model="List[GoldenAnnotationAssetItem]"),
+                ],
+            ),
+            CapabilityDomainItem(
+                domain="hygiene",
+                endpoints=[
+                    CapabilityEndpointItem(method="GET", path="/api/v1/hygiene/interceptions", response_model="List[HygieneInterceptionItem]"),
+                    CapabilityEndpointItem(method="POST", path="/api/v1/hygiene/interceptions/{record_id}/action", response_model="HygieneInterceptionItem"),
+                    CapabilityEndpointItem(method="POST", path="/api/v1/hygiene/interceptions/bulk-action"),
+                ],
+            ),
+            CapabilityDomainItem(
+                domain="obs",
+                endpoints=[
+                    CapabilityEndpointItem(method="POST", path="/api/v1/trace/probe", response_model="TraceProbeResponse"),
+                    CapabilityEndpointItem(method="GET", path="/api/v1/sla/summary", response_model="SlaSummaryResponse"),
+                    CapabilityEndpointItem(method="GET", path="/api/v1/contracts/catalog", response_model="ApiContractCatalogResponse"),
+                ],
+            ),
+        ],
+    )
+
+
+@router.get("/contracts/catalog", response_model=ApiContractCatalogResponse)
+async def get_contract_catalog():
+    schemas = [
+        ContractSchemaItem(schema_name="TaskResponse", fields=_schema_fields_from_model(TaskResponse)),
+        ContractSchemaItem(schema_name="TaskStatusResponse", fields=_schema_fields_from_model(TaskStatusResponse)),
+        ContractSchemaItem(schema_name="RubricGenerateResponse", fields=_schema_fields_from_model(RubricGenerateResponse)),
+        ContractSchemaItem(schema_name="RubricDetailResponse", fields=_schema_fields_from_model(RubricDetailResponse)),
+        ContractSchemaItem(schema_name="PendingReviewTaskItem", fields=_schema_fields_from_model(PendingReviewTaskItem)),
+        ContractSchemaItem(schema_name="AnnotationFeedbackRequest", fields=_schema_fields_from_model(AnnotationFeedbackRequest)),
+        ContractSchemaItem(schema_name="AnnotationFeedbackResponse", fields=_schema_fields_from_model(AnnotationFeedbackResponse)),
+    ]
+    return ApiContractCatalogResponse(
+        version="1.0",
+        status_enums={
+            "task_status": ["PENDING", "PROCESSING", "COMPLETED", "FAILED"],
+            "grading_status": ["SCORED", "REJECTED_UNREADABLE"],
+            "review_status": ["NOT_REQUIRED", "PENDING_REVIEW", "REVIEWED"],
+        },
+        error_codes=[
+            "TASK_NOT_FOUND",
+            "RUBRIC_NOT_FOUND",
+            "INPUT_REJECTED",
+            "TASK_FAILED",
+            "INTERNAL_ERROR",
+            "SSE_BACKEND_UNAVAILABLE",
+            "UPLOAD_TIMEOUT",
+            "FILE_TOO_LARGE",
+        ],
+        schemas=schemas,
+    )
+
+
+@router.get("/sla/summary", response_model=SlaSummaryResponse)
+async def get_sla_summary(
+    db_path: str = Depends(get_db_path),
+):
+    status_counts = await get_task_status_counts(db_path)
+    completion_latencies = await get_completion_latencies_seconds(db_path, lookback_hours=24)
+    return SlaSummaryResponse(
+        version="1.0",
+        queue_latency_target_ms=200,
+        completion_target_seconds_p95=120,
+        sse_reliability_target=">=99.0%",
+        observed_status_counts=status_counts,
+        observed_completion_seconds_p50=_percentile(completion_latencies, 0.50),
+        observed_completion_seconds_p95=_percentile(completion_latencies, 0.95),
+        notes=[
+            "queue latency target measures submit->worker-processing transition.",
+            "completion latency uses task.created_at to first grading_results.created_at.",
+            "SSE reliability should be monitored with disconnect/error event ratio dashboard.",
+        ],
     )
 
 

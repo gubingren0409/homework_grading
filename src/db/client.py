@@ -848,6 +848,56 @@ async def fetch_results(db_path: str, limit: int = 10, offset: int = 0) -> List[
             return [dict(r) for r in rows]
 
 
+async def get_task_status_counts(db_path: str) -> Dict[str, int]:
+    async with _open_connection(db_path) as db:
+        try:
+            async with db.execute("SELECT status, COUNT(1) AS cnt FROM tasks GROUP BY status") as cursor:
+                rows = await cursor.fetchall()
+                result: Dict[str, int] = {}
+                for status, cnt in rows:
+                    result[str(status)] = int(cnt)
+                return result
+        except (aiosqlite.OperationalError, sqlite3.OperationalError) as exc:
+            if "no such table" in str(exc).lower():
+                return {}
+            raise
+
+
+async def get_completion_latencies_seconds(
+    db_path: str,
+    *,
+    lookback_hours: int = 24,
+) -> List[float]:
+    async with _open_connection(db_path) as db:
+        try:
+            async with db.execute(
+                """
+                SELECT
+                    (julianday(MIN(gr.created_at)) - julianday(t.created_at)) * 86400.0 AS completion_seconds
+                FROM tasks t
+                JOIN grading_results gr ON gr.task_id = t.task_id
+                WHERE t.status = 'COMPLETED'
+                  AND t.created_at >= datetime('now', ?)
+                GROUP BY t.task_id
+                """,
+                (f"-{int(lookback_hours)} hours",),
+            ) as cursor:
+                rows = await cursor.fetchall()
+                latencies: List[float] = []
+                for (seconds,) in rows:
+                    try:
+                        value = float(seconds)
+                    except (TypeError, ValueError):
+                        continue
+                    if value >= 0:
+                        latencies.append(value)
+                return latencies
+        except (aiosqlite.OperationalError, sqlite3.OperationalError) as exc:
+            if "no such table" in str(exc).lower():
+                return []
+            raise
+
+
 async def insert_skill_validation_records(
     db_path: str,
     records: Sequence[Mapping[str, Any]],

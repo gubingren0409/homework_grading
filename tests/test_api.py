@@ -99,3 +99,33 @@ def test_skill_validation_gateway_stub():
     data = response.json()
     assert data["status"] == "ok"
     assert "gateway_stub" in data["details"]["mode"]
+
+
+def test_capability_catalog_endpoint():
+    response = client.get("/api/v1/capabilities/catalog")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["version"] == "1.0"
+    domains = {d["domain"] for d in data["domains"]}
+    assert {"rubric", "grade", "review", "annotation", "hygiene", "obs"} <= domains
+
+
+def test_contract_catalog_endpoint():
+    response = client.get("/api/v1/contracts/catalog")
+    assert response.status_code == 200
+    data = response.json()
+    assert "status_enums" in data
+    assert "task_status" in data["status_enums"]
+    assert "schemas" in data
+    schema_names = {item["schema_name"] for item in data["schemas"]}
+    assert "TaskStatusResponse" in schema_names
+
+
+def test_sla_summary_endpoint_with_empty_db(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "empty_sla.db")
+    monkeypatch.setattr("src.api.dependencies.get_db_path", lambda: db_path)
+    response = client.get("/api/v1/sla/summary")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["version"] == "1.0"
+    assert isinstance(data["observed_status_counts"], dict)
