@@ -378,6 +378,50 @@ async def _ensure_prompt_control_tables(db: aiosqlite.Connection) -> None:
         ON CONFLICT(id) DO NOTHING
         """
     )
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ops_release_controls (
+            layer TEXT PRIMARY KEY
+                CHECK (layer IN ('api', 'prompt', 'router')),
+            strategy TEXT NOT NULL DEFAULT 'stable'
+                CHECK (strategy IN ('stable', 'canary', 'rollback')),
+            rollout_percentage INTEGER NOT NULL DEFAULT 100
+                CHECK (rollout_percentage >= 0 AND rollout_percentage <= 100),
+            target_version TEXT,
+            config_json TEXT NOT NULL DEFAULT '{}',
+            rollback_config_json TEXT NOT NULL DEFAULT '{}',
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    for layer in ("api", "prompt", "router"):
+        await db.execute(
+            """
+            INSERT INTO ops_release_controls (
+                layer, strategy, rollout_percentage, target_version, config_json, rollback_config_json
+            )
+            VALUES (?, 'stable', 100, NULL, '{}', '{}')
+            ON CONFLICT(layer) DO NOTHING
+            """,
+            (layer,),
+        )
+
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ops_fault_drill_reports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            drill_type TEXT NOT NULL
+                CHECK (drill_type IN ('redis_unavailable', 'model_failure', 'sse_disconnect', 'db_pressure')),
+            status TEXT NOT NULL
+                CHECK (status IN ('passed', 'failed')),
+            details_json TEXT NOT NULL,
+            operator_id TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_ops_fault_drill_type ON ops_fault_drill_reports(drill_type)")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_ops_fault_drill_created_at ON ops_fault_drill_reports(created_at)")
 
 
 async def _has_legacy_review_columns(db: aiosqlite.Connection) -> bool:
@@ -1622,6 +1666,167 @@ async def upsert_ops_feature_flags(
         )
 
     await _execute_write_with_retry(db_path, _op)
+
+
+async def list_ops_release_controls(db_path: str) -> List[Dict[str, Any]]:
+    async with _open_connection(db_path) as db:
+        await _ensure_prompt_control_tables(db)
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """
+            SELECT layer, strategy, rollout_percentage, target_version, config_json, rollback_config_json, updated_at
+            FROM ops_release_controls
+            ORDER BY CASE layer WHEN 'api' THEN 0 WHEN 'prompt' THEN 1 WHEN 'router' THEN 2 ELSE 9 END
+            """
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+
+async def get_ops_release_control(
+    db_path: str,
+    *,
+    layer: str,
+) -> Dict[str, Any]:
+    async with _open_connection(db_path) as db:
+        await _ensure_prompt_control_tables(db)
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """
+            SELECT layer, strategy, rollout_percentage, target_version, config_json, rollback_config_json, updated_at
+            FROM ops_release_controls
+            WHERE layer = ?
+            """,
+            (layer,),
+        ) as cursor:
+            row = await cursor.fetchone()
+            if row is None:
+                return {
+                    "layer": layer,
+                    "strategy": "stable",
+                    "rollout_percentage": 100,
+                    "target_version": None,
+                    "config_json": "{}",
+                    "rollback_config_json": "{}",
+                    "updated_at": None,
+                }
+            return dict(row)
+
+
+async def upsert_ops_release_control(
+    db_path: str,
+    *,
+    layer: str,
+    strategy: str,
+    rollout_percentage: int,
+    target_version: Optional[str],
+    config_json: Any,
+    rollback_config_json: Any,
+) -> None:
+    config_payload = _to_json_string(config_json)
+    rollback_payload = _to_json_string(rollback_config_json)
+
+    async def _op(db: aiosqlite.Connection) -> None:
+        await _ensure_prompt_control_tables(db)
+        await db.execute(
+            """
+            INSERT INTO ops_release_controls (
+                layer, strategy, rollout_percentage, target_version, config_json, rollback_config_json, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(layer)
+            DO UPDATE SET
+                strategy=excluded.strategy,
+                rollout_percentage=excluded.rollout_percentage,
+                target_version=excluded.target_version,
+                config_json=excluded.config_json,
+                rollback_config_json=excluded.rollback_config_json,
+                updated_at=CURRENT_TIMESTAMP
+            """,
+            (
+                layer,
+                strategy,
+                int(rollout_percentage),
+                target_version,
+                config_payload,
+                rollback_payload,
+            ),
+        )
+
+    await _execute_write_with_retry(db_path, _op)
+
+
+async def append_ops_fault_drill_report(
+    db_path: str,
+    *,
+    drill_type: str,
+    status: str,
+    details_json: Any,
+    operator_id: Optional[str],
+) -> int:
+    details_payload = _to_json_string(details_json)
+    report_id: int = 0
+
+    async def _op(db: aiosqlite.Connection) -> None:
+        nonlocal report_id
+        await _ensure_prompt_control_tables(db)
+        cursor = await db.execute(
+            """
+            INSERT INTO ops_fault_drill_reports
+            (drill_type, status, details_json, operator_id)
+            VALUES (?, ?, ?, ?)
+            """,
+            (drill_type, status, details_payload, operator_id),
+        )
+        report_id = int(cursor.lastrowid or 0)
+
+    await _execute_write_with_retry(db_path, _op)
+    return report_id
+
+
+async def get_ops_fault_drill_report_by_id(
+    db_path: str,
+    *,
+    report_id: int,
+) -> Optional[Dict[str, Any]]:
+    async with _open_connection(db_path) as db:
+        await _ensure_prompt_control_tables(db)
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """
+            SELECT id, drill_type, status, details_json, operator_id, created_at
+            FROM ops_fault_drill_reports
+            WHERE id = ?
+            """,
+            (report_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+
+async def list_ops_fault_drill_reports(
+    db_path: str,
+    *,
+    drill_type: Optional[str] = None,
+    limit: int = 20,
+    offset: int = 0,
+) -> List[Dict[str, Any]]:
+    async with _open_connection(db_path) as db:
+        await _ensure_prompt_control_tables(db)
+        db.row_factory = aiosqlite.Row
+        sql = (
+            "SELECT id, drill_type, status, details_json, operator_id, created_at "
+            "FROM ops_fault_drill_reports WHERE 1=1"
+        )
+        params: List[Any] = []
+        if drill_type:
+            sql += " AND drill_type = ?"
+            params.append(drill_type)
+        sql += " ORDER BY id DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        async with db.execute(sql, tuple(params)) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
 
 
 async def insert_skill_validation_records(

@@ -47,7 +47,14 @@ from src.db.client import (
     list_prompt_ops_audit,
     get_ops_feature_flags,
     upsert_ops_feature_flags,
+    list_ops_release_controls,
+    get_ops_release_control,
+    upsert_ops_release_control,
+    append_ops_fault_drill_report,
+    list_ops_fault_drill_reports,
+    get_ops_fault_drill_report_by_id,
 )
+from src.core.drills import run_fault_drill
 from src.worker.main import grade_homework_task
 from src.core.storage_adapter import storage
 from src.core.trace_context import get_trace_id
@@ -493,6 +500,59 @@ class OpsFeatureFlagsResponse(BaseModel):
     prompt_control_enabled: bool
     router_control_enabled: bool
     updated_at: Optional[str] = None
+
+
+class OpsReleaseControlLayerItem(BaseModel):
+    layer: Literal["api", "prompt", "router"]
+    strategy: Literal["stable", "canary", "rollback"]
+    rollout_percentage: int
+    target_version: Optional[str] = None
+    config: Dict[str, Any] = Field(default_factory=dict)
+    rollback_config: Dict[str, Any] = Field(default_factory=dict)
+    updated_at: Optional[str] = None
+
+
+class OpsReleaseControlListResponse(BaseModel):
+    items: List[OpsReleaseControlLayerItem]
+
+
+class OpsReleaseControlRequest(BaseModel):
+    layer: Literal["api", "prompt", "router"]
+    strategy: Literal["stable", "canary", "rollback"]
+    rollout_percentage: int = Field(..., ge=0, le=100)
+    target_version: Optional[str] = None
+    config: Dict[str, Any] = Field(default_factory=dict)
+    rollback_config: Dict[str, Any] = Field(default_factory=dict)
+    operator_id: Optional[str] = None
+
+
+class OpsReleaseControlResponse(BaseModel):
+    layer: Literal["api", "prompt", "router"]
+    strategy: Literal["stable", "canary", "rollback"]
+    rollout_percentage: int
+    target_version: Optional[str] = None
+    config: Dict[str, Any] = Field(default_factory=dict)
+    rollback_config: Dict[str, Any] = Field(default_factory=dict)
+    updated_at: Optional[str] = None
+
+
+class OpsFaultDrillRequest(BaseModel):
+    drill_type: Literal["redis_unavailable", "model_failure", "sse_disconnect", "db_pressure"]
+    operator_id: Optional[str] = None
+
+
+class OpsFaultDrillResponse(BaseModel):
+    report_id: int
+    drill_type: Literal["redis_unavailable", "model_failure", "sse_disconnect", "db_pressure"]
+    status: Literal["passed", "failed"]
+    details: Dict[str, Any] = Field(default_factory=dict)
+    created_at: Optional[str] = None
+
+
+class OpsFaultDrillHistoryResponse(BaseModel):
+    page: int
+    limit: int
+    items: List[OpsFaultDrillResponse]
 
 
 def _percentile(values: List[float], p: float) -> Optional[float]:
@@ -1436,10 +1496,14 @@ async def get_capability_catalog():
                     CapabilityEndpointItem(method="GET", path="/api/v1/ops/config/snapshot", response_model="OpsConfigSnapshotResponse"),
                     CapabilityEndpointItem(method="GET", path="/api/v1/ops/feature-flags", response_model="OpsFeatureFlagsResponse"),
                     CapabilityEndpointItem(method="POST", path="/api/v1/ops/feature-flags", response_model="OpsFeatureFlagsResponse"),
+                    CapabilityEndpointItem(method="GET", path="/api/v1/ops/release/controls", response_model="OpsReleaseControlListResponse"),
+                    CapabilityEndpointItem(method="POST", path="/api/v1/ops/release/controls", response_model="OpsReleaseControlResponse"),
                     CapabilityEndpointItem(method="POST", path="/api/v1/ops/provider/switch"),
                     CapabilityEndpointItem(method="POST", path="/api/v1/ops/router/control", response_model="OpsRouterControlResponse"),
                     CapabilityEndpointItem(method="GET", path="/api/v1/ops/prompt/catalog", response_model="OpsPromptCatalogResponse"),
                     CapabilityEndpointItem(method="GET", path="/api/v1/ops/audit/logs", response_model="OpsAuditLogResponse"),
+                    CapabilityEndpointItem(method="POST", path="/api/v1/ops/fault-drills/run", response_model="OpsFaultDrillResponse"),
+                    CapabilityEndpointItem(method="GET", path="/api/v1/ops/fault-drills/history", response_model="OpsFaultDrillHistoryResponse"),
                 ],
             ),
         ],
@@ -1472,6 +1536,12 @@ async def get_contract_catalog():
         ContractSchemaItem(schema_name="OpsRouterControlResponse", fields=_schema_fields_from_model(OpsRouterControlResponse)),
         ContractSchemaItem(schema_name="OpsFeatureFlagsRequest", fields=_schema_fields_from_model(OpsFeatureFlagsRequest)),
         ContractSchemaItem(schema_name="OpsFeatureFlagsResponse", fields=_schema_fields_from_model(OpsFeatureFlagsResponse)),
+        ContractSchemaItem(schema_name="OpsReleaseControlRequest", fields=_schema_fields_from_model(OpsReleaseControlRequest)),
+        ContractSchemaItem(schema_name="OpsReleaseControlResponse", fields=_schema_fields_from_model(OpsReleaseControlResponse)),
+        ContractSchemaItem(schema_name="OpsReleaseControlListResponse", fields=_schema_fields_from_model(OpsReleaseControlListResponse)),
+        ContractSchemaItem(schema_name="OpsFaultDrillRequest", fields=_schema_fields_from_model(OpsFaultDrillRequest)),
+        ContractSchemaItem(schema_name="OpsFaultDrillResponse", fields=_schema_fields_from_model(OpsFaultDrillResponse)),
+        ContractSchemaItem(schema_name="OpsFaultDrillHistoryResponse", fields=_schema_fields_from_model(OpsFaultDrillHistoryResponse)),
         ContractSchemaItem(schema_name="OpsConfigSnapshotResponse", fields=_schema_fields_from_model(OpsConfigSnapshotResponse)),
         ContractSchemaItem(schema_name="OpsAuditLogItem", fields=_schema_fields_from_model(OpsAuditLogItem)),
         ContractSchemaItem(schema_name="OpsAuditLogResponse", fields=_schema_fields_from_model(OpsAuditLogResponse)),
@@ -2019,6 +2089,155 @@ async def set_ops_feature_flags(
         router_control_enabled=bool(flags.get("router_control_enabled", payload.router_control_enabled)),
         updated_at=flags.get("updated_at"),
     )
+
+
+def _deserialize_json_object(payload: Any) -> Dict[str, Any]:
+    if isinstance(payload, dict):
+        return payload
+    if isinstance(payload, str):
+        try:
+            parsed = json.loads(payload)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            return {}
+    return {}
+
+
+def _to_release_control_item(row: Dict[str, Any]) -> OpsReleaseControlLayerItem:
+    return OpsReleaseControlLayerItem(
+        layer=str(row.get("layer") or "api"),  # type: ignore[arg-type]
+        strategy=str(row.get("strategy") or "stable"),  # type: ignore[arg-type]
+        rollout_percentage=int(row.get("rollout_percentage") or 100),
+        target_version=row.get("target_version"),
+        config=_deserialize_json_object(row.get("config_json")),
+        rollback_config=_deserialize_json_object(row.get("rollback_config_json")),
+        updated_at=row.get("updated_at"),
+    )
+
+
+@router.get("/ops/release/controls", response_model=OpsReleaseControlListResponse)
+async def get_ops_release_controls(
+    db_path: str = Depends(get_db_path),
+):
+    rows = await list_ops_release_controls(db_path)
+    return OpsReleaseControlListResponse(items=[_to_release_control_item(row) for row in rows])
+
+
+@router.post("/ops/release/controls", response_model=OpsReleaseControlResponse)
+async def set_ops_release_control(
+    payload: OpsReleaseControlRequest,
+    db_path: str = Depends(get_db_path),
+):
+    await upsert_ops_release_control(
+        db_path,
+        layer=payload.layer,
+        strategy=payload.strategy,
+        rollout_percentage=payload.rollout_percentage,
+        target_version=payload.target_version,
+        config_json=payload.config,
+        rollback_config_json=payload.rollback_config,
+    )
+    await append_prompt_ops_audit(
+        db_path,
+        trace_id=get_trace_id(),
+        operator_id=payload.operator_id,
+        action="ops_release_control_update",
+        prompt_key=None,
+        payload_json=payload.model_dump(),
+    )
+    row = await get_ops_release_control(db_path, layer=payload.layer)
+    item = _to_release_control_item(row)
+    return OpsReleaseControlResponse(
+        layer=item.layer,
+        strategy=item.strategy,
+        rollout_percentage=item.rollout_percentage,
+        target_version=item.target_version,
+        config=item.config,
+        rollback_config=item.rollback_config,
+        updated_at=item.updated_at,
+    )
+
+
+@router.post("/ops/fault-drills/run", response_model=OpsFaultDrillResponse)
+async def run_ops_fault_drill(
+    payload: OpsFaultDrillRequest,
+    db_path: str = Depends(get_db_path),
+):
+    drill_result = await run_fault_drill(drill_type=payload.drill_type, db_path=db_path)
+    status_value = str(drill_result.get("status") or "failed")
+    if status_value not in {"passed", "failed"}:
+        status_value = "failed"
+    details_value = drill_result.get("details")
+    if not isinstance(details_value, dict):
+        details_value = {"raw": details_value}
+
+    report_id = await append_ops_fault_drill_report(
+        db_path,
+        drill_type=payload.drill_type,
+        status=status_value,
+        details_json=details_value,
+        operator_id=payload.operator_id,
+    )
+    await append_prompt_ops_audit(
+        db_path,
+        trace_id=get_trace_id(),
+        operator_id=payload.operator_id,
+        action="ops_fault_drill_run",
+        prompt_key=None,
+        payload_json={
+            "drill_type": payload.drill_type,
+            "status": status_value,
+            "report_id": report_id,
+        },
+    )
+    row = await get_ops_fault_drill_report_by_id(db_path, report_id=report_id)
+    if row is None:
+        raise HTTPException(
+            status_code=500,
+            detail=_error_detail(
+                error_code="INTERNAL_ERROR",
+                message="fault drill report not persisted",
+                retryable=False,
+                next_action="contact_ops_admin",
+            ),
+        )
+    details = _deserialize_json_object(row.get("details_json"))
+    return OpsFaultDrillResponse(
+        report_id=int(row["id"]),
+        drill_type=str(row["drill_type"]),  # type: ignore[arg-type]
+        status=str(row["status"]),  # type: ignore[arg-type]
+        details=details,
+        created_at=row.get("created_at"),
+    )
+
+
+@router.get("/ops/fault-drills/history", response_model=OpsFaultDrillHistoryResponse)
+async def get_ops_fault_drill_history(
+    drill_type: Optional[str] = Query(default=None, pattern="^(redis_unavailable|model_failure|sse_disconnect|db_pressure)$"),
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+    db_path: str = Depends(get_db_path),
+):
+    offset = (page - 1) * limit
+    rows = await list_ops_fault_drill_reports(
+        db_path,
+        drill_type=drill_type,
+        limit=limit,
+        offset=offset,
+    )
+    items: List[OpsFaultDrillResponse] = []
+    for row in rows:
+        items.append(
+            OpsFaultDrillResponse(
+                report_id=int(row["id"]),
+                drill_type=str(row["drill_type"]),  # type: ignore[arg-type]
+                status=str(row["status"]),  # type: ignore[arg-type]
+                details=_deserialize_json_object(row.get("details_json")),
+                created_at=row.get("created_at"),
+            )
+        )
+    return OpsFaultDrillHistoryResponse(page=page, limit=limit, items=items)
 
 
 @router.get("/ops/prompt/catalog", response_model=OpsPromptCatalogResponse)

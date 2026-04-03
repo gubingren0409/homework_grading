@@ -422,3 +422,52 @@ def test_ops_feature_flags_and_gating(tmp_path):
         assert blocked_prompt.json()["detail"]["error_code"] == "FEATURE_DISABLED"
     finally:
         app.dependency_overrides.clear()
+
+
+def test_ops_release_controls_and_fault_drills(tmp_path):
+    db_path = str(tmp_path / "ops_release_and_drills.db")
+    asyncio.run(init_db(db_path))
+    app.dependency_overrides[get_db_path] = lambda: db_path
+    try:
+        release_list = client.get("/api/v1/ops/release/controls")
+        assert release_list.status_code == 200
+        items = release_list.json()["items"]
+        assert len(items) >= 3
+        assert {item["layer"] for item in items} >= {"api", "prompt", "router"}
+
+        release_set = client.post(
+            "/api/v1/ops/release/controls",
+            json={
+                "layer": "prompt",
+                "strategy": "canary",
+                "rollout_percentage": 20,
+                "target_version": "prompt-v2",
+                "config": {"channel": "beta"},
+                "rollback_config": {"target_version": "prompt-v1"},
+                "operator_id": "ops-user",
+            },
+        )
+        assert release_set.status_code == 200
+        release_row = release_set.json()
+        assert release_row["layer"] == "prompt"
+        assert release_row["strategy"] == "canary"
+        assert release_row["rollout_percentage"] == 20
+        assert release_row["target_version"] == "prompt-v2"
+
+        drill_run = client.post(
+            "/api/v1/ops/fault-drills/run",
+            json={"drill_type": "db_pressure", "operator_id": "ops-user"},
+        )
+        assert drill_run.status_code == 200
+        report = drill_run.json()
+        assert report["drill_type"] == "db_pressure"
+        assert report["status"] in {"passed", "failed"}
+        assert report["report_id"] >= 1
+
+        drill_history = client.get("/api/v1/ops/fault-drills/history?drill_type=db_pressure&page=1&limit=20")
+        assert drill_history.status_code == 200
+        history = drill_history.json()
+        assert isinstance(history["items"], list)
+        assert any(item["report_id"] == report["report_id"] for item in history["items"])
+    finally:
+        app.dependency_overrides.clear()

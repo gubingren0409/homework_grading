@@ -182,10 +182,14 @@ Skills 相关配置（见 `.env.example`）：
 - `GET /api/v1/ops/config/snapshot`
 - `GET /api/v1/ops/feature-flags`
 - `POST /api/v1/ops/feature-flags`
+- `GET /api/v1/ops/release/controls`
+- `POST /api/v1/ops/release/controls`
 - `POST /api/v1/ops/provider/switch`
 - `POST /api/v1/ops/router/control`
 - `GET /api/v1/ops/prompt/catalog`
 - `GET /api/v1/ops/audit/logs`
+- `POST /api/v1/ops/fault-drills/run`
+- `GET /api/v1/ops/fault-drills/history`
 
 ### 6.5 Skills 内部网关
 - `POST /api/v1/skills/layout/parse`
@@ -215,6 +219,9 @@ Skills 相关配置（见 `.env.example`）：
 - `prompt_control_state`
 - `prompt_ab_configs`
 - `prompt_ops_audit_log`
+- `ops_feature_flags`
+- `ops_release_controls`
+- `ops_fault_drill_reports`
 - `skill_validation_records`
 
 DDL 位于：`src/db/schema.sql`
