@@ -177,3 +177,51 @@ def test_runtime_dashboard_endpoint(tmp_path, monkeypatch):
     assert "fallback_triggers" in data
     assert "prompt_cache_hits" in data
     assert "human_review_rate" in data
+
+
+def test_prompt_control_endpoints(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "prompt_control_api.db")
+    monkeypatch.setattr("src.api.dependencies.get_db_path", lambda: db_path)
+
+    set_resp = client.post(
+        "/api/v1/prompt/control",
+        json={
+            "prompt_key": "deepseek.cognitive.evaluate",
+            "forced_variant_id": "A",
+            "lkg_mode": True,
+            "operator_id": "ops-user",
+        },
+    )
+    assert set_resp.status_code == 200
+
+    ab_resp = client.post(
+        "/api/v1/prompt/ab-config",
+        json={
+            "prompt_key": "deepseek.cognitive.evaluate",
+            "enabled": True,
+            "rollout_percentage": 20,
+            "variant_weights": {"A": 20, "B": 80},
+            "segment_prefixes": ["tenant-1"],
+            "sticky_salt": "s1",
+            "operator_id": "ops-user",
+        },
+    )
+    assert ab_resp.status_code == 200
+
+    state_resp = client.get("/api/v1/prompt/state?prompt_key=deepseek.cognitive.evaluate")
+    assert state_resp.status_code == 200
+    state_data = state_resp.json()
+    assert state_data["runtime"]["lkg_mode"] is True
+    assert state_data["persisted"]["control_state"]["forced_variant_id"] == "A"
+
+    refresh_resp = client.post("/api/v1/prompt/refresh?prompt_key=deepseek.cognitive.evaluate")
+    assert refresh_resp.status_code == 200
+
+    invalidate_resp = client.post("/api/v1/prompt/invalidate?prompt_key=deepseek.cognitive.evaluate")
+    assert invalidate_resp.status_code == 200
+
+    audit_resp = client.get("/api/v1/prompt/audit?prompt_key=deepseek.cognitive.evaluate&page=1&limit=20")
+    assert audit_resp.status_code == 200
+    rows = audit_resp.json()
+    assert isinstance(rows, list)
+    assert len(rows) >= 1

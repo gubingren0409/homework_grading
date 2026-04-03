@@ -139,6 +139,7 @@ async def init_db(db_path: str) -> None:
         await _ensure_domain_split_tables(db)
         await _ensure_skill_validation_tables(db)
         await _ensure_runtime_telemetry_table(db)
+        await _ensure_prompt_control_tables(db)
         if await _has_legacy_review_columns(db):
             await _migrate_drop_legacy_review_columns(db)
 
@@ -310,6 +311,52 @@ async def _ensure_runtime_telemetry_table(db: aiosqlite.Connection) -> None:
     await db.execute("CREATE INDEX IF NOT EXISTS idx_runtime_telemetry_model_used ON task_runtime_telemetry(model_used)")
     await db.execute("CREATE INDEX IF NOT EXISTS idx_runtime_telemetry_created_at ON task_runtime_telemetry(created_at)")
     await db.execute("CREATE INDEX IF NOT EXISTS idx_runtime_telemetry_cache_level ON task_runtime_telemetry(prompt_cache_level)")
+
+
+async def _ensure_prompt_control_tables(db: aiosqlite.Connection) -> None:
+    """
+    Phase P1:
+    Ensure prompt hot-reload + AB control plane tables exist.
+    """
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS prompt_control_state (
+            prompt_key TEXT PRIMARY KEY,
+            forced_variant_id TEXT,
+            lkg_mode INTEGER NOT NULL DEFAULT 0 CHECK (lkg_mode IN (0, 1)),
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS prompt_ab_configs (
+            prompt_key TEXT PRIMARY KEY,
+            enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+            rollout_percentage INTEGER NOT NULL CHECK (rollout_percentage >= 0 AND rollout_percentage <= 100),
+            variant_weights_json TEXT NOT NULL,
+            segment_prefixes_json TEXT NOT NULL,
+            sticky_salt TEXT NOT NULL DEFAULT '',
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS prompt_ops_audit_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            trace_id TEXT NOT NULL,
+            operator_id TEXT,
+            action TEXT NOT NULL,
+            prompt_key TEXT,
+            payload_json TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_prompt_ops_action ON prompt_ops_audit_log(action)")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_prompt_ops_created_at ON prompt_ops_audit_log(created_at)")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_prompt_ops_prompt_key ON prompt_ops_audit_log(prompt_key)")
 
 
 async def _has_legacy_review_columns(db: aiosqlite.Connection) -> bool:
@@ -1190,6 +1237,237 @@ async def get_runtime_telemetry_fallback_stats(
         except (aiosqlite.OperationalError, sqlite3.OperationalError) as exc:
             if "no such table" in str(exc).lower():
                 return {"total_count": 0, "fallback_count": 0, "fallback_rate": 0.0, "reason_hits": {}}
+            raise
+
+
+async def upsert_prompt_control_state(
+    db_path: str,
+    *,
+    prompt_key: str,
+    forced_variant_id: Optional[str],
+    lkg_mode: bool,
+) -> None:
+    async def _op(db: aiosqlite.Connection) -> None:
+        await _ensure_prompt_control_tables(db)
+        await db.execute(
+            """
+            INSERT INTO prompt_control_state (prompt_key, forced_variant_id, lkg_mode, updated_at)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(prompt_key)
+            DO UPDATE SET
+                forced_variant_id=excluded.forced_variant_id,
+                lkg_mode=excluded.lkg_mode,
+                updated_at=CURRENT_TIMESTAMP
+            """,
+            (prompt_key, forced_variant_id, 1 if lkg_mode else 0),
+        )
+
+    await _execute_write_with_retry(db_path, _op)
+
+
+async def get_prompt_control_state(
+    db_path: str,
+    *,
+    prompt_key: str,
+) -> Dict[str, Any]:
+    async with _open_connection(db_path) as db:
+        try:
+            await _ensure_prompt_control_tables(db)
+            async with db.execute(
+                """
+                SELECT prompt_key, forced_variant_id, lkg_mode, updated_at
+                FROM prompt_control_state
+                WHERE prompt_key = ?
+                """,
+                (prompt_key,),
+            ) as cursor:
+                row = await cursor.fetchone()
+                if row is None:
+                    return {
+                        "prompt_key": prompt_key,
+                        "forced_variant_id": None,
+                        "lkg_mode": False,
+                        "updated_at": None,
+                    }
+                return {
+                    "prompt_key": str(row[0]),
+                    "forced_variant_id": row[1],
+                    "lkg_mode": bool(row[2]),
+                    "updated_at": row[3],
+                }
+        except (aiosqlite.OperationalError, sqlite3.OperationalError) as exc:
+            if "no such table" in str(exc).lower():
+                return {
+                    "prompt_key": prompt_key,
+                    "forced_variant_id": None,
+                    "lkg_mode": False,
+                    "updated_at": None,
+                }
+            raise
+
+
+async def upsert_prompt_ab_config(
+    db_path: str,
+    *,
+    prompt_key: str,
+    enabled: bool,
+    rollout_percentage: int,
+    variant_weights: Mapping[str, int],
+    segment_prefixes: Sequence[str],
+    sticky_salt: str,
+) -> None:
+    weights_json = _to_json_string(dict(variant_weights))
+    segments_json = _to_json_string(list(segment_prefixes))
+
+    async def _op(db: aiosqlite.Connection) -> None:
+        await _ensure_prompt_control_tables(db)
+        await db.execute(
+            """
+            INSERT INTO prompt_ab_configs (
+                prompt_key, enabled, rollout_percentage, variant_weights_json,
+                segment_prefixes_json, sticky_salt, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(prompt_key)
+            DO UPDATE SET
+                enabled=excluded.enabled,
+                rollout_percentage=excluded.rollout_percentage,
+                variant_weights_json=excluded.variant_weights_json,
+                segment_prefixes_json=excluded.segment_prefixes_json,
+                sticky_salt=excluded.sticky_salt,
+                updated_at=CURRENT_TIMESTAMP
+            """,
+            (
+                prompt_key,
+                1 if enabled else 0,
+                int(rollout_percentage),
+                weights_json,
+                segments_json,
+                sticky_salt,
+            ),
+        )
+
+    await _execute_write_with_retry(db_path, _op)
+
+
+async def get_prompt_ab_config(
+    db_path: str,
+    *,
+    prompt_key: str,
+) -> Dict[str, Any]:
+    async with _open_connection(db_path) as db:
+        try:
+            await _ensure_prompt_control_tables(db)
+            async with db.execute(
+                """
+                SELECT
+                    prompt_key, enabled, rollout_percentage, variant_weights_json,
+                    segment_prefixes_json, sticky_salt, updated_at
+                FROM prompt_ab_configs
+                WHERE prompt_key = ?
+                """,
+                (prompt_key,),
+            ) as cursor:
+                row = await cursor.fetchone()
+                if row is None:
+                    return {
+                        "prompt_key": prompt_key,
+                        "enabled": False,
+                        "rollout_percentage": 100,
+                        "variant_weights": {},
+                        "segment_prefixes": [],
+                        "sticky_salt": "",
+                        "updated_at": None,
+                    }
+                variant_weights_raw = row[3]
+                segment_prefixes_raw = row[4]
+                try:
+                    variant_weights = json.loads(variant_weights_raw) if isinstance(variant_weights_raw, str) else {}
+                    if not isinstance(variant_weights, dict):
+                        variant_weights = {}
+                except Exception:
+                    variant_weights = {}
+                try:
+                    segment_prefixes = json.loads(segment_prefixes_raw) if isinstance(segment_prefixes_raw, str) else []
+                    if not isinstance(segment_prefixes, list):
+                        segment_prefixes = []
+                except Exception:
+                    segment_prefixes = []
+                return {
+                    "prompt_key": str(row[0]),
+                    "enabled": bool(row[1]),
+                    "rollout_percentage": int(row[2]),
+                    "variant_weights": {str(k): int(v) for k, v in variant_weights.items()},
+                    "segment_prefixes": [str(x) for x in segment_prefixes],
+                    "sticky_salt": str(row[5] or ""),
+                    "updated_at": row[6],
+                }
+        except (aiosqlite.OperationalError, sqlite3.OperationalError) as exc:
+            if "no such table" in str(exc).lower():
+                return {
+                    "prompt_key": prompt_key,
+                    "enabled": False,
+                    "rollout_percentage": 100,
+                    "variant_weights": {},
+                    "segment_prefixes": [],
+                    "sticky_salt": "",
+                    "updated_at": None,
+                }
+            raise
+
+
+async def append_prompt_ops_audit(
+    db_path: str,
+    *,
+    trace_id: str,
+    operator_id: Optional[str],
+    action: str,
+    prompt_key: Optional[str],
+    payload_json: Any,
+) -> None:
+    payload = _to_json_string(payload_json)
+
+    async def _op(db: aiosqlite.Connection) -> None:
+        await _ensure_prompt_control_tables(db)
+        await db.execute(
+            """
+            INSERT INTO prompt_ops_audit_log
+            (trace_id, operator_id, action, prompt_key, payload_json)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (trace_id, operator_id, action, prompt_key, payload),
+        )
+
+    await _execute_write_with_retry(db_path, _op)
+
+
+async def list_prompt_ops_audit(
+    db_path: str,
+    *,
+    prompt_key: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> List[Dict[str, Any]]:
+    async with _open_connection(db_path) as db:
+        try:
+            await _ensure_prompt_control_tables(db)
+            db.row_factory = aiosqlite.Row
+            sql = (
+                "SELECT id, trace_id, operator_id, action, prompt_key, payload_json, created_at "
+                "FROM prompt_ops_audit_log WHERE 1=1"
+            )
+            params: List[Any] = []
+            if prompt_key:
+                sql += " AND prompt_key = ?"
+                params.append(prompt_key)
+            sql += " ORDER BY id DESC LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+            async with db.execute(sql, tuple(params)) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(r) for r in rows]
+        except (aiosqlite.OperationalError, sqlite3.OperationalError) as exc:
+            if "no such table" in str(exc).lower():
+                return []
             raise
 
 

@@ -1,15 +1,16 @@
 import asyncio
 import copy
+import hashlib
 import logging
 from pathlib import Path
-from typing import Dict, Mapping, Sequence, Optional
+from typing import Any, Dict, Mapping, Sequence, Optional
 
 from src.prompts.cache_memory import InMemoryPromptCache
 from src.prompts.cache_redis import RedisPromptCache
 from src.prompts.exceptions import PromptAssetNotFound
 from src.prompts.guards import validate_budget_or_raise
 from src.prompts.payloads import build_openai_user_content, validate_variable_kinds, variables_to_map
-from src.prompts.routing import choose_variant
+from src.prompts.routing import choose_variant, choose_variant_with_weights
 from src.prompts.schemas import (
     PromptInvalidationEvent,
     PromptLKGSnapshot,
@@ -53,6 +54,9 @@ class PromptProviderService:
         self._version_hash_snapshot: Dict[str, str] = {}
         self._pull_task: Optional[asyncio.Task] = None
         self._bus_task: Optional[asyncio.Task] = None
+        self._forced_variant: Dict[str, str] = {}
+        self._lkg_mode: Dict[str, bool] = {}
+        self._ab_configs: Dict[str, Dict[str, Any]] = {}
 
     async def start(self) -> None:
         if self._pull_task and not self._pull_task.done():
@@ -99,16 +103,21 @@ class PromptProviderService:
     async def resolve(self, req: PromptResolveRequest) -> PromptResolveResult:
         tokens = bind_context(trace_id=req.trace_id, component="prompt-provider")
         try:
+            if self._lkg_mode.get(req.prompt_key, False):
+                lkg = self._lkg.get(req.prompt_key)
+                if lkg is not None:
+                    return self._with_cache_level(lkg.result, "LKG")
+                raise PromptAssetNotFound(f"LKG mode enabled but no LKG snapshot for {req.prompt_key}")
+
             asset = await self._source.get_asset(req.prompt_key, req.locale)
             if asset.meta.prompt_key != req.prompt_key:
                 raise PromptAssetNotFound(f"Prompt key mismatch: expected={req.prompt_key}, got={asset.meta.prompt_key}")
             variant_ids = [v.variant_id for v in asset.variants]
-            selected_variant = choose_variant(
-                prompt_key=req.prompt_key,
-                bucket_key=req.bucket_key,
-                variants=variant_ids,
-                variant_hint=req.variant_hint,
-            )
+            forced_variant = self._forced_variant.get(req.prompt_key)
+            if forced_variant and forced_variant in variant_ids:
+                selected_variant = forced_variant
+            else:
+                selected_variant = self._choose_variant_with_ab(req=req, variants=variant_ids)
             cache_key = f"{req.prompt_key}:{asset.meta.version_hash}:{selected_variant}:{req.model}"
 
             cached, state = await self._l1.get_state(cache_key)
@@ -157,10 +166,62 @@ class PromptProviderService:
         finally:
             reset_context(tokens)
 
+    def set_forced_variant(self, *, prompt_key: str, variant_id: Optional[str]) -> None:
+        if variant_id is None or not str(variant_id).strip():
+            self._forced_variant.pop(prompt_key, None)
+            return
+        self._forced_variant[prompt_key] = str(variant_id)
+
+    def get_forced_variant(self, *, prompt_key: str) -> Optional[str]:
+        return self._forced_variant.get(prompt_key)
+
+    def set_lkg_mode(self, *, prompt_key: str, enabled: bool) -> None:
+        self._lkg_mode[prompt_key] = bool(enabled)
+
+    def get_lkg_mode(self, *, prompt_key: str) -> bool:
+        return bool(self._lkg_mode.get(prompt_key, False))
+
+    def set_ab_config(
+        self,
+        *,
+        prompt_key: str,
+        enabled: bool,
+        rollout_percentage: int,
+        variant_weights: Mapping[str, int],
+        segment_prefixes: Sequence[str],
+        sticky_salt: str,
+    ) -> None:
+        rollout = int(rollout_percentage)
+        if rollout < 0 or rollout > 100:
+            raise ValueError("rollout_percentage must be in [0, 100]")
+        self._ab_configs[prompt_key] = {
+            "enabled": bool(enabled),
+            "rollout_percentage": rollout,
+            "variant_weights": {str(k): int(v) for k, v in variant_weights.items()},
+            "segment_prefixes": [str(x) for x in segment_prefixes],
+            "sticky_salt": str(sticky_salt or ""),
+        }
+
+    def get_ab_config(self, *, prompt_key: str) -> Dict[str, Any]:
+        cfg = self._ab_configs.get(prompt_key)
+        if cfg is None:
+            return {
+                "enabled": False,
+                "rollout_percentage": 100,
+                "variant_weights": {},
+                "segment_prefixes": [],
+                "sticky_salt": "",
+            }
+        return dict(cfg)
+
     async def invalidate(self, event: PromptInvalidationEvent) -> None:
         prefix = f"{event.prompt_key}:"
         l1_deleted = await self._l1.invalidate_prefix(prefix)
-        l2_deleted = await self._l2.invalidate_prefix(prefix)
+        l2_deleted = 0
+        try:
+            l2_deleted = await self._l2.invalidate_prefix(prefix)
+        except Exception as exc:
+            logger.warning(f"prompt l2 invalidate failed, keep l1 invalidation only: {exc}")
         logger.info(
             "prompt_cache_invalidated",
             extra={
@@ -270,6 +331,52 @@ class PromptProviderService:
                 lock = asyncio.Lock()
                 self._singleflight[cache_key] = lock
             return lock
+
+    def _choose_variant_with_ab(self, *, req: PromptResolveRequest, variants: Sequence[str]) -> str:
+        cfg = self.get_ab_config(prompt_key=req.prompt_key)
+        enabled = bool(cfg.get("enabled", False))
+        if not enabled:
+            return choose_variant(
+                prompt_key=req.prompt_key,
+                bucket_key=req.bucket_key,
+                variants=variants,
+                variant_hint=req.variant_hint,
+            )
+
+        prefixes = cfg.get("segment_prefixes")
+        if isinstance(prefixes, list) and prefixes:
+            if not any(str(req.bucket_key).startswith(str(p)) for p in prefixes):
+                return choose_variant(
+                    prompt_key=req.prompt_key,
+                    bucket_key=req.bucket_key,
+                    variants=variants,
+                    variant_hint=req.variant_hint,
+                )
+
+        rollout_percentage = int(cfg.get("rollout_percentage", 100))
+        if rollout_percentage < 100:
+            digest = hashlib.sha256(f"{req.prompt_key}:{req.bucket_key}:rollout".encode("utf-8")).hexdigest()
+            pos = int(digest[:8], 16) % 100
+            if pos >= rollout_percentage:
+                return choose_variant(
+                    prompt_key=req.prompt_key,
+                    bucket_key=req.bucket_key,
+                    variants=variants,
+                    variant_hint=req.variant_hint,
+                )
+
+        weights = cfg.get("variant_weights")
+        if not isinstance(weights, dict):
+            weights = {}
+        sticky_salt = str(cfg.get("sticky_salt", ""))
+        return choose_variant_with_weights(
+            prompt_key=req.prompt_key,
+            bucket_key=req.bucket_key,
+            variants=variants,
+            variant_weights={str(k): int(v) for k, v in weights.items()},
+            variant_hint=req.variant_hint,
+            sticky_salt=sticky_salt,
+        )
 
     async def _run_pull_reconciler(self) -> None:
         while True:

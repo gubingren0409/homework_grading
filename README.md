@@ -182,6 +182,15 @@ python scripts/run_phasec_regression_matrix.py
 
 输出报告：`outputs/phasec_regression_matrix_report.json`
 
+### Prompt 运营控制接口（Phase P1）
+
+- `POST /api/v1/prompt/control`：设置强制 variant 与 LKG 模式（热更新控制）
+- `POST /api/v1/prompt/ab-config`：设置 A/B 实验配置（启停、流量比例、权重、分段）
+- `POST /api/v1/prompt/refresh`：触发 prompt 资产刷新
+- `POST /api/v1/prompt/invalidate`：按 prompt_key 主动失效
+- `GET /api/v1/prompt/state`：查看运行态与持久态控制配置
+- `GET /api/v1/prompt/audit`：查询操作审计日志
+
 ### 启动 Celery Worker（异步批改必需）
 
 ```bash

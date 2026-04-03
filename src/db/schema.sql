@@ -80,6 +80,34 @@ CREATE TABLE IF NOT EXISTS task_runtime_telemetry (
     FOREIGN KEY(task_id) REFERENCES tasks(task_id)
 );
 
+-- Phase P1: Prompt control plane state and audit
+CREATE TABLE IF NOT EXISTS prompt_control_state (
+    prompt_key TEXT PRIMARY KEY,
+    forced_variant_id TEXT,
+    lkg_mode INTEGER NOT NULL DEFAULT 0 CHECK (lkg_mode IN (0, 1)),
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS prompt_ab_configs (
+    prompt_key TEXT PRIMARY KEY,
+    enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+    rollout_percentage INTEGER NOT NULL CHECK (rollout_percentage >= 0 AND rollout_percentage <= 100),
+    variant_weights_json TEXT NOT NULL,
+    segment_prefixes_json TEXT NOT NULL,
+    sticky_salt TEXT NOT NULL DEFAULT '',
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS prompt_ops_audit_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    trace_id TEXT NOT NULL,
+    operator_id TEXT,
+    action TEXT NOT NULL,
+    prompt_key TEXT,
+    payload_json TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Phase 43: External skill validation records (objective checker trace)
 CREATE TABLE IF NOT EXISTS skill_validation_records (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -107,6 +135,9 @@ CREATE INDEX IF NOT EXISTS idx_status ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_runtime_telemetry_model_used ON task_runtime_telemetry(model_used);
 CREATE INDEX IF NOT EXISTS idx_runtime_telemetry_created_at ON task_runtime_telemetry(created_at);
 CREATE INDEX IF NOT EXISTS idx_runtime_telemetry_cache_level ON task_runtime_telemetry(prompt_cache_level);
+CREATE INDEX IF NOT EXISTS idx_prompt_ops_action ON prompt_ops_audit_log(action);
+CREATE INDEX IF NOT EXISTS idx_prompt_ops_created_at ON prompt_ops_audit_log(created_at);
+CREATE INDEX IF NOT EXISTS idx_prompt_ops_prompt_key ON prompt_ops_audit_log(prompt_key);
 CREATE INDEX IF NOT EXISTS idx_skill_validation_task_id ON skill_validation_records(task_id);
 CREATE INDEX IF NOT EXISTS idx_skill_validation_checker ON skill_validation_records(checker);
 CREATE INDEX IF NOT EXISTS idx_rubrics_created_at ON rubrics(created_at);

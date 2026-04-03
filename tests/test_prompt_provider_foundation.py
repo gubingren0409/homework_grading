@@ -170,3 +170,33 @@ async def test_push_plus_pull_invalidation_clears_l1():
     second = await provider.resolve(req)
     assert second.asset_version == first.asset_version
     await provider.stop()
+
+
+@pytest.mark.asyncio
+async def test_forced_variant_and_lkg_mode_controls():
+    provider = _make_provider(Path("configs/prompts"))
+    await provider.start()
+    vars_ = [
+        PromptVariable(name="perception_ir_json", kind="text", value='{"readability_status":"CLEAR","elements":[],"global_confidence":1.0}'),
+        PromptVariable(name="target_json_schema", kind="text", value='{"type":"object"}'),
+        PromptVariable(name="rubric_json", kind="text", value=""),
+    ]
+    req = PromptResolveRequest(
+        prompt_key="deepseek.cognitive.evaluate",
+        model="deepseek-reasoner",
+        trace_id="trace-force",
+        bucket_key="bucket-force",
+        locale="zh-CN",
+        variables=vars_,
+        max_input_tokens=4096,
+        reserve_output_tokens=512,
+    )
+    result_a = await provider.resolve(req)
+    provider.set_forced_variant(prompt_key="deepseek.cognitive.evaluate", variant_id="A")
+    result_forced = await provider.resolve(req)
+    assert result_forced.variant_id == "A"
+    provider.set_lkg_mode(prompt_key="deepseek.cognitive.evaluate", enabled=True)
+    result_lkg = await provider.resolve(req)
+    assert result_lkg.cache_level == "LKG"
+    assert result_lkg.asset_version == result_a.asset_version
+    await provider.stop()

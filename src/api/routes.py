@@ -38,6 +38,12 @@ from src.db.client import (
     get_prompt_cache_level_stats,
     get_runtime_telemetry_model_hits,
     get_runtime_telemetry_fallback_stats,
+    upsert_prompt_control_state,
+    get_prompt_control_state,
+    upsert_prompt_ab_config,
+    get_prompt_ab_config,
+    append_prompt_ops_audit,
+    list_prompt_ops_audit,
 )
 from src.worker.main import grade_homework_task
 from src.core.storage_adapter import storage
@@ -51,6 +57,8 @@ from src.core.config import settings
 from src.core.runtime_router import get_runtime_router_controller
 from src.skills.service import SkillService
 from src.skills.interfaces import ValidationInput
+from src.prompts.provider import get_prompt_provider
+from src.prompts.schemas import PromptInvalidationEvent
 
 
 logger = logging.getLogger(__name__)
@@ -315,6 +323,33 @@ class RuntimeDashboardResponse(BaseModel):
     prompt_cache_hits: Dict[str, int]
     human_review_rate: float
     notes: List[str] = Field(default_factory=list)
+
+
+class PromptControlRequest(BaseModel):
+    prompt_key: str
+    forced_variant_id: Optional[str] = None
+    lkg_mode: bool = False
+    operator_id: Optional[str] = None
+
+
+class PromptAbConfigRequest(BaseModel):
+    prompt_key: str
+    enabled: bool
+    rollout_percentage: int = Field(..., ge=0, le=100)
+    variant_weights: Dict[str, int] = Field(default_factory=dict)
+    segment_prefixes: List[str] = Field(default_factory=list)
+    sticky_salt: str = ""
+    operator_id: Optional[str] = None
+
+
+class PromptOpsAuditItem(BaseModel):
+    id: int
+    trace_id: str
+    operator_id: Optional[str] = None
+    action: str
+    prompt_key: Optional[str] = None
+    payload_json: str
+    created_at: Optional[str] = None
 
 
 def _percentile(values: List[float], p: float) -> Optional[float]:
@@ -954,6 +989,12 @@ async def get_capability_catalog():
                     CapabilityEndpointItem(method="GET", path="/api/v1/router/policy", response_model="RouterPolicyResponse"),
                     CapabilityEndpointItem(method="GET", path="/api/v1/metrics/dataset-pipeline", response_model="DatasetPipelineSummaryResponse"),
                     CapabilityEndpointItem(method="GET", path="/api/v1/metrics/runtime-dashboard", response_model="RuntimeDashboardResponse"),
+                    CapabilityEndpointItem(method="POST", path="/api/v1/prompt/control"),
+                    CapabilityEndpointItem(method="POST", path="/api/v1/prompt/ab-config"),
+                    CapabilityEndpointItem(method="POST", path="/api/v1/prompt/refresh"),
+                    CapabilityEndpointItem(method="POST", path="/api/v1/prompt/invalidate"),
+                    CapabilityEndpointItem(method="GET", path="/api/v1/prompt/state"),
+                    CapabilityEndpointItem(method="GET", path="/api/v1/prompt/audit", response_model="List[PromptOpsAuditItem]"),
                 ],
             ),
         ],
@@ -974,6 +1015,9 @@ async def get_contract_catalog():
         ContractSchemaItem(schema_name="RouterPolicyResponse", fields=_schema_fields_from_model(RouterPolicyResponse)),
         ContractSchemaItem(schema_name="DatasetPipelineSummaryResponse", fields=_schema_fields_from_model(DatasetPipelineSummaryResponse)),
         ContractSchemaItem(schema_name="RuntimeDashboardResponse", fields=_schema_fields_from_model(RuntimeDashboardResponse)),
+        ContractSchemaItem(schema_name="PromptControlRequest", fields=_schema_fields_from_model(PromptControlRequest)),
+        ContractSchemaItem(schema_name="PromptAbConfigRequest", fields=_schema_fields_from_model(PromptAbConfigRequest)),
+        ContractSchemaItem(schema_name="PromptOpsAuditItem", fields=_schema_fields_from_model(PromptOpsAuditItem)),
     ]
     return ApiContractCatalogResponse(
         version="1.0",
@@ -1148,6 +1192,162 @@ async def get_runtime_dashboard(
             f"task_volume_total={int(volume.get('total_count', 0))}",
         ],
     )
+
+
+@router.post("/prompt/control")
+async def set_prompt_control(
+    payload: PromptControlRequest,
+    db_path: str = Depends(get_db_path),
+):
+    provider = get_prompt_provider()
+    provider.set_forced_variant(prompt_key=payload.prompt_key, variant_id=payload.forced_variant_id)
+    provider.set_lkg_mode(prompt_key=payload.prompt_key, enabled=payload.lkg_mode)
+
+    await upsert_prompt_control_state(
+        db_path,
+        prompt_key=payload.prompt_key,
+        forced_variant_id=payload.forced_variant_id,
+        lkg_mode=payload.lkg_mode,
+    )
+    await append_prompt_ops_audit(
+        db_path,
+        trace_id=get_trace_id(),
+        operator_id=payload.operator_id,
+        action="prompt_control_set",
+        prompt_key=payload.prompt_key,
+        payload_json=payload.model_dump(),
+    )
+    return {"status": "ok", "prompt_key": payload.prompt_key}
+
+
+@router.post("/prompt/ab-config")
+async def set_prompt_ab_config(
+    payload: PromptAbConfigRequest,
+    db_path: str = Depends(get_db_path),
+):
+    provider = get_prompt_provider()
+    provider.set_ab_config(
+        prompt_key=payload.prompt_key,
+        enabled=payload.enabled,
+        rollout_percentage=payload.rollout_percentage,
+        variant_weights=payload.variant_weights,
+        segment_prefixes=payload.segment_prefixes,
+        sticky_salt=payload.sticky_salt,
+    )
+    await upsert_prompt_ab_config(
+        db_path,
+        prompt_key=payload.prompt_key,
+        enabled=payload.enabled,
+        rollout_percentage=payload.rollout_percentage,
+        variant_weights=payload.variant_weights,
+        segment_prefixes=payload.segment_prefixes,
+        sticky_salt=payload.sticky_salt,
+    )
+    await append_prompt_ops_audit(
+        db_path,
+        trace_id=get_trace_id(),
+        operator_id=payload.operator_id,
+        action="prompt_ab_config_set",
+        prompt_key=payload.prompt_key,
+        payload_json=payload.model_dump(),
+    )
+    return {"status": "ok", "prompt_key": payload.prompt_key}
+
+
+@router.post("/prompt/refresh")
+async def refresh_prompt_assets(
+    prompt_key: Optional[str] = Query(default=None),
+    operator_id: Optional[str] = Query(default=None),
+    db_path: str = Depends(get_db_path),
+):
+    provider = get_prompt_provider()
+    report = await provider.refresh(prompt_key=prompt_key)
+    await append_prompt_ops_audit(
+        db_path,
+        trace_id=get_trace_id(),
+        operator_id=operator_id,
+        action="prompt_refresh",
+        prompt_key=prompt_key,
+        payload_json={
+            "checked_assets": report.checked_assets,
+            "refreshed_assets": report.refreshed_assets,
+            "invalidated_assets": report.invalidated_assets,
+        },
+    )
+    return {
+        "status": "ok",
+        "checked_assets": report.checked_assets,
+        "refreshed_assets": report.refreshed_assets,
+        "invalidated_assets": report.invalidated_assets,
+    }
+
+
+@router.post("/prompt/invalidate")
+async def invalidate_prompt_asset(
+    prompt_key: str = Query(...),
+    operator_id: Optional[str] = Query(default=None),
+    db_path: str = Depends(get_db_path),
+):
+    provider = get_prompt_provider()
+    try:
+        await provider.invalidate(
+            PromptInvalidationEvent(
+                prompt_key=prompt_key,
+                version_hash="manual",
+                source="manual-api",
+            )
+        )
+    except Exception as exc:
+        logger.warning("prompt_invalidate_failed", extra={"extra_fields": {"prompt_key": prompt_key, "error": str(exc)}})
+        raise HTTPException(status_code=503, detail="prompt invalidate unavailable") from exc
+    await append_prompt_ops_audit(
+        db_path,
+        trace_id=get_trace_id(),
+        operator_id=operator_id,
+        action="prompt_invalidate",
+        prompt_key=prompt_key,
+        payload_json={"prompt_key": prompt_key},
+    )
+    return {"status": "ok", "prompt_key": prompt_key}
+
+
+@router.get("/prompt/state")
+async def get_prompt_state(
+    prompt_key: str = Query(...),
+    db_path: str = Depends(get_db_path),
+):
+    provider = get_prompt_provider()
+    control_state = await get_prompt_control_state(db_path, prompt_key=prompt_key)
+    ab_state = await get_prompt_ab_config(db_path, prompt_key=prompt_key)
+    return {
+        "prompt_key": prompt_key,
+        "runtime": {
+            "forced_variant_id": provider.get_forced_variant(prompt_key=prompt_key),
+            "lkg_mode": provider.get_lkg_mode(prompt_key=prompt_key),
+            "ab_config": provider.get_ab_config(prompt_key=prompt_key),
+        },
+        "persisted": {
+            "control_state": control_state,
+            "ab_state": ab_state,
+        },
+    }
+
+
+@router.get("/prompt/audit", response_model=List[PromptOpsAuditItem])
+async def get_prompt_ops_audit(
+    prompt_key: Optional[str] = Query(default=None),
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+    db_path: str = Depends(get_db_path),
+):
+    offset = (page - 1) * limit
+    rows = await list_prompt_ops_audit(
+        db_path,
+        prompt_key=prompt_key,
+        limit=limit,
+        offset=offset,
+    )
+    return [PromptOpsAuditItem(**r) for r in rows]
 
 
 @router.post("/skills/layout/parse")
