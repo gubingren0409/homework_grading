@@ -933,6 +933,99 @@ async def get_task_volume_stats(
             raise
 
 
+async def get_annotation_dataset_stats(
+    db_path: str,
+    *,
+    lookback_hours: int = 24,
+) -> Dict[str, int]:
+    async with _open_connection(db_path) as db:
+        try:
+            async with db.execute(
+                """
+                SELECT
+                    COUNT(1) AS total_assets,
+                    SUM(CASE WHEN is_integrated_to_dataset = 1 THEN 1 ELSE 0 END) AS integrated_assets
+                FROM golden_annotation_assets
+                WHERE created_at >= datetime('now', ?)
+                """,
+                (f"-{int(lookback_hours)} hours",),
+            ) as cursor:
+                row = await cursor.fetchone()
+                total_assets = int((row[0] if row else 0) or 0)
+                integrated_assets = int((row[1] if row else 0) or 0)
+                return {
+                    "total_assets": total_assets,
+                    "integrated_assets": integrated_assets,
+                    "pending_assets": max(total_assets - integrated_assets, 0),
+                }
+        except (aiosqlite.OperationalError, sqlite3.OperationalError) as exc:
+            if "no such table" in str(exc).lower():
+                return {"total_assets": 0, "integrated_assets": 0, "pending_assets": 0}
+            raise
+
+
+async def get_review_queue_stats(
+    db_path: str,
+    *,
+    lookback_hours: int = 24,
+) -> Dict[str, int]:
+    async with _open_connection(db_path) as db:
+        try:
+            async with db.execute(
+                """
+                SELECT
+                    SUM(CASE WHEN review_status = 'PENDING_REVIEW' THEN 1 ELSE 0 END) AS pending_review_count,
+                    SUM(CASE WHEN review_status = 'REVIEWED' THEN 1 ELSE 0 END) AS reviewed_count
+                FROM tasks
+                WHERE created_at >= datetime('now', ?)
+                """,
+                (f"-{int(lookback_hours)} hours",),
+            ) as cursor:
+                row = await cursor.fetchone()
+                pending_review = int((row[0] if row else 0) or 0)
+                reviewed = int((row[1] if row else 0) or 0)
+                return {
+                    "pending_review_count": pending_review,
+                    "reviewed_count": reviewed,
+                }
+        except (aiosqlite.OperationalError, sqlite3.OperationalError) as exc:
+            if "no such table" in str(exc).lower():
+                return {"pending_review_count": 0, "reviewed_count": 0}
+            raise
+
+
+async def get_prompt_cache_level_stats(
+    db_path: str,
+    *,
+    lookback_hours: int = 24,
+) -> Dict[str, int]:
+    async with _open_connection(db_path) as db:
+        try:
+            async with db.execute(
+                """
+                SELECT
+                    SUM(CASE WHEN report_json LIKE '%"prompt_cache_level":"L1"%' THEN 1 ELSE 0 END) AS l1_count,
+                    SUM(CASE WHEN report_json LIKE '%"prompt_cache_level":"L2"%' THEN 1 ELSE 0 END) AS l2_count,
+                    SUM(CASE WHEN report_json LIKE '%"prompt_cache_level":"LKG"%' THEN 1 ELSE 0 END) AS lkg_count,
+                    SUM(CASE WHEN report_json LIKE '%"prompt_cache_level":"SOURCE"%' THEN 1 ELSE 0 END) AS source_count
+                FROM grading_results
+                WHERE created_at >= datetime('now', ?)
+                """,
+                (f"-{int(lookback_hours)} hours",),
+            ) as cursor:
+                row = await cursor.fetchone()
+                return {
+                    "l1_count": int((row[0] if row else 0) or 0),
+                    "l2_count": int((row[1] if row else 0) or 0),
+                    "lkg_count": int((row[2] if row else 0) or 0),
+                    "source_count": int((row[3] if row else 0) or 0),
+                }
+        except (aiosqlite.OperationalError, sqlite3.OperationalError) as exc:
+            if "no such table" in str(exc).lower():
+                return {"l1_count": 0, "l2_count": 0, "lkg_count": 0, "source_count": 0}
+            raise
+
+
 async def insert_skill_validation_records(
     db_path: str,
     records: Sequence[Mapping[str, Any]],

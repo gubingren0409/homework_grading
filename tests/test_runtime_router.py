@@ -52,3 +52,19 @@ def test_router_follows_default_when_healthy(monkeypatch):
     )
     assert decision.force_degrade_to_chat is False
     assert decision.cognitive_model == "deepseek-reasoner"
+
+
+def test_router_snapshot_includes_hit_breakdown(monkeypatch):
+    from src.core.config import settings
+
+    monkeypatch.setattr(settings, "auto_circuit_controller_enabled", True)
+    router = RuntimeRouterController()
+    router.record_event(model="deepseek-reasoner", success=True, token_estimate=110, fallback_used=False, reason="ok")
+    router.record_event(model="deepseek-chat", success=False, token_estimate=130, fallback_used=True, reason="parse_error")
+    snap = router.snapshot()
+    assert snap["sample_count"] == 2
+    assert snap["fallback_trigger_count"] == 1
+    assert snap["model_hits"]["deepseek-reasoner"] == 1
+    assert snap["model_hits"]["deepseek-chat"] == 1
+    assert snap["reason_hits"]["ok"] == 1
+    assert snap["reason_hits"]["parse_error"] == 1

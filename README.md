@@ -163,6 +163,11 @@ API 文档：http://localhost:8000/docs
 - `GET /api/v1/metrics/provider-benchmark`：Provider 基准视图（任务量、吞吐、失败率、fallback 率、token 分布、成本代理指标）
 - `GET /api/v1/router/policy`：运行时路由策略与实时快照（阈值、预算、是否触发自动降级）
 
+### 数据与评测接口（Phase C）
+
+- `GET /api/v1/metrics/dataset-pipeline`：样本资产闭环摘要（golden assets 总量、已入库量、待入库量、复核队列）
+- `GET /api/v1/metrics/runtime-dashboard`：在线指标看板聚合（provider 命中、fallback 触发、prompt cache 命中、人工复核率）
+
 ### 启动 Celery Worker（异步批改必需）
 
 ```bash

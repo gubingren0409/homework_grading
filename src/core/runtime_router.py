@@ -1,6 +1,6 @@
 import statistics
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from src.core.config import settings
 
@@ -45,19 +45,31 @@ class RuntimeRouterController:
         if len(self._samples) > self._max_samples:
             self._samples = self._samples[-self._max_samples :]
 
-    def snapshot(self) -> Dict[str, float | int]:
+    def snapshot(self) -> Dict[str, Any]:
         total = len(self._samples)
         if total == 0:
             return {
                 "sample_count": 0,
                 "failure_rate": 0.0,
                 "fallback_rate": 0.0,
+                "fallback_trigger_count": 0,
                 "token_median": 0.0,
                 "token_p95": 0.0,
+                "model_hits": {},
+                "reason_hits": {},
             }
 
         failures = sum(1 for x in self._samples if not x["success"])
         fallbacks = sum(1 for x in self._samples if x["fallback_used"])
+        model_hits: Dict[str, int] = {}
+        reason_hits: Dict[str, int] = {}
+        for sample in self._samples:
+            model = str(sample.get("model") or "")
+            if model:
+                model_hits[model] = model_hits.get(model, 0) + 1
+            reason = str(sample.get("reason") or "")
+            if reason:
+                reason_hits[reason] = reason_hits.get(reason, 0) + 1
         token_values = [x["token_estimate"] for x in self._samples if isinstance(x["token_estimate"], int)]
         token_values_sorted = sorted(token_values)
         token_median = float(statistics.median(token_values_sorted)) if token_values_sorted else 0.0
@@ -66,8 +78,11 @@ class RuntimeRouterController:
             "sample_count": total,
             "failure_rate": failures / total,
             "fallback_rate": fallbacks / total,
+            "fallback_trigger_count": fallbacks,
             "token_median": token_median,
             "token_p95": token_p95,
+            "model_hits": model_hits,
+            "reason_hits": reason_hits,
         }
 
     def decide_cognitive_route(

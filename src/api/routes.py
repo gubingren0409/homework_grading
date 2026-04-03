@@ -33,6 +33,9 @@ from src.db.client import (
     get_task_status_counts,
     get_completion_latencies_seconds,
     get_task_volume_stats,
+    get_annotation_dataset_stats,
+    get_review_queue_stats,
+    get_prompt_cache_level_stats,
 )
 from src.worker.main import grade_homework_task
 from src.core.storage_adapter import storage
@@ -291,6 +294,24 @@ class RouterPolicyResponse(BaseModel):
     version: str
     policy: Dict[str, Any]
     live_snapshot: Dict[str, Any]
+    notes: List[str] = Field(default_factory=list)
+
+
+class DatasetPipelineSummaryResponse(BaseModel):
+    version: str
+    window_hours: int
+    dataset_assets: Dict[str, int]
+    review_queue: Dict[str, int]
+    notes: List[str] = Field(default_factory=list)
+
+
+class RuntimeDashboardResponse(BaseModel):
+    version: str
+    window_hours: int
+    provider_hits: Dict[str, int]
+    fallback_triggers: Dict[str, Any]
+    prompt_cache_hits: Dict[str, int]
+    human_review_rate: float
     notes: List[str] = Field(default_factory=list)
 
 
@@ -929,6 +950,8 @@ async def get_capability_catalog():
                     CapabilityEndpointItem(method="GET", path="/api/v1/contracts/catalog", response_model="ApiContractCatalogResponse"),
                     CapabilityEndpointItem(method="GET", path="/api/v1/metrics/provider-benchmark", response_model="ProviderBenchmarkResponse"),
                     CapabilityEndpointItem(method="GET", path="/api/v1/router/policy", response_model="RouterPolicyResponse"),
+                    CapabilityEndpointItem(method="GET", path="/api/v1/metrics/dataset-pipeline", response_model="DatasetPipelineSummaryResponse"),
+                    CapabilityEndpointItem(method="GET", path="/api/v1/metrics/runtime-dashboard", response_model="RuntimeDashboardResponse"),
                 ],
             ),
         ],
@@ -947,6 +970,8 @@ async def get_contract_catalog():
         ContractSchemaItem(schema_name="AnnotationFeedbackResponse", fields=_schema_fields_from_model(AnnotationFeedbackResponse)),
         ContractSchemaItem(schema_name="ProviderBenchmarkResponse", fields=_schema_fields_from_model(ProviderBenchmarkResponse)),
         ContractSchemaItem(schema_name="RouterPolicyResponse", fields=_schema_fields_from_model(RouterPolicyResponse)),
+        ContractSchemaItem(schema_name="DatasetPipelineSummaryResponse", fields=_schema_fields_from_model(DatasetPipelineSummaryResponse)),
+        ContractSchemaItem(schema_name="RuntimeDashboardResponse", fields=_schema_fields_from_model(RuntimeDashboardResponse)),
     ]
     return ApiContractCatalogResponse(
         version="1.0",
@@ -1054,6 +1079,74 @@ async def get_router_policy():
         notes=[
             "When thresholds are exceeded, cognitive route is forced to fallback model.",
             "Token spike compares incoming estimate against rolling median.",
+        ],
+    )
+
+
+@router.get("/metrics/dataset-pipeline", response_model=DatasetPipelineSummaryResponse)
+async def get_dataset_pipeline_summary(
+    db_path: str = Depends(get_db_path),
+    window_hours: int = Query(24, ge=1, le=168),
+):
+    dataset_assets = await get_annotation_dataset_stats(db_path, lookback_hours=window_hours)
+    review_queue = await get_review_queue_stats(db_path, lookback_hours=window_hours)
+    return DatasetPipelineSummaryResponse(
+        version="1.0",
+        window_hours=window_hours,
+        dataset_assets=dataset_assets,
+        review_queue=review_queue,
+        notes=[
+            "dataset_assets reflects golden annotation ingestion closure.",
+            "review_queue reflects manual-review backlog and processed volume.",
+        ],
+    )
+
+
+@router.get("/metrics/runtime-dashboard", response_model=RuntimeDashboardResponse)
+async def get_runtime_dashboard(
+    db_path: str = Depends(get_db_path),
+    window_hours: int = Query(24, ge=1, le=168),
+):
+    router_snapshot = get_runtime_router_controller().snapshot()
+    review_queue = await get_review_queue_stats(db_path, lookback_hours=window_hours)
+    volume = await get_task_volume_stats(db_path, lookback_hours=window_hours)
+    prompt_cache = await get_prompt_cache_level_stats(db_path, lookback_hours=window_hours)
+
+    pending_review = int(review_queue.get("pending_review_count", 0))
+    reviewed = int(review_queue.get("reviewed_count", 0))
+    review_base = pending_review + reviewed
+    human_review_rate = (float(pending_review) / float(review_base)) if review_base > 0 else 0.0
+
+    provider_hits = router_snapshot.get("model_hits")
+    if not isinstance(provider_hits, dict):
+        provider_hits = {}
+
+    reason_hits = router_snapshot.get("reason_hits")
+    if not isinstance(reason_hits, dict):
+        reason_hits = {}
+
+    fallback_triggers = {
+        "fallback_rate": float(router_snapshot.get("fallback_rate", 0.0)),
+        "fallback_trigger_count": int(router_snapshot.get("fallback_trigger_count", 0)),
+        "network_error": int(reason_hits.get("network_error", 0)),
+        "api_error": int(reason_hits.get("api_error", 0)),
+        "parse_error": int(reason_hits.get("parse_error", 0)),
+        "rate_limit": int(reason_hits.get("rate_limit", 0)),
+        "failure_rate_threshold": int(reason_hits.get("failure_rate_threshold", 0)),
+        "token_spike_threshold": int(reason_hits.get("token_spike_threshold", 0)),
+        "budget_token_limit": int(reason_hits.get("budget_token_limit", 0)),
+        "readability_heavily_altered": int(reason_hits.get("readability_heavily_altered", 0)),
+    }
+    return RuntimeDashboardResponse(
+        version="1.0",
+        window_hours=window_hours,
+        provider_hits={str(k): int(v) for k, v in provider_hits.items()},
+        fallback_triggers=fallback_triggers,
+        prompt_cache_hits=prompt_cache,
+        human_review_rate=human_review_rate,
+        notes=[
+            "fallback_rate is scaled by 1e4 in fallback_triggers for integer transport.",
+            f"task_volume_total={int(volume.get('total_count', 0))}",
         ],
     )
 

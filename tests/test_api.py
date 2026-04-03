@@ -152,3 +152,28 @@ def test_router_policy_endpoint():
     assert data["version"] == "1.0"
     assert "policy" in data
     assert "live_snapshot" in data
+
+
+def test_dataset_pipeline_summary_endpoint(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "dataset_pipeline.db")
+    monkeypatch.setattr("src.api.dependencies.get_db_path", lambda: db_path)
+    response = client.get("/api/v1/metrics/dataset-pipeline?window_hours=24")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["version"] == "1.0"
+    assert "dataset_assets" in data
+    assert "review_queue" in data
+    assert "pending_assets" in data["dataset_assets"]
+
+
+def test_runtime_dashboard_endpoint(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "runtime_dashboard.db")
+    monkeypatch.setattr("src.api.dependencies.get_db_path", lambda: db_path)
+    response = client.get("/api/v1/metrics/runtime-dashboard?window_hours=24")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["version"] == "1.0"
+    assert "provider_hits" in data
+    assert "fallback_triggers" in data
+    assert "prompt_cache_hits" in data
+    assert "human_review_rate" in data
