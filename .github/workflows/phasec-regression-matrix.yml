@@ -12,10 +12,7 @@ on:
       - main
       - master
     paths:
-      - "src/**"
-      - "tests/**"
-      - "scripts/run_phasec_regression_matrix.py"
-      - ".github/workflows/phasec-regression-matrix.yml"
+      - "**"
   workflow_dispatch:
 
 jobs:
