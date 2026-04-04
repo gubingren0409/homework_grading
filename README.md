@@ -129,12 +129,14 @@ Skills 相关配置（见 `.env.example`）：
 - `SKILL_VALIDATION_ENABLED`
 - `SKILL_VALIDATION_PROVIDER`（`none` / `e2b`）
 - `SKILL_VALIDATION_API_URL`
+- `SKILL_GATEWAY_AUTH_ENABLED`
+- `SKILL_GATEWAY_AUTH_TOKEN`
 
 默认示例中：
 - `SKILL_LAYOUT_PARSER_API_URL=http://127.0.0.1:8000/api/v1/skills/layout/parse`
 - `SKILL_VALIDATION_API_URL=http://127.0.0.1:8000/api/v1/skills/validate`
 
-这两个默认值指向**本服务内置 skill 网关接口**（用于本地联调与契约占位）；接入外部实际服务时，改为外部网关地址并设置对应 `*_PROVIDER` 与 `*_API_KEY`。
+这两个默认值指向**本服务内置 skill 网关接口**（用于本地联调与契约占位）；接入外部实际服务时，改为外部网关地址并设置对应 `*_PROVIDER` 与 `*_API_KEY`。生产环境建议开启 `SKILL_GATEWAY_AUTH_ENABLED` 并配置 `SKILL_GATEWAY_AUTH_TOKEN` 作为网关请求头鉴权。
 
 ---
 

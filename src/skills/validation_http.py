@@ -4,6 +4,7 @@ from typing import Any, Dict, Optional
 
 import requests
 
+from src.core.config import settings
 from src.skills.interfaces import ValidationExecutionSkill, ValidationInput, ValidationResult
 
 
@@ -32,6 +33,8 @@ class HttpValidationExecutionSkill(ValidationExecutionSkill):
         headers = {"Content-Type": "application/json", "X-Skill-Provider": self._provider}
         if self._api_key:
             headers["Authorization"] = f"Bearer {self._api_key}"
+        if settings.skill_gateway_auth_enabled and settings.skill_gateway_auth_token:
+            headers["X-Skill-Gateway-Token"] = settings.skill_gateway_auth_token
         return headers
 
     async def validate(self, payload: ValidationInput) -> ValidationResult:

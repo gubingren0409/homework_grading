@@ -605,6 +605,17 @@ def _load_settings_from_env() -> None:
     settings.__dict__.update(refreshed.__dict__)
 
 
+def _validate_skill_gateway_token(request: Request) -> None:
+    if not settings.skill_gateway_auth_enabled:
+        return
+    expected = settings.skill_gateway_auth_token
+    if not expected:
+        raise HTTPException(status_code=503, detail="skill gateway auth misconfigured")
+    received = request.headers.get("X-Skill-Gateway-Token")
+    if received != expected:
+        raise HTTPException(status_code=403, detail="skill gateway unauthorized")
+
+
 def _validate_bbox_in_image_space(*, bbox: BoundingBoxInput, image_width: int, image_height: int) -> List[float]:
     if image_width <= 0 or image_height <= 0:
         raise HTTPException(status_code=422, detail="image_width and image_height must be positive")
@@ -2333,12 +2344,13 @@ async def get_ops_audit_logs(
 
 
 @router.post("/skills/layout/parse")
-async def skill_layout_parse(payload: SkillLayoutParseRequest):
+async def skill_layout_parse(payload: SkillLayoutParseRequest, request: Request):
     """
     Internal skill gateway endpoint.
     Used when SKILL_LAYOUT_PARSER_API_URL points to local service.
     """
     import base64
+    _validate_skill_gateway_token(request)
 
     try:
         image_bytes = base64.b64decode(payload.image_base64, validate=True)
@@ -2373,11 +2385,12 @@ async def skill_layout_parse(payload: SkillLayoutParseRequest):
 
 
 @router.post("/skills/validate")
-async def skill_validate(payload: SkillValidationRequest):
+async def skill_validate(payload: SkillValidationRequest, request: Request):
     """
     Internal validation gateway endpoint.
     Default implementation is contract-only and returns deterministic structure.
     """
+    _validate_skill_gateway_token(request)
     validation_input = ValidationInput(
         task_id=payload.task_id,
         question_id=payload.question_id,

@@ -87,6 +87,8 @@ class Settings(BaseSettings):
     skill_validation_api_key: str | None = None
     skill_validation_timeout_seconds: float = 20.0
     skill_validation_fail_open: bool = True
+    skill_gateway_auth_enabled: bool = False
+    skill_gateway_auth_token: str | None = None
     
     @property
     def uploads_path(self) -> Path:

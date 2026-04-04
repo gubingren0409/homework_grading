@@ -34,6 +34,8 @@ class HttpLayoutParserSkill(LayoutParserSkill):
         headers = {"Content-Type": "application/json", "X-Skill-Provider": self._provider}
         if self._api_key:
             headers["Authorization"] = f"Bearer {self._api_key}"
+        if settings.skill_gateway_auth_enabled and settings.skill_gateway_auth_token:
+            headers["X-Skill-Gateway-Token"] = settings.skill_gateway_auth_token
         return headers
 
     async def parse_layout(

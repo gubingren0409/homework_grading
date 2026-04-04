@@ -107,7 +107,37 @@ def _measure_api_latency(base_url: str, rounds: int) -> Dict[str, Any]:
         "latency_seconds_p50": p50,
         "latency_seconds_p95": p95,
         "latency_seconds_max": max(durations_sorted) if durations_sorted else 0.0,
+        "throughput_rps_estimate": (float(rounds) / float(sum(durations_sorted))) if sum(durations_sorted) > 0 else 0.0,
         "sample_payload": payloads[-1] if payloads else {},
+    }
+
+
+def _measure_sse_stability(base_url: str, rounds: int) -> Dict[str, Any]:
+    import requests
+
+    completed = 0
+    failed = 0
+    latencies: List[float] = []
+    for idx in range(rounds):
+        task_id = f"phasec-sse-probe-{idx}"
+        start = time.perf_counter()
+        try:
+            with requests.get(f"{base_url}/api/v1/tasks/{task_id}/stream", timeout=5.0) as resp:
+                if resp.status_code == 404:
+                    # expected for non-existing probe task, treat as normal negative-path coverage
+                    completed += 1
+                else:
+                    failed += 1
+            latencies.append(time.perf_counter() - start)
+        except Exception:
+            failed += 1
+    total = completed + failed
+    return {
+        "rounds": rounds,
+        "completed": completed,
+        "failed": failed,
+        "success_rate": (float(completed) / float(total)) if total else 0.0,
+        "avg_response_seconds": (sum(latencies) / len(latencies)) if latencies else 0.0,
     }
 
 
@@ -163,11 +193,13 @@ def _run_phasec_matrix(repo_root: Path, *, port: int, rounds: int) -> Dict[str, 
         _assert_dataset_pipeline_shape(dataset_payload)
         dashboard_latency = _measure_api_latency(base_url, rounds=rounds)
         _assert_runtime_dashboard_shape(dashboard_latency["sample_payload"])
+        sse_stability = _measure_sse_stability(base_url, rounds=max(3, rounds))
         checks["metrics_api_probe"] = {
             "exit_code": 0,
             "duration_seconds": 0.0,
             "dataset_pipeline": dataset_payload,
             "runtime_dashboard_latency": dashboard_latency,
+            "sse_stability_probe": sse_stability,
         }
     finally:
         server.poll()

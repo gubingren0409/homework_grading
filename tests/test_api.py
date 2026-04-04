@@ -93,6 +93,37 @@ def test_skill_layout_parse_gateway(monkeypatch):
     assert data["regions"][0]["target_id"] == "region-1"
 
 
+def test_skill_gateway_auth_token_required(monkeypatch):
+    monkeypatch.setattr("src.api.routes.settings.skill_gateway_auth_enabled", True)
+    monkeypatch.setattr("src.api.routes.settings.skill_gateway_auth_token", "token-1")
+    response = client.post(
+        "/api/v1/skills/validate",
+        json={
+            "task_id": "t-1",
+            "question_id": "q-1",
+            "perception_payload": {"elements": []},
+            "evaluation_payload": {"status": "SCORED"},
+            "rubric_payload": {"question_id": "q-1"},
+        },
+    )
+    assert response.status_code == 403
+
+    response_ok = client.post(
+        "/api/v1/skills/validate",
+        headers={"X-Skill-Gateway-Token": "token-1"},
+        json={
+            "task_id": "t-1",
+            "question_id": "q-1",
+            "perception_payload": {"elements": []},
+            "evaluation_payload": {"status": "SCORED"},
+            "rubric_payload": {"question_id": "q-1"},
+        },
+    )
+    assert response_ok.status_code == 200
+    monkeypatch.setattr("src.api.routes.settings.skill_gateway_auth_enabled", False)
+    monkeypatch.setattr("src.api.routes.settings.skill_gateway_auth_token", None)
+
+
 def test_skill_validation_gateway_stub():
     response = client.post(
         "/api/v1/skills/validate",
