@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
 from pathlib import Path
 from typing import Any, Dict, List, Sequence
 
@@ -32,6 +33,13 @@ def _run_pytest(expr: Sequence[str], cwd: Path) -> Dict[str, Any]:
         "stdout": proc.stdout,
         "stderr": proc.stderr,
     }
+
+
+def _read_text_tail(path: Path, max_lines: int = 120) -> str:
+    if not path.exists():
+        return ""
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    return "\n".join(lines[-max_lines:])
 
 
 def _http_get_json(url: str, timeout: float = 5.0) -> Dict[str, Any]:
@@ -188,19 +196,28 @@ def _run_phasec_matrix(repo_root: Path, *, port: int, rounds: int) -> Dict[str, 
     server = _start_uvicorn(repo_root, port=port)
     base_url = f"http://127.0.0.1:{port}"
     try:
-        _wait_server_ready(base_url)
-        dataset_payload = _http_get_json(f"{base_url}/api/v1/metrics/dataset-pipeline?window_hours=24")
-        _assert_dataset_pipeline_shape(dataset_payload)
-        dashboard_latency = _measure_api_latency(base_url, rounds=rounds)
-        _assert_runtime_dashboard_shape(dashboard_latency["sample_payload"])
-        sse_stability = _measure_sse_stability(base_url, rounds=max(3, rounds))
-        checks["metrics_api_probe"] = {
-            "exit_code": 0,
-            "duration_seconds": 0.0,
-            "dataset_pipeline": dataset_payload,
-            "runtime_dashboard_latency": dashboard_latency,
-            "sse_stability_probe": sse_stability,
-        }
+        started = time.perf_counter()
+        try:
+            _wait_server_ready(base_url)
+            dataset_payload = _http_get_json(f"{base_url}/api/v1/metrics/dataset-pipeline?window_hours=24")
+            _assert_dataset_pipeline_shape(dataset_payload)
+            dashboard_latency = _measure_api_latency(base_url, rounds=rounds)
+            _assert_runtime_dashboard_shape(dashboard_latency["sample_payload"])
+            sse_stability = _measure_sse_stability(base_url, rounds=max(3, rounds))
+            checks["metrics_api_probe"] = {
+                "exit_code": 0,
+                "duration_seconds": time.perf_counter() - started,
+                "dataset_pipeline": dataset_payload,
+                "runtime_dashboard_latency": dashboard_latency,
+                "sse_stability_probe": sse_stability,
+            }
+        except Exception as exc:
+            checks["metrics_api_probe"] = {
+                "exit_code": 1,
+                "duration_seconds": time.perf_counter() - started,
+                "error": f"{type(exc).__name__}: {exc}",
+                "traceback": traceback.format_exc(),
+            }
     finally:
         server.poll()
         if server.returncode is None:
@@ -216,6 +233,13 @@ def _run_phasec_matrix(repo_root: Path, *, port: int, rounds: int) -> Dict[str, 
                 handle.close()
             except Exception:
                 pass
+        if "metrics_api_probe" in checks:
+            log_path_value = getattr(server, "_phasec_log_path", None)
+            if log_path_value:
+                try:
+                    checks["metrics_api_probe"]["server_log_tail"] = _read_text_tail(Path(str(log_path_value)))
+                except Exception:
+                    checks["metrics_api_probe"]["server_log_tail"] = ""
 
     ok = all(int(item.get("exit_code", 1)) == 0 for item in checks.values())
     return {"ok": ok, "checks": checks}
@@ -224,6 +248,33 @@ def _run_phasec_matrix(repo_root: Path, *, port: int, rounds: int) -> Dict[str, 
 def _write_report(path: Path, report: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _print_failure_summary(report: Dict[str, Any]) -> None:
+    checks = report.get("checks", {})
+    if not isinstance(checks, dict):
+        return
+    failed = []
+    for name, payload in checks.items():
+        if not isinstance(payload, dict):
+            continue
+        if int(payload.get("exit_code", 1)) != 0:
+            failed.append((str(name), payload))
+    if not failed:
+        return
+    print("[phasec-matrix] failed checks:")
+    for name, payload in failed:
+        print(f"  - {name}")
+        error = payload.get("error")
+        if isinstance(error, str) and error.strip():
+            print(f"    error: {error}")
+        for stream_name in ("stdout", "stderr", "traceback", "server_log_tail"):
+            stream = payload.get(stream_name)
+            if isinstance(stream, str) and stream.strip():
+                tail_lines = stream.strip().splitlines()[-20:]
+                print(f"    {stream_name} (last {len(tail_lines)} lines):")
+                for line in tail_lines:
+                    print(f"      {line}")
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -243,10 +294,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
     repo_root = Path(__file__).resolve().parents[1]
-    report = _run_phasec_matrix(repo_root, port=args.port, rounds=args.rounds)
     report_path = (repo_root / args.report).resolve()
+    try:
+        report = _run_phasec_matrix(repo_root, port=args.port, rounds=args.rounds)
+    except Exception as exc:
+        report = {
+            "ok": False,
+            "checks": {},
+            "fatal_error": f"{type(exc).__name__}: {exc}",
+            "traceback": traceback.format_exc(),
+        }
     _write_report(report_path, report)
     print(f"Phase C regression matrix report written to: {report_path}")
+    if not bool(report.get("ok", False)):
+        _print_failure_summary(report)
     return 0 if report["ok"] else 1
 
 
