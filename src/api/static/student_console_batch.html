@@ -1,0 +1,454 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>学生批处理任务台</title>
+  <style>
+    :root { --bg: #f5f7fb; --card: #fff; --line: #e5e8ef; --primary: #3563e9; --ok: #0f9d58; --err: #d93025; }
+    body { margin: 0; background: var(--bg); font-family: Arial, sans-serif; color: #1f2937; }
+    .wrap { max-width: 980px; margin: 24px auto; padding: 0 16px; }
+    h1 { margin: 0 0 6px; }
+    .desc { margin: 0 0 16px; color: #6b7280; font-size: 14px; }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px; margin-bottom: 12px; box-shadow: 0 1px 2px rgba(16,24,40,.04); }
+    .step { font-size: 13px; color: #3563e9; font-weight: bold; margin-bottom: 8px; }
+    .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin: 8px 0; }
+    .row > label { min-width: 90px; color: #4b5563; font-size: 14px; }
+    input[type="text"], input[type="file"], select { padding: 8px; border: 1px solid #cfd7e6; border-radius: 8px; background: #fff; min-width: 240px; }
+    button { padding: 8px 12px; border: 0; border-radius: 8px; cursor: pointer; background: var(--primary); color: #fff; font-weight: 600; }
+    button.secondary { background: #596377; }
+    .mono { font-family: Consolas, monospace; white-space: pre-wrap; font-size: 13px; background: #f8fafc; border: 1px solid var(--line); border-radius: 8px; padding: 10px; }
+    .muted { color: #6b7280; font-size: 12px; }
+    .ok { color: var(--ok); }
+    .err { color: var(--err); }
+    .pill { display: inline-block; padding: 4px 8px; border-radius: 999px; background: #eef2ff; color: #2d4de0; font-size: 12px; }
+    .progress { height: 10px; width: 100%; background: #e8ecf6; border-radius: 999px; overflow: hidden; margin-top: 8px; }
+    .progress > div { height: 100%; width: 0%; background: linear-gradient(90deg, #4e7cf6, #3563e9); transition: width .25s ease; }
+    .kv { display: grid; grid-template-columns: 120px 1fr; gap: 4px 8px; font-size: 13px; margin-top: 8px; }
+    .logbox { max-height: 220px; overflow: auto; background: #0f172a; color: #dbeafe; border: 1px solid #1e293b; border-radius: 8px; padding: 8px; font-family: Consolas, monospace; font-size: 12px; }
+    .logline { margin: 0; padding: 2px 0; border-bottom: 1px dashed #1e293b; }
+    .logline:last-child { border-bottom: 0; }
+    .chip { display: inline-block; padding: 2px 6px; border-radius: 999px; font-size: 11px; margin-right: 6px; }
+    .chip.info { background: #1d4ed8; color: #e0ecff; }
+    .chip.ok { background: #0f9d58; color: #e9fff3; }
+    .chip.err { background: #b42318; color: #ffe8e5; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>学生批处理任务台</h1>
+    <p class="desc">面向多学生单页批改：每个文件视为 1 位学生作答，统一绑定同一 rubric。</p>
+    <p class="desc">该页面已与单学生任务台保持同款流程与监控交互。</p>
+
+    <div class="card">
+      <div class="step">步骤 1 / 先上传标准答案生成评分标准</div>
+      <div class="row">
+        <label>标准答案文件</label>
+        <input id="rubricFiles" type="file" multiple accept=".jpg,.jpeg,.png,.pdf" />
+        <button id="generateRubricBtn">生成评分标准</button>
+      </div>
+      <div class="row">
+        <label>已有评分标准</label>
+        <select id="rubricSelect"></select>
+        <button id="refreshRubricBtn" class="secondary">刷新列表</button>
+      </div>
+      <div class="row">
+        <label>当前 rubric</label>
+        <span id="selectedRubric" class="pill">未选择</span>
+      </div>
+      <div class="muted">批处理仅支持单页图片（.jpg/.jpeg/.png），每个文件对应一名学生。</div>
+      <div id="rubricResult" class="mono" style="margin-top:8px;"></div>
+    </div>
+
+    <div class="card">
+      <div class="step">步骤 2 / 上传学生作答并开始批处理</div>
+      <div class="row">
+        <label>学生作答文件</label>
+        <input id="files" type="file" multiple accept=".jpg,.jpeg,.png" />
+        <button id="submitBtn">开始批处理</button>
+      </div>
+      <div id="submitResult" class="mono"></div>
+    </div>
+
+    <div class="card">
+      <div class="step">步骤 3 / 跟踪批改进度</div>
+      <div class="row">
+        <label>task_id</label>
+        <input id="taskId" type="text" placeholder="提交后自动填充" />
+        <button id="pollBtn" class="secondary">查询状态</button>
+        <button id="watchBtn">实时监听</button>
+        <button id="stopBtn" class="secondary">停止监听</button>
+      </div>
+      <div class="progress"><div id="bar"></div></div>
+      <div id="status" class="mono" style="margin-top:8px;"></div>
+    </div>
+
+    <div class="card">
+      <div class="step">运行监听窗口</div>
+      <div class="row">
+        <span id="monitorStatus" class="pill">空闲</span>
+        <button id="clearLogBtn" class="secondary">清空日志</button>
+      </div>
+      <div class="kv">
+        <div>当前状态</div><div id="mTaskStatus">-</div>
+        <div>当前进度</div><div id="mProgress">-</div>
+        <div>预计剩余</div><div id="mEta">-</div>
+        <div>最近事件</div><div id="mEvent">-</div>
+      </div>
+      <div id="monitorLog" class="logbox" style="margin-top:8px;"></div>
+    </div>
+
+    <div class="card">
+      <div class="row">
+        <button id="resultBtn" class="secondary">查看最终结果</button>
+        <button id="flowBtn" class="secondary">流程说明</button>
+        <button id="queueDiagBtn" class="secondary">队列诊断</button>
+        <button id="queueCleanupBtn" class="secondary">清理陈旧任务</button>
+      </div>
+      <div id="extra" class="mono"></div>
+    </div>
+  </div>
+
+  <script>
+    let es = null;
+    const maxLogLines = 120;
+    let rubricInFlight = false;
+    let submitInFlight = false;
+    const $ = (id) => document.getElementById(id);
+
+    async function parseResponseSafe(resp) {
+      const text = await resp.text();
+      try {
+        return JSON.parse(text);
+      } catch {
+        return { error_code: "NON_JSON_RESPONSE", message: text || "Empty response body" };
+      }
+    }
+
+    function setButtonBusy(id, busy, busyText, idleText) {
+      const btn = $(id);
+      if (!btn) return;
+      btn.disabled = !!busy;
+      btn.textContent = busy ? busyText : idleText;
+    }
+
+    function setText(id, v, cls = "") {
+      const el = $(id);
+      el.className = "mono " + cls;
+      el.textContent = typeof v === "string" ? v : JSON.stringify(v, null, 2);
+    }
+
+    function nowTime() {
+      const d = new Date();
+      return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}:${String(d.getSeconds()).padStart(2, "0")}`;
+    }
+
+    function appendLog(level, label, content) {
+      const box = $("monitorLog");
+      const line = document.createElement("div");
+      line.className = "logline";
+      const chip = document.createElement("span");
+      chip.className = `chip ${level}`;
+      chip.textContent = label;
+      const text = document.createElement("span");
+      const payload = typeof content === "string" ? content : JSON.stringify(content);
+      text.textContent = `[${nowTime()}] ${payload}`;
+      line.appendChild(chip);
+      line.appendChild(text);
+      box.appendChild(line);
+      while (box.childElementCount > maxLogLines) {
+        box.removeChild(box.firstChild);
+      }
+      box.scrollTop = box.scrollHeight;
+    }
+
+    function updateMonitor(data, eventName) {
+      const status = data && data.status ? String(data.status) : "-";
+      const p = Number(data && data.progress);
+      const eta = Number(data && data.eta_seconds);
+      $("mTaskStatus").textContent = status;
+      $("mProgress").textContent = Number.isFinite(p) ? `${Math.round(Math.max(0, Math.min(1, p)) * 100)}%` : "-";
+      $("mEta").textContent = Number.isFinite(eta) ? `${eta}s` : "-";
+      $("mEvent").textContent = eventName || "-";
+    }
+
+    function setMonitorStatus(text) {
+      $("monitorStatus").textContent = text;
+    }
+
+    function applyProgress(data) {
+      const p = Number(data && data.progress);
+      if (Number.isFinite(p)) {
+        $("bar").style.width = `${Math.max(0, Math.min(1, p)) * 100}%`;
+      }
+    }
+
+    function selectedRubricId() {
+      const sel = $("rubricSelect");
+      return sel.value ? String(sel.value) : "";
+    }
+
+    function syncSelectedRubricTag() {
+      const rid = selectedRubricId();
+      $("selectedRubric").textContent = rid || "未选择";
+    }
+
+    function normalizeErrorPayload(data) {
+      if (data && typeof data === "object" && data.detail && typeof data.detail === "object") {
+        return data.detail;
+      }
+      return data;
+    }
+
+    async function refreshRubrics() {
+      const sel = $("rubricSelect");
+      const prev = sel.value;
+      sel.innerHTML = "";
+      const resp = await fetch("/api/v1/rubrics?page=1&limit=50");
+      appendLog("info", "HTTP", "GET /api/v1/rubrics");
+      const data = await parseResponseSafe(resp);
+      if (!resp.ok || !Array.isArray(data)) {
+        const op = document.createElement("option");
+        op.value = "";
+        op.textContent = "加载失败";
+        sel.appendChild(op);
+        syncSelectedRubricTag();
+        return;
+      }
+      if (data.length === 0) {
+        const op = document.createElement("option");
+        op.value = "";
+        op.textContent = "暂无评分标准，请先生成";
+        sel.appendChild(op);
+      } else {
+        for (const item of data) {
+          const op = document.createElement("option");
+          op.value = item.rubric_id;
+          op.textContent = `${item.rubric_id} | ${item.question_id || "-"}`;
+          sel.appendChild(op);
+        }
+        if (prev) sel.value = prev;
+      }
+      syncSelectedRubricTag();
+    }
+
+    async function generateRubric() {
+      if (rubricInFlight) {
+        appendLog("info", "RUBRIC", "请求进行中，忽略重复点击");
+        return;
+      }
+      const files = $("rubricFiles").files;
+      if (!files || files.length === 0) {
+        setText("rubricResult", "请先选择标准答案文件。", "err");
+        return;
+      }
+      rubricInFlight = true;
+      setButtonBusy("generateRubricBtn", true, "生成中...", "生成评分标准");
+      try {
+        const fd = new FormData();
+        for (const f of files) fd.append("files", f);
+        const resp = await fetch("/api/v1/rubric/generate", { method: "POST", body: fd });
+        appendLog("info", "HTTP", `POST /api/v1/rubric/generate files=${files.length}`);
+        const data = await parseResponseSafe(resp);
+        if (!resp.ok) {
+          const payload = normalizeErrorPayload(data);
+          appendLog("err", "RUBRIC", payload);
+          setText("rubricResult", payload, "err");
+          return;
+        }
+        appendLog("ok", "RUBRIC", data);
+        setText("rubricResult", data, "ok");
+        await refreshRubrics();
+        if (data && data.rubric_id) {
+          $("rubricSelect").value = data.rubric_id;
+          syncSelectedRubricTag();
+        }
+      } catch (err) {
+        appendLog("err", "RUBRIC", String(err));
+        setText("rubricResult", { error_code: "NETWORK_ERROR", message: String(err) }, "err");
+      } finally {
+        rubricInFlight = false;
+        setButtonBusy("generateRubricBtn", false, "生成中...", "生成评分标准");
+      }
+    }
+
+    async function submitBatch() {
+      if (submitInFlight) {
+        appendLog("info", "SUBMIT", "请求进行中，忽略重复点击");
+        return;
+      }
+      const files = $("files").files;
+      if (!files || files.length === 0) {
+        setText("submitResult", "请选择学生作答文件。", "err");
+        return;
+      }
+      const rid = selectedRubricId();
+      if (!rid) {
+        setText("submitResult", "请先在步骤 1 生成或选择 rubric。", "err");
+        return;
+      }
+      submitInFlight = true;
+      setButtonBusy("submitBtn", true, "提交中...", "开始批处理");
+      try {
+        const fd = new FormData();
+        for (const f of files) fd.append("files", f);
+        fd.append("rubric_id", rid);
+        const resp = await fetch("/api/v1/grade/submit-batch", { method: "POST", body: fd });
+        appendLog("info", "HTTP", `POST /api/v1/grade/submit-batch files=${files.length} rubric=${rid}`);
+        const data = await parseResponseSafe(resp);
+        if (!resp.ok) {
+          const payload = normalizeErrorPayload(data);
+          appendLog("err", "SUBMIT", payload);
+          setText("submitResult", payload, "err");
+          return;
+        }
+
+        const taskId = data && data.task_id ? String(data.task_id) : "";
+        if (!taskId) {
+          const payload = { error_code: "INVALID_RESPONSE", message: "响应缺少 task_id", raw: data };
+          appendLog("err", "SUBMIT", payload);
+          setText("submitResult", payload, "err");
+          return;
+        }
+
+        $("taskId").value = taskId;
+        $("bar").style.width = "0%";
+        setMonitorStatus("任务已提交");
+        updateMonitor({ status: data.status || "PENDING", progress: 0, eta_seconds: 60 }, "submit");
+        appendLog("ok", "SUBMIT", data);
+        setText("submitResult", data, "ok");
+        setText("status", { task_id: taskId, status: data.status || "PENDING", next_action: "watch_or_poll" });
+      } catch (err) {
+        appendLog("err", "SUBMIT", String(err));
+        setText("submitResult", { error_code: "NETWORK_ERROR", message: String(err) }, "err");
+      } finally {
+        submitInFlight = false;
+        setButtonBusy("submitBtn", false, "提交中...", "开始批处理");
+      }
+    }
+
+    async function poll() {
+      const taskId = $("taskId").value.trim();
+      if (!taskId) return setText("status", "请先输入 task_id", "err");
+      const resp = await fetch(`/api/v1/grade-batch/${taskId}`);
+      appendLog("info", "HTTP", `GET /api/v1/grade-batch/${taskId}`);
+      const data = await parseResponseSafe(resp);
+      const payload = resp.ok ? data : normalizeErrorPayload(data);
+      applyProgress(payload);
+      updateMonitor(payload, "poll");
+      appendLog(resp.ok ? "ok" : "err", "POLL", payload);
+      setText("status", payload, resp.ok ? "" : "err");
+    }
+
+    function stopWatch() {
+      if (es) {
+        es.close();
+        es = null;
+        setMonitorStatus("监听已停止");
+        appendLog("info", "SSE", "stopped");
+      }
+    }
+
+    function watch() {
+      const taskId = $("taskId").value.trim();
+      if (!taskId) return setText("status", "请先输入 task_id", "err");
+      stopWatch();
+      setMonitorStatus("SSE 连接中");
+      es = new EventSource(`/api/v1/tasks/${taskId}/stream`);
+      appendLog("info", "SSE", `connect /api/v1/tasks/${taskId}/stream`);
+      es.addEventListener("status_update", (ev) => {
+        try {
+          const data = JSON.parse(ev.data);
+          applyProgress(data);
+          updateMonitor(data, "status_update");
+          appendLog("info", "SSE", data);
+          setText("status", data);
+        } catch {
+          appendLog("info", "SSE", ev.data);
+          setText("status", ev.data);
+        }
+      });
+      es.addEventListener("complete", (ev) => {
+        try {
+          const data = JSON.parse(ev.data);
+          $("bar").style.width = "100%";
+          updateMonitor({ ...data, progress: 1 }, "complete");
+          appendLog("ok", "SSE", { complete: true, ...data });
+          setText("status", { complete: true, ...data }, "ok");
+        } catch {
+          appendLog("ok", "SSE", ev.data);
+          setText("status", ev.data, "ok");
+        }
+        setMonitorStatus("任务完成");
+        stopWatch();
+      });
+      es.addEventListener("error", () => {
+        setMonitorStatus("SSE 异常");
+        appendLog("err", "SSE", "connection interrupted");
+        setText("status", "SSE 异常或中断，建议切换“查询状态”", "err");
+      });
+    }
+
+    async function fetchResultByTask() {
+      const taskId = $("taskId").value.trim();
+      if (!taskId) return setText("extra", "请先输入 task_id", "err");
+      const resp = await fetch(`/api/v1/results?task_id=${encodeURIComponent(taskId)}&page=1&limit=50`);
+      appendLog("info", "HTTP", `GET /api/v1/results?task_id=${taskId}`);
+      const data = await parseResponseSafe(resp);
+      const payload = resp.ok ? data : normalizeErrorPayload(data);
+      if (resp.ok && Array.isArray(payload)) {
+        const studentIds = payload.map((item) => item.student_id).filter(Boolean);
+        setText("extra", { task_id: taskId, result_count: payload.length, student_ids: studentIds, items: payload });
+      } else {
+        setText("extra", payload, "err");
+      }
+      appendLog(resp.ok ? "ok" : "err", "RESULT", payload);
+    }
+
+    async function flowGuide() {
+      const resp = await fetch("/api/v1/grade/flow-guide");
+      appendLog("info", "HTTP", "GET /api/v1/grade/flow-guide");
+      const data = await parseResponseSafe(resp);
+      const payload = resp.ok ? data : normalizeErrorPayload(data);
+      appendLog(resp.ok ? "ok" : "err", "FLOW", payload);
+      setText("extra", payload, resp.ok ? "" : "err");
+    }
+
+    async function queueDiagnostics() {
+      const resp = await fetch("/api/v1/ops/queue/diagnostics?stale_threshold_seconds=900&sample_limit=20");
+      appendLog("info", "HTTP", "GET /api/v1/ops/queue/diagnostics");
+      const data = await parseResponseSafe(resp);
+      const payload = resp.ok ? data : normalizeErrorPayload(data);
+      appendLog(resp.ok ? "ok" : "err", "QUEUE", payload);
+      setText("extra", payload, resp.ok ? "" : "err");
+    }
+
+    async function cleanupStaleQueue() {
+      const resp = await fetch("/api/v1/ops/queue/cleanup-stale?stale_threshold_seconds=900&limit=200", {
+        method: "POST",
+      });
+      appendLog("info", "HTTP", "POST /api/v1/ops/queue/cleanup-stale");
+      const data = await parseResponseSafe(resp);
+      const payload = resp.ok ? data : normalizeErrorPayload(data);
+      appendLog(resp.ok ? "ok" : "err", "CLEANUP", payload);
+      setText("extra", payload, resp.ok ? "" : "err");
+    }
+
+    $("generateRubricBtn").addEventListener("click", generateRubric);
+    $("refreshRubricBtn").addEventListener("click", refreshRubrics);
+    $("rubricSelect").addEventListener("change", syncSelectedRubricTag);
+    $("submitBtn").addEventListener("click", submitBatch);
+    $("pollBtn").addEventListener("click", poll);
+    $("watchBtn").addEventListener("click", watch);
+    $("stopBtn").addEventListener("click", stopWatch);
+    $("clearLogBtn").addEventListener("click", () => { $("monitorLog").innerHTML = ""; });
+    $("resultBtn").addEventListener("click", fetchResultByTask);
+    $("flowBtn").addEventListener("click", flowGuide);
+    $("queueDiagBtn").addEventListener("click", queueDiagnostics);
+    $("queueCleanupBtn").addEventListener("click", cleanupStaleQueue);
+
+    refreshRubrics();
+    appendLog("info", "BOOT", "student batch console ready");
+  </script>
+</body>
+</html>

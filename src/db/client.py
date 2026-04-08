@@ -178,6 +178,12 @@ async def _ensure_tasks_columns(db: aiosqlite.Connection, *, include_celery: boo
     if "fallback_reason" not in column_names:
         await db.execute("ALTER TABLE tasks ADD COLUMN fallback_reason TEXT")
         column_names.add("fallback_reason")
+    if "progress" not in column_names:
+        await db.execute("ALTER TABLE tasks ADD COLUMN progress REAL NOT NULL DEFAULT 0")
+        column_names.add("progress")
+    if "eta_seconds" not in column_names:
+        await db.execute("ALTER TABLE tasks ADD COLUMN eta_seconds INTEGER")
+        column_names.add("eta_seconds")
 
     await db.execute("CREATE INDEX IF NOT EXISTS idx_review_status ON tasks(review_status)")
     await db.execute("CREATE INDEX IF NOT EXISTS idx_grading_status ON tasks(grading_status)")
@@ -433,6 +439,7 @@ async def _migrate_drop_legacy_review_columns(db: aiosqlite.Connection) -> None:
     """
     SQLite-compatible table rebuild executed in the current transaction.
     """
+    await _ensure_tasks_columns(db, include_celery=True)
     await db.execute("DROP TABLE IF EXISTS tasks_new")
     await db.execute(
         """
@@ -447,6 +454,10 @@ async def _migrate_drop_legacy_review_columns(db: aiosqlite.Connection) -> None:
             review_status TEXT NOT NULL DEFAULT 'NOT_REQUIRED'
                 CHECK (review_status IN ('NOT_REQUIRED', 'PENDING_REVIEW', 'REVIEWED')),
             fallback_reason TEXT,
+            progress REAL NOT NULL DEFAULT 0
+                CHECK (progress >= 0.0 AND progress <= 1.0),
+            eta_seconds INTEGER
+                CHECK (eta_seconds IS NULL OR eta_seconds >= 0),
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
@@ -455,8 +466,13 @@ async def _migrate_drop_legacy_review_columns(db: aiosqlite.Connection) -> None:
     await db.execute(
         """
         INSERT INTO tasks_new
-        (task_id, status, grading_status, celery_task_id, rubric_id, error_message, review_status, fallback_reason, created_at, updated_at)
-        SELECT task_id, status, grading_status, celery_task_id, rubric_id, error_message, review_status, fallback_reason, created_at, updated_at
+        (
+            task_id, status, grading_status, celery_task_id, rubric_id, error_message, review_status,
+            fallback_reason, progress, eta_seconds, created_at, updated_at
+        )
+        SELECT
+            task_id, status, grading_status, celery_task_id, rubric_id, error_message, review_status,
+            fallback_reason, COALESCE(progress, 0.0), eta_seconds, created_at, updated_at
         FROM tasks
         """
     )
@@ -484,8 +500,39 @@ async def create_task(db_path: str, task_id: str) -> None:
     async def _op(db: aiosqlite.Connection) -> None:
         await _ensure_tasks_columns(db, include_celery=False)
         await db.execute(
-            "INSERT INTO tasks (task_id, status) VALUES (?, ?)",
-            (task_id, "PENDING"),
+            "INSERT INTO tasks (task_id, status, progress, eta_seconds) VALUES (?, ?, ?, ?)",
+            (task_id, "PENDING", 0.0, 60),
+        )
+
+    await _execute_write_with_retry(db_path, _op)
+
+
+async def update_task_progress(
+    db_path: str,
+    task_id: str,
+    *,
+    progress: float,
+    eta_seconds: Optional[int] = None,
+) -> None:
+    bounded_progress = float(progress)
+    if bounded_progress < 0.0:
+        bounded_progress = 0.0
+    if bounded_progress > 1.0:
+        bounded_progress = 1.0
+    eta_value: Optional[int] = None
+    if eta_seconds is not None:
+        eta_value = max(0, int(eta_seconds))
+
+    async def _op(db: aiosqlite.Connection) -> None:
+        await _ensure_tasks_columns(db, include_celery=False)
+        await db.execute(
+            """
+            UPDATE tasks
+            SET progress = ?, eta_seconds = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE task_id = ?
+              AND status IN ('PENDING', 'PROCESSING')
+            """,
+            (bounded_progress, eta_value, task_id),
         )
 
     await _execute_write_with_retry(db_path, _op)
@@ -517,12 +564,29 @@ async def update_task_status(
         raise ValueError(f"Unsupported status transition target: {status}")
 
     async def _op(db: aiosqlite.Connection) -> None:
+        await _ensure_tasks_columns(db, include_celery=False)
         assignments = [
             "status = ?",
             "error_message = ?",
             "updated_at = CURRENT_TIMESTAMP",
         ]
         params: List[Any] = [status, error]
+        if status == "PENDING":
+            assignments.append("progress = ?")
+            assignments.append("eta_seconds = ?")
+            params.extend([0.0, 60])
+        elif status == "PROCESSING":
+            assignments.append("progress = ?")
+            assignments.append("eta_seconds = ?")
+            params.extend([0.1, 60])
+        elif status == "COMPLETED":
+            assignments.append("progress = ?")
+            assignments.append("eta_seconds = ?")
+            params.extend([1.0, 0])
+        elif status == "FAILED":
+            assignments.append("progress = ?")
+            assignments.append("eta_seconds = ?")
+            params.extend([1.0, 0])
         if review_status is not None:
             assignments.append("review_status = ?")
             params.append(review_status)
@@ -1065,6 +1129,145 @@ async def get_task_status_counts(db_path: str) -> Dict[str, int]:
             if "no such table" in str(exc).lower():
                 return {}
             raise
+
+
+async def list_processing_tasks(
+    db_path: str,
+    *,
+    limit: int = 20,
+) -> List[Dict[str, Any]]:
+    safe_limit = max(1, int(limit))
+    async with _open_connection(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        try:
+            async with db.execute(
+                """
+                SELECT
+                    task_id,
+                    celery_task_id,
+                    progress,
+                    eta_seconds,
+                    created_at,
+                    updated_at,
+                    CAST((julianday('now') - julianday(updated_at)) * 86400 AS INTEGER) AS age_seconds
+                FROM tasks
+                WHERE status = 'PROCESSING'
+                ORDER BY updated_at DESC, task_id DESC
+                LIMIT ?
+                """,
+                (safe_limit,),
+            ) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(r) for r in rows]
+        except (aiosqlite.OperationalError, sqlite3.OperationalError) as exc:
+            if "no such table" in str(exc).lower():
+                return []
+            raise
+
+
+async def list_stale_pending_tasks(
+    db_path: str,
+    *,
+    timeout_seconds: int = 900,
+    limit: int = 50,
+) -> List[Dict[str, Any]]:
+    safe_timeout = max(1, int(timeout_seconds))
+    safe_limit = max(1, int(limit))
+    async with _open_connection(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        try:
+            async with db.execute(
+                """
+                SELECT
+                    task_id,
+                    celery_task_id,
+                    progress,
+                    eta_seconds,
+                    created_at,
+                    updated_at,
+                    CAST((julianday('now') - julianday(created_at)) * 86400 AS INTEGER) AS age_seconds
+                FROM tasks
+                WHERE status = 'PENDING'
+                  AND (julianday('now') - julianday(created_at)) * 86400 > ?
+                ORDER BY created_at ASC, task_id ASC
+                LIMIT ?
+                """,
+                (safe_timeout, safe_limit),
+            ) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(r) for r in rows]
+        except (aiosqlite.OperationalError, sqlite3.OperationalError) as exc:
+            if "no such table" in str(exc).lower():
+                return []
+            raise
+
+
+async def fail_stale_pending_orphan_tasks(
+    db_path: str,
+    *,
+    timeout_seconds: int = 900,
+    limit: int = 200,
+) -> List[str]:
+    """
+    Mark stale PENDING tasks as FAILED when they are likely orphaned.
+
+    Orphan heuristics:
+    - celery_task_id is NULL/blank
+    - local fallback id prefix: "local:"
+    - synthetic test id: "mock-celery-id"
+    """
+    safe_timeout = max(1, int(timeout_seconds))
+    safe_limit = max(1, int(limit))
+    cleaned_task_ids: List[str] = []
+
+    async def _op(db: aiosqlite.Connection) -> None:
+        await _ensure_tasks_columns(db, include_celery=True)
+        async with db.execute(
+            """
+            SELECT task_id
+            FROM tasks
+            WHERE status = 'PENDING'
+              AND (julianday('now') - julianday(created_at)) * 86400 > ?
+              AND (
+                    celery_task_id IS NULL
+                    OR TRIM(celery_task_id) = ''
+                    OR celery_task_id LIKE 'local:%'
+                    OR celery_task_id = 'mock-celery-id'
+              )
+            ORDER BY created_at ASC, task_id ASC
+            LIMIT ?
+            """,
+            (safe_timeout, safe_limit),
+        ) as cursor:
+            rows = await cursor.fetchall()
+
+        task_ids = [str(row[0]) for row in rows]
+        if not task_ids:
+            return
+
+        placeholders = ",".join("?" for _ in task_ids)
+        error_message = (
+            f"Queue timeout: stale pending task exceeded {safe_timeout}s "
+            "without worker pickup (orphan cleanup)"
+        )
+        await db.execute(
+            f"""
+            UPDATE tasks
+            SET status = 'FAILED',
+                error_message = ?,
+                fallback_reason = ?,
+                progress = 1.0,
+                eta_seconds = 0,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE status = 'PENDING'
+              AND task_id IN ({placeholders})
+            """,
+            (error_message, "QUEUE_STALE_ORPHAN", *task_ids),
+        )
+        cleaned_task_ids.extend(task_ids)
+
+    await _execute_write_with_retry(db_path, _op)
+    return cleaned_task_ids
 
 
 async def get_completion_latencies_seconds(

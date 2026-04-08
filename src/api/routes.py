@@ -5,18 +5,23 @@ import hashlib
 import math
 import asyncio
 import tempfile
+from pathlib import Path
 from typing import List, Optional, Dict, Any, Literal
 
-from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, Query, Request, Response, BackgroundTasks
 from pydantic import BaseModel, Field
 from slowapi import Limiter
 from slowapi.util import get_remote_address
+from celery.exceptions import OperationalError as CeleryOperationalError
+from kombu.exceptions import OperationalError as KombuOperationalError
+from redis.exceptions import RedisError
 
 from src.api.dependencies import get_db_path
 from src.api.sse import create_sse_response
 from src.db.client import (
     create_task,
     update_task_celery_id,
+    update_task_status,
     set_task_rubric_id,
     get_task,
     fetch_results,
@@ -32,6 +37,9 @@ from src.db.client import (
     list_golden_annotation_assets,
     get_annotation_asset_by_id,
     get_task_status_counts,
+    list_processing_tasks,
+    list_stale_pending_tasks,
+    fail_stale_pending_orphan_tasks,
     get_completion_latencies_seconds,
     get_task_volume_stats,
     get_annotation_dataset_stats,
@@ -69,6 +77,8 @@ from src.skills.interfaces import ValidationInput
 from src.prompts.provider import get_prompt_provider
 from src.prompts.schemas import PromptInvalidationEvent
 from src.perception.factory import create_perception_engine
+from src.utils.file_parsers import UnsupportedFormatError
+from src.core.exceptions import GradingSystemError
 
 
 logger = logging.getLogger(__name__)
@@ -122,11 +132,167 @@ async def _store_upload_file_with_limits(task_id: str, upload: UploadFile) -> st
         await upload.close()
 
 
+def _derive_student_ids_from_filenames(files: List[UploadFile]) -> List[str]:
+    """
+    Build stable student ids for batch mode from uploaded filenames.
+    If duplicated stems exist, append deterministic suffix (_2, _3...).
+    """
+    seen: Dict[str, int] = {}
+    student_ids: List[str] = []
+    for idx, upload in enumerate(files, start=1):
+        raw_name = upload.filename or f"student_{idx}.jpg"
+        stem = Path(raw_name).stem.strip() or f"student_{idx}"
+        count = seen.get(stem, 0) + 1
+        seen[stem] = count
+        student_ids.append(stem if count == 1 else f"{stem}_{count}")
+    return student_ids
+
+
+def _validate_batch_single_page_file(upload: UploadFile) -> None:
+    filename = upload.filename or "upload.bin"
+    ext = Path(filename).suffix.lower()
+    if ext not in {".jpg", ".jpeg", ".png"}:
+        raise HTTPException(
+            status_code=422,
+            detail=_error_detail(
+                error_code="BATCH_FILE_TYPE_UNSUPPORTED",
+                message="Batch mode accepts image files only (.jpg/.jpeg/.png).",
+                retryable=False,
+                next_action="adjust_file",
+            ),
+        )
+
+
+def _run_task_locally(task_id: str, payload: Dict[str, Any], db_path: str, trace_id: str) -> None:
+    grade_homework_task.apply(
+        args=[task_id, payload, db_path],
+        task_id=task_id,
+        headers={"trace_id": trace_id},
+        throw=False,
+    )
+
+
+def _dispatch_grading_task(
+    *,
+    task_id: str,
+    payload: Dict[str, Any],
+    db_path: str,
+    trace_id: str,
+    background_tasks: BackgroundTasks,
+) -> tuple[str, str]:
+    try:
+        celery_result = grade_homework_task.apply_async(
+            args=[task_id, payload, db_path],
+            task_id=task_id,
+            headers={"trace_id": trace_id},
+            retry=False,
+            ignore_result=True,
+        )
+        return celery_result.id, "celery"
+    except (CeleryOperationalError, KombuOperationalError, RedisError, TimeoutError) as exc:
+        logger.warning(
+            "queue_dispatch_fallback_local",
+            extra={
+                "extra_fields": {
+                    "task_id": task_id,
+                    "event": "queue_dispatch_fallback_local",
+                    "reason": str(exc),
+                }
+            },
+        )
+        background_tasks.add_task(_run_task_locally, task_id, payload, db_path, trace_id)
+        return f"local:{task_id}", "local_fallback"
+
+
+def _is_orphan_local_celery_id(celery_task_id: Optional[str]) -> bool:
+    if celery_task_id is None:
+        return True
+    normalized = str(celery_task_id).strip()
+    if not normalized:
+        return True
+    if normalized.startswith("local:"):
+        return True
+    if normalized == "mock-celery-id":
+        return True
+    return False
+
+
+def _fetch_celery_queue_snapshot(sample_limit: int = 200) -> tuple[Optional[int], Optional[List[str]], Optional[str]]:
+    try:
+        import redis
+
+        client = redis.Redis(
+            host=settings.redis_host,
+            port=settings.redis_port,
+            db=settings.redis_db,
+            socket_connect_timeout=0.5,
+            socket_timeout=0.5,
+        )
+        queue_name = "celery"
+        queue_length = int(client.llen(queue_name))
+        safe_limit = max(1, int(sample_limit))
+        raw_items = client.lrange(queue_name, 0, safe_limit - 1)
+
+        task_ids: List[str] = []
+        for raw in raw_items:
+            payload_text: Optional[str] = None
+            if isinstance(raw, bytes):
+                payload_text = raw.decode("utf-8", errors="ignore")
+            elif isinstance(raw, str):
+                payload_text = raw
+            if not payload_text:
+                continue
+            try:
+                envelope = json.loads(payload_text)
+            except json.JSONDecodeError:
+                continue
+            headers = envelope.get("headers") if isinstance(envelope, dict) else None
+            task_id = headers.get("id") if isinstance(headers, dict) else None
+            if isinstance(task_id, str) and task_id:
+                task_ids.append(task_id)
+
+        return queue_length, task_ids, None
+    except Exception as exc:
+        return None, None, str(exc)
+
+
+async def _best_effort_cleanup_stale_pending_orphans(db_path: str) -> None:
+    try:
+        cleaned_task_ids = await fail_stale_pending_orphan_tasks(
+            db_path,
+            timeout_seconds=settings.pending_orphan_timeout_seconds,
+            limit=200,
+        )
+        if cleaned_task_ids:
+            logger.warning(
+                "stale_pending_orphans_cleaned",
+                extra={
+                    "extra_fields": {
+                        "event": "stale_pending_orphans_cleaned",
+                        "cleaned_count": len(cleaned_task_ids),
+                        "sample_task_ids": cleaned_task_ids[:10],
+                    }
+                },
+            )
+    except Exception as exc:
+        logger.warning(
+            "stale_pending_orphan_cleanup_failed",
+            extra={
+                "extra_fields": {
+                    "event": "stale_pending_orphan_cleanup_failed",
+                    "reason": str(exc),
+                }
+            },
+        )
+
+
 # --- Schemas ---
 class TaskResponse(BaseModel):
     task_id: str
     status: str
     rubric_id: Optional[str] = None
+    mode: Optional[str] = None
+    submitted_count: Optional[int] = None
     status_endpoint: Optional[str] = None
     stream_endpoint: Optional[str] = None
     suggested_poll_interval_seconds: Optional[int] = None
@@ -192,6 +358,7 @@ class ReviewFlowGuideResponse(BaseModel):
 
 class GradeFlowGuideResponse(BaseModel):
     submit_endpoint: str
+    batch_submit_endpoint: Optional[str] = None
     status_endpoint_template: str
     stream_endpoint_template: str
     task_status_enum: List[str]
@@ -204,6 +371,7 @@ class RubricGenerateResponse(BaseModel):
     rubric_id: str
     question_id: Optional[str] = None
     grading_points_count: int
+    source_file_count: int
 
 
 class RubricSummaryItem(BaseModel):
@@ -400,6 +568,45 @@ class RuntimeDashboardResponse(BaseModel):
     prompt_cache_hits: Dict[str, int]
     human_review_rate: float
     notes: List[str] = Field(default_factory=list)
+
+
+class QueueProcessingTaskItem(BaseModel):
+    task_id: str
+    celery_task_id: Optional[str] = None
+    progress: float = 0.0
+    eta_seconds: Optional[int] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    age_seconds: Optional[int] = None
+
+
+class QueueStalePendingItem(BaseModel):
+    task_id: str
+    celery_task_id: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    age_seconds: int
+    classification: Literal["orphan_local", "queued_waiting", "unknown"]
+
+
+class QueueDiagnosticsResponse(BaseModel):
+    version: str
+    stale_threshold_seconds: int
+    redis_available: bool
+    redis_error: Optional[str] = None
+    celery_queue_length: Optional[int] = None
+    queued_task_ids_sample: List[str] = Field(default_factory=list)
+    db_status_counts: Dict[str, int]
+    processing_tasks: List[QueueProcessingTaskItem] = Field(default_factory=list)
+    stale_pending_summary: Dict[str, int]
+    stale_pending_sample: List[QueueStalePendingItem] = Field(default_factory=list)
+    notes: List[str] = Field(default_factory=list)
+
+
+class QueueCleanupResponse(BaseModel):
+    stale_threshold_seconds: int
+    cleaned_count: int
+    cleaned_task_ids: List[str] = Field(default_factory=list)
 
 
 class PromptControlRequest(BaseModel):
@@ -672,32 +879,40 @@ def _validate_annotation_anchor(payload: AnnotationFeedbackRequest) -> List[floa
     )
 
     region = _extract_layout_region_from_snapshot(payload.perception_ir_snapshot, payload.region_id)
-    if region is None:
-        raise HTTPException(status_code=422, detail="region_id not found in perception_ir_snapshot")
+    if region is not None:
+        source_region_type = str(region.get("region_type") or "")
+        if source_region_type != payload.region_type:
+            raise HTTPException(status_code=422, detail="region_type mismatch against perception_ir_snapshot")
 
-    source_region_type = str(region.get("region_type") or "")
-    if source_region_type != payload.region_type:
-        raise HTTPException(status_code=422, detail="region_type mismatch against perception_ir_snapshot")
+        source_bbox_abs = _bbox_from_snapshot_region(
+            region,
+            image_width=payload.image_width,
+            image_height=payload.image_height,
+        )
+        sx1, sy1, sx2, sy2 = source_bbox_abs
+        x1, y1, x2, y2 = bbox_abs
+        if x1 < sx1 or y1 < sy1 or x2 > sx2 or y2 > sy2:
+            raise HTTPException(status_code=422, detail="bbox is outside source perception region")
 
-    source_bbox_abs = _bbox_from_snapshot_region(
-        region,
-        image_width=payload.image_width,
-        image_height=payload.image_height,
-    )
-    sx1, sy1, sx2, sy2 = source_bbox_abs
-    x1, y1, x2, y2 = bbox_abs
-    if x1 < sx1 or y1 < sy1 or x2 > sx2 or y2 > sy2:
-        raise HTTPException(status_code=422, detail="bbox is outside source perception region")
-
-    # Cognition snapshot anchor check: reference this region_id explicitly
+    # Cognition snapshot anchor check:
+    # - region-mode: requires region_id anchor (Phase35 style)
+    # - full-page mode: accepts any non-empty reference anchor (Phase34 style)
     evaluations = payload.cognitive_ir_snapshot.get("step_evaluations")
     if isinstance(evaluations, list):
-        has_anchor = any(
-            isinstance(item, dict) and str(item.get("reference_element_id")) == payload.region_id
-            for item in evaluations
-        )
-        if not has_anchor:
-            raise HTTPException(status_code=422, detail="cognitive_ir_snapshot lacks region_id anchor")
+        if region is not None:
+            has_region_anchor = any(
+                isinstance(item, dict) and str(item.get("reference_element_id")) == payload.region_id
+                for item in evaluations
+            )
+            if not has_region_anchor:
+                raise HTTPException(status_code=422, detail="cognitive_ir_snapshot lacks region_id anchor")
+        else:
+            has_any_anchor = any(
+                isinstance(item, dict) and str(item.get("reference_element_id") or "").strip()
+                for item in evaluations
+            )
+            if not has_any_anchor:
+                raise HTTPException(status_code=422, detail="cognitive_ir_snapshot.step_evaluations has no anchor")
     else:
         raise HTTPException(status_code=422, detail="cognitive_ir_snapshot.step_evaluations missing")
 
@@ -729,7 +944,43 @@ async def generate_rubric_job(
         skill_service=SkillService(db_path=db_path),
     )
 
-    rubric: TeacherRubric = await workflow.generate_rubric_pipeline(files_data)
+    try:
+        rubric: TeacherRubric = await workflow.generate_rubric_pipeline(files_data)
+    except UnsupportedFormatError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=_error_detail(
+                error_code="INPUT_REJECTED",
+                message=str(exc),
+                retryable=False,
+                next_action="adjust_file",
+            ),
+        ) from exc
+    except RuntimeError as exc:
+        if "PHASE35_CONTRACT_BLOCK" in str(exc):
+            detail_text = str(exc)
+            raise HTTPException(
+                status_code=503,
+                detail=_error_detail(
+                    error_code="UPSTREAM_UNAVAILABLE",
+                    message=f"Rubric generation upstream unavailable: {detail_text}",
+                    retryable=True,
+                    retry_hint="retry_submit",
+                    next_action="retry_upload",
+                ),
+            ) from exc
+        raise
+    except GradingSystemError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=_error_detail(
+                error_code="UPSTREAM_UNAVAILABLE",
+                message=f"Rubric generation upstream unavailable: {str(exc)}",
+                retryable=True,
+                retry_hint="retry_submit",
+                next_action="retry_upload",
+            ),
+        ) from exc
     rubric_id = str(uuid.uuid4())
     await save_rubric(
         db_path,
@@ -741,6 +992,7 @@ async def generate_rubric_job(
         rubric_id=rubric_id,
         question_id=rubric.question_id,
         grading_points_count=len(rubric.grading_points),
+        source_file_count=len(files),
     )
 
 
@@ -788,8 +1040,10 @@ async def get_rubric_detail(
 @limiter.limit("100/minute")  # Phase 35: Increased for batch grading (100+ students)
 async def submit_grading_job(
     request: Request,
+    background_tasks: BackgroundTasks,
     files: List[UploadFile] = File(...),
     rubric_id: Optional[str] = Form(default=None),
+    student_id: Optional[str] = Form(default=None),
     db_path: str = Depends(get_db_path)
 ):
     """
@@ -805,6 +1059,8 @@ async def submit_grading_job(
     - Files written to storage backend before queueing
     - Worker receives file URIs (NOT file content)
     """
+    await _best_effort_cleanup_stale_pending_orphans(db_path)
+
     # 1. Generate business task UUID
     task_id = str(uuid.uuid4())
     trace_id = get_trace_id()
@@ -838,26 +1094,135 @@ async def submit_grading_job(
     # 4. Dispatch to Celery worker queue (non-blocking)
     # Phase 32: Storage Adapter - enqueue URIs (backend-agnostic)
     payload = storage.prepare_payload(file_refs)
+    payload["mode"] = "single_submission"
+    if student_id and student_id.strip():
+        payload["student_id"] = student_id.strip()
     if bound_rubric is not None:
         payload["rubric_json"] = bound_rubric
-    celery_result = grade_homework_task.apply_async(
-        args=[task_id, payload, db_path],
+    celery_task_id, dispatch_mode = _dispatch_grading_task(
         task_id=task_id,
-        headers={"trace_id": trace_id},
+        payload=payload,
+        db_path=db_path,
+        trace_id=trace_id,
+        background_tasks=background_tasks,
     )
-    
+
     # 5. Track Celery task ID for potential revocation
-    await update_task_celery_id(db_path, task_id, celery_result.id)
+    await update_task_celery_id(db_path, task_id, celery_task_id)
     
     # 6. Immediate HTTP 202 response (physical cutoff from computation)
     logger.info(
         "task_enqueued",
-        extra={"extra_fields": {"task_id": task_id, "event": "task_enqueued"}},
+        extra={
+            "extra_fields": {
+                "task_id": task_id,
+                "event": "task_enqueued",
+                "dispatch_mode": dispatch_mode,
+            }
+        },
     )
     return TaskResponse(
         task_id=task_id,
         status="PENDING",
         rubric_id=rubric_id,
+        mode="single_submission",
+        submitted_count=len(file_refs),
+        status_endpoint=f"/api/v1/grade/{task_id}",
+        stream_endpoint=f"/api/v1/tasks/{task_id}/stream",
+        suggested_poll_interval_seconds=2,
+    )
+
+
+@router.post("/grade/submit-batch", response_model=TaskResponse, status_code=202)
+@limiter.limit("60/minute")
+async def submit_batch_grading_job(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    files: List[UploadFile] = File(...),
+    rubric_id: Optional[str] = Form(default=None),
+    db_path: str = Depends(get_db_path),
+):
+    """
+    Batch mode:
+    - one uploaded image == one student submission
+    - each file is graded independently under the same task_id
+    """
+    del request
+    if not files:
+        raise HTTPException(
+            status_code=422,
+            detail=_error_detail(
+                error_code="INPUT_REJECTED",
+                message="No files provided for batch grading.",
+                retryable=False,
+                next_action="adjust_file",
+            ),
+        )
+
+    for upload in files:
+        _validate_batch_single_page_file(upload)
+
+    await _best_effort_cleanup_stale_pending_orphans(db_path)
+
+    task_id = str(uuid.uuid4())
+    trace_id = get_trace_id()
+    student_ids = _derive_student_ids_from_filenames(files)
+
+    file_refs: List[str] = []
+    for file in files:
+        file_ref = await _store_upload_file_with_limits(task_id, file)
+        file_refs.append(file_ref)
+
+    await create_task(db_path, task_id)
+
+    bound_rubric: Optional[Dict[str, Any]] = None
+    if rubric_id:
+        rubric_row = await get_rubric(db_path, rubric_id)
+        if not rubric_row:
+            raise HTTPException(
+                status_code=404,
+                detail=_error_detail(
+                    error_code="RUBRIC_NOT_FOUND",
+                    message="Rubric not found",
+                    retryable=False,
+                    next_action="select_valid_rubric",
+                ),
+            )
+        rubric_raw = rubric_row.get("rubric_json")
+        bound_rubric = json.loads(rubric_raw) if isinstance(rubric_raw, str) else rubric_raw
+        await set_task_rubric_id(db_path, task_id, rubric_id)
+
+    payload = storage.prepare_payload(file_refs)
+    payload["mode"] = "batch_single_page"
+    payload["student_ids"] = student_ids
+    if bound_rubric is not None:
+        payload["rubric_json"] = bound_rubric
+
+    celery_task_id, dispatch_mode = _dispatch_grading_task(
+        task_id=task_id,
+        payload=payload,
+        db_path=db_path,
+        trace_id=trace_id,
+        background_tasks=background_tasks,
+    )
+
+    await update_task_celery_id(db_path, task_id, celery_task_id)
+    logger.info(
+        "task_enqueued",
+        extra={
+            "extra_fields": {
+                "task_id": task_id,
+                "event": "task_enqueued_batch",
+                "dispatch_mode": dispatch_mode,
+            }
+        },
+    )
+    return TaskResponse(
+        task_id=task_id,
+        status="PENDING",
+        rubric_id=rubric_id,
+        mode="batch_single_page",
+        submitted_count=len(file_refs),
         status_endpoint=f"/api/v1/grade/{task_id}",
         stream_endpoint=f"/api/v1/tasks/{task_id}/stream",
         suggested_poll_interval_seconds=2,
@@ -872,6 +1237,7 @@ async def get_grade_flow_guide():
     """
     return GradeFlowGuideResponse(
         submit_endpoint="/api/v1/grade/submit",
+        batch_submit_endpoint="/api/v1/grade/submit-batch",
         status_endpoint_template="/api/v1/grade/{task_id}",
         stream_endpoint_template="/api/v1/tasks/{task_id}/stream",
         task_status_enum=["PENDING", "PROCESSING", "COMPLETED", "FAILED"],
@@ -879,17 +1245,23 @@ async def get_grade_flow_guide():
         error_code_actions={
             "UPLOAD_TIMEOUT": "retry_upload",
             "FILE_TOO_LARGE": "adjust_file",
+            "RATE_LIMITED": "wait_and_retry",
             "TASK_NOT_FOUND": "submit_new_task",
             "TASK_NOT_COMPLETED": "wait_for_completion",
             "INPUT_REJECTED": "retry_upload",
+            "BATCH_FILE_TYPE_UNSUPPORTED": "adjust_file",
             "TASK_FAILED": "retry_upload",
             "INTERNAL_ERROR": "contact_support",
             "SSE_BACKEND_UNAVAILABLE": "fallback_to_polling",
+            "UPSTREAM_UNAVAILABLE": "retry_upload",
         },
         notes=[
             "优先使用 SSE，若出现 SSE_BACKEND_UNAVAILABLE 则回退到状态轮询。",
             "状态轮询建议间隔 2 秒；可配合 ETag 条件请求降低带宽。",
             "FAILED 与 REJECTED_UNREADABLE 默认允许重新提交。",
+            "队列后端不可用时，会自动回退到本地后台执行并继续返回 task_id。",
+            "submit_endpoint 用于单学生提交（可多页）；batch_submit_endpoint 用于多学生单页批处理。",
+            "Rubric 生成走整页感知聚合链路，不依赖布局切片 gate。",
         ],
     )
 
@@ -948,9 +1320,9 @@ async def get_job_status_and_results(
     
     # Phase 29: Status-specific enrichment
     if task["status"] in ["PENDING", "PROCESSING"]:
-        # TODO: Implement progress tracking via Redis/Celery backend
-        response_data["progress"] = 0.5 if task["status"] == "PROCESSING" else 0.0
-        response_data["eta_seconds"] = 45  # Placeholder: avg grading time
+        response_data["progress"] = float(task.get("progress") or 0.0)
+        eta_value = task.get("eta_seconds")
+        response_data["eta_seconds"] = int(eta_value) if eta_value is not None else 60
         response_data["next_action"] = "wait_for_completion"
     
     elif task["status"] == "FAILED":
@@ -1012,6 +1384,22 @@ async def get_job_status_and_results(
     response.headers["Cache-Control"] = "private, must-revalidate"
     
     return TaskStatusResponse(**response_data)
+
+
+@router.get("/grade-batch/{task_id}", response_model=TaskStatusResponse)
+@limiter.limit("30/minute")
+async def get_batch_job_status_and_results(
+    request: Request,
+    response: Response,
+    task_id: str,
+    db_path: str = Depends(get_db_path),
+):
+    return await get_job_status_and_results(
+        request=request,
+        response=response,
+        task_id=task_id,
+        db_path=db_path,
+    )
 
 
 @router.get("/tasks/{task_id}/stream")
@@ -1457,7 +1845,9 @@ async def get_capability_catalog():
                 domain="grade",
                 endpoints=[
                     CapabilityEndpointItem(method="POST", path="/api/v1/grade/submit", response_model="TaskResponse"),
+                    CapabilityEndpointItem(method="POST", path="/api/v1/grade/submit-batch", response_model="TaskResponse"),
                     CapabilityEndpointItem(method="GET", path="/api/v1/grade/{task_id}", response_model="TaskStatusResponse"),
+                    CapabilityEndpointItem(method="GET", path="/api/v1/grade-batch/{task_id}", response_model="TaskStatusResponse"),
                     CapabilityEndpointItem(method="GET", path="/api/v1/tasks/{task_id}/stream", notes="SSE stream"),
                     CapabilityEndpointItem(method="GET", path="/api/v1/grade/flow-guide", response_model="GradeFlowGuideResponse"),
                     CapabilityEndpointItem(method="GET", path="/api/v1/results", response_model="List[GradingResultItem]"),
@@ -1498,6 +1888,8 @@ async def get_capability_catalog():
                     CapabilityEndpointItem(method="GET", path="/api/v1/router/policy", response_model="RouterPolicyResponse"),
                     CapabilityEndpointItem(method="GET", path="/api/v1/metrics/dataset-pipeline", response_model="DatasetPipelineSummaryResponse"),
                     CapabilityEndpointItem(method="GET", path="/api/v1/metrics/runtime-dashboard", response_model="RuntimeDashboardResponse"),
+                    CapabilityEndpointItem(method="GET", path="/api/v1/ops/queue/diagnostics", response_model="QueueDiagnosticsResponse"),
+                    CapabilityEndpointItem(method="POST", path="/api/v1/ops/queue/cleanup-stale", response_model="QueueCleanupResponse"),
                     CapabilityEndpointItem(method="POST", path="/api/v1/prompt/control"),
                     CapabilityEndpointItem(method="POST", path="/api/v1/prompt/ab-config"),
                     CapabilityEndpointItem(method="POST", path="/api/v1/prompt/refresh"),
@@ -1539,6 +1931,8 @@ async def get_contract_catalog():
         ContractSchemaItem(schema_name="RouterPolicyResponse", fields=_schema_fields_from_model(RouterPolicyResponse)),
         ContractSchemaItem(schema_name="DatasetPipelineSummaryResponse", fields=_schema_fields_from_model(DatasetPipelineSummaryResponse)),
         ContractSchemaItem(schema_name="RuntimeDashboardResponse", fields=_schema_fields_from_model(RuntimeDashboardResponse)),
+        ContractSchemaItem(schema_name="QueueDiagnosticsResponse", fields=_schema_fields_from_model(QueueDiagnosticsResponse)),
+        ContractSchemaItem(schema_name="QueueCleanupResponse", fields=_schema_fields_from_model(QueueCleanupResponse)),
         ContractSchemaItem(schema_name="PromptControlRequest", fields=_schema_fields_from_model(PromptControlRequest)),
         ContractSchemaItem(schema_name="PromptAbConfigRequest", fields=_schema_fields_from_model(PromptAbConfigRequest)),
         ContractSchemaItem(schema_name="PromptOpsAuditItem", fields=_schema_fields_from_model(PromptOpsAuditItem)),
@@ -1570,7 +1964,10 @@ async def get_contract_catalog():
             "TASK_NOT_FOUND",
             "TASK_NOT_COMPLETED",
             "RUBRIC_NOT_FOUND",
+            "RATE_LIMITED",
+            "UPSTREAM_UNAVAILABLE",
             "INPUT_REJECTED",
+            "BATCH_FILE_TYPE_UNSUPPORTED",
             "TASK_FAILED",
             "INTERNAL_ERROR",
             "SSE_BACKEND_UNAVAILABLE",
@@ -1735,6 +2132,96 @@ async def get_runtime_dashboard(
             "runtime dashboard now reads durable telemetry from DB.",
             f"task_volume_total={int(volume.get('total_count', 0))}",
         ],
+    )
+
+
+@router.get("/ops/queue/diagnostics", response_model=QueueDiagnosticsResponse)
+async def get_ops_queue_diagnostics(
+    stale_threshold_seconds: int = Query(900, ge=60, le=172800),
+    sample_limit: int = Query(20, ge=1, le=100),
+    db_path: str = Depends(get_db_path),
+):
+    queue_length, queued_task_ids, redis_error = _fetch_celery_queue_snapshot(sample_limit=2000)
+    queued_task_ids = queued_task_ids or []
+    queued_task_id_set = set(queued_task_ids)
+
+    status_counts = await get_task_status_counts(db_path)
+    processing_rows = await list_processing_tasks(db_path, limit=sample_limit)
+    stale_pending_rows = await list_stale_pending_tasks(
+        db_path,
+        timeout_seconds=stale_threshold_seconds,
+        limit=sample_limit,
+    )
+
+    stale_items: List[QueueStalePendingItem] = []
+    stale_summary = {"total": 0, "orphan_local": 0, "queued_waiting": 0, "unknown": 0}
+    for row in stale_pending_rows:
+        stale_summary["total"] += 1
+        celery_task_id = row.get("celery_task_id")
+        if _is_orphan_local_celery_id(celery_task_id):
+            classification: Literal["orphan_local", "queued_waiting", "unknown"] = "orphan_local"
+        elif isinstance(celery_task_id, str) and celery_task_id in queued_task_id_set:
+            classification = "queued_waiting"
+        else:
+            classification = "unknown"
+        stale_summary[classification] += 1
+        stale_items.append(
+            QueueStalePendingItem(
+                task_id=str(row.get("task_id") or ""),
+                celery_task_id=str(celery_task_id) if celery_task_id is not None else None,
+                created_at=row.get("created_at"),
+                updated_at=row.get("updated_at"),
+                age_seconds=int(row.get("age_seconds") or 0),
+                classification=classification,
+            )
+        )
+
+    processing_items = [
+        QueueProcessingTaskItem(
+            task_id=str(row.get("task_id") or ""),
+            celery_task_id=str(row.get("celery_task_id")) if row.get("celery_task_id") is not None else None,
+            progress=float(row.get("progress") or 0.0),
+            eta_seconds=int(row.get("eta_seconds")) if row.get("eta_seconds") is not None else None,
+            created_at=row.get("created_at"),
+            updated_at=row.get("updated_at"),
+            age_seconds=int(row.get("age_seconds")) if row.get("age_seconds") is not None else None,
+        )
+        for row in processing_rows
+    ]
+
+    return QueueDiagnosticsResponse(
+        version="1.0",
+        stale_threshold_seconds=int(stale_threshold_seconds),
+        redis_available=redis_error is None,
+        redis_error=redis_error,
+        celery_queue_length=queue_length,
+        queued_task_ids_sample=queued_task_ids[:sample_limit],
+        db_status_counts={str(k): int(v) for k, v in status_counts.items()},
+        processing_tasks=processing_items,
+        stale_pending_summary=stale_summary,
+        stale_pending_sample=stale_items,
+        notes=[
+            "orphan_local indicates stale pending rows likely created by local fallback/test flow and never consumed by worker.",
+            "queued_waiting indicates pending rows still present in Redis celery queue (not zombie).",
+        ],
+    )
+
+
+@router.post("/ops/queue/cleanup-stale", response_model=QueueCleanupResponse)
+async def cleanup_ops_queue_stale_pending(
+    stale_threshold_seconds: int = Query(900, ge=60, le=172800),
+    limit: int = Query(200, ge=1, le=2000),
+    db_path: str = Depends(get_db_path),
+):
+    cleaned_task_ids = await fail_stale_pending_orphan_tasks(
+        db_path,
+        timeout_seconds=stale_threshold_seconds,
+        limit=limit,
+    )
+    return QueueCleanupResponse(
+        stale_threshold_seconds=int(stale_threshold_seconds),
+        cleaned_count=len(cleaned_task_ids),
+        cleaned_task_ids=cleaned_task_ids,
     )
 
 
@@ -1951,6 +2438,9 @@ async def get_ops_config_snapshot(
             "l1_ttl_seconds": settings.prompt_l1_ttl_seconds,
             "l2_ttl_seconds": settings.prompt_l2_ttl_seconds,
             "invalidation_bus_enabled": settings.prompt_invalidation_bus_enabled,
+            "phase35_layout_gate_enabled": False,
+            "max_input_tokens": int(settings.prompt_max_input_tokens),
+            "reserve_output_tokens": int(settings.prompt_reserve_output_tokens),
         },
         router_policy=OpsRouterControlResponse(
             enabled=bool(settings.auto_circuit_controller_enabled),
