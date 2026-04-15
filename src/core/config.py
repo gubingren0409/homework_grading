@@ -22,12 +22,17 @@ class Settings(BaseSettings):
     deepseek_api_keys: str | None = None # Comma-separated keys
     deepseek_model_name: str = "deepseek-reasoner"
     deepseek_use_stream: bool = False
+    llm_egress_enabled: bool = True
 
     # Redis Configuration (Phase 28)
     redis_host: str = "localhost"
     redis_port: int = 6379
     redis_db: int = 0
     celery_task_always_eager: bool = False
+    batch_internal_concurrency: int = 3
+    batch_postprocess_concurrency: int = 4
+    batch_progress_update_step: int = 2
+    batch_progress_min_interval_seconds: float = 1.5
 
     # SSE runtime behavior
     sse_stream_timeout_seconds: int = 1800
@@ -55,6 +60,7 @@ class Settings(BaseSettings):
     upload_chunk_size_bytes: int = 256 * 1024
     upload_spool_max_size_bytes: int = 1 * 1024 * 1024
     pending_orphan_timeout_seconds: int = 900
+    rubric_dedupe_window_seconds: int = 86400
 
     # Prompt provider foundation (Phase 41)
     prompts_dir: str = "configs/prompts"
@@ -167,9 +173,20 @@ class Settings(BaseSettings):
         "router_budget_token_limit",
         "sse_stream_timeout_seconds",
         "pending_orphan_timeout_seconds",
+        "rubric_dedupe_window_seconds",
+        "batch_internal_concurrency",
+        "batch_postprocess_concurrency",
+        "batch_progress_update_step",
     )
     @classmethod
     def _validate_positive_int(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("value must be positive")
+        return value
+
+    @field_validator("batch_progress_min_interval_seconds")
+    @classmethod
+    def _validate_positive_float(cls, value: float) -> float:
         if value <= 0:
             raise ValueError("value must be positive")
         return value
