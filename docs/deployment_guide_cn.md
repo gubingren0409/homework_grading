@@ -31,12 +31,13 @@
 
 ## 2. 容器拓扑
 
-当前 `docker-compose.yml` 包含 3 个服务：
+当前 `docker-compose.yml` 包含 4 个服务：
 
 | 服务 | 作用 | 关键说明 |
 | --- | --- | --- |
+| `nginx` | 反向代理 + HTTPS 终止 | 对外暴露 80/443，透传 SSE |
 | `redis` | Celery broker + SSE/PubSub 状态中转 | 当前是单点 |
-| `grader-api` | FastAPI 主入口 | 对外暴露 `8000` |
+| `grader-api` | FastAPI 主入口 | 仅在容器网络内暴露 8000 |
 | `grader-worker` | Celery worker | 负责真实批改执行 |
 
 数据卷与目录：

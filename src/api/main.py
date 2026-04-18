@@ -48,6 +48,19 @@ async def health_check():
     return {"status": "healthy", "service": "grader-api"}
 
 
+def _serve_console_page(filename: str) -> FileResponse:
+    static_file = Path(__file__).parent / "static" / filename
+    if not static_file.exists():
+        raise HTTPException(status_code=404, detail="console page not found")
+    return FileResponse(static_file)
+
+
+@app.get("/", include_in_schema=False)
+async def landing_page():
+    """Product landing page — first thing visitors see."""
+    return _serve_console_page("index.html")
+
+
 @app.get("/review-console", include_in_schema=False)
 async def review_console():
     """
@@ -58,13 +71,6 @@ async def review_console():
     4) Submitting human feedback back to DB
     """
     static_file = Path(__file__).parent / "static" / "review_workbench.html"
-    return FileResponse(static_file)
-
-
-def _serve_console_page(filename: str) -> FileResponse:
-    static_file = Path(__file__).parent / "static" / filename
-    if not static_file.exists():
-        raise HTTPException(status_code=404, detail="console page not found")
     return FileResponse(static_file)
 
 

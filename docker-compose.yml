@@ -1,4 +1,27 @@
 services:
+  # --- Nginx 反向代理（P9-02） ---
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: homework-grader-nginx
+    ports:
+      - "${NGINX_HTTP_PORT:-80}:80"
+      # 生产环境：取消注释以启用 HTTPS
+      # - "${NGINX_HTTPS_PORT:-443}:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./nginx/proxy_common.conf:/etc/nginx/conf.d/proxy_common.conf:ro
+      # 生产环境：挂载 SSL 证书目录
+      # - ./nginx/ssl:/etc/nginx/ssl:ro
+    depends_on:
+      grader-api:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost/nginx-health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
   redis:
     image: redis:7-alpine
     container_name: homework-grader-redis
@@ -17,8 +40,12 @@ services:
   grader-api:
     build: .
     container_name: homework-grader-api
-    ports:
-      - "8000:8000"
+    # 通过 Nginx 代理访问，不再直接暴露 8000
+    # 如需直接访问 API（开发调试），取消下行注释
+    # ports:
+    #   - "8000:8000"
+    expose:
+      - "8000"
     volumes:
       - ./outputs:/app/outputs
       - ./data:/app/data

@@ -38,7 +38,7 @@ class QwenVLMPerceptionEngine(BasePerceptionEngine):
             key: openai.AsyncOpenAI(
                 api_key=key,
                 base_url=settings.qwen_base_url,
-                timeout=120.0,
+                timeout=300.0,
                 max_retries=0 # Manual failover
             ) for key in keys
         }
@@ -203,7 +203,7 @@ class QwenVLMPerceptionEngine(BasePerceptionEngine):
         *,
         prompt_key: str,
         prompt_variables: Sequence[PromptVariable],
-        max_tokens: int = 2048,
+        max_tokens: int = 8192,
         temperature: float = 0.0,
     ) -> Dict[str, Any]:
         """
@@ -309,7 +309,7 @@ class QwenVLMPerceptionEngine(BasePerceptionEngine):
                 PromptVariable(name="target_question_no", kind="text", value=target_value),
                 PromptVariable(name="image_1", kind="image_base64", value=base64_image),
             ],
-            max_tokens=2048,
+            max_tokens=8192,
             temperature=0.0,
         )
         raw.setdefault("context_type", context_type)
@@ -333,7 +333,7 @@ class QwenVLMPerceptionEngine(BasePerceptionEngine):
                 PromptVariable(name="context_type", kind="text", value="student_homework"),
                 PromptVariable(name="image_1", kind="image_base64", value=base64_image),
             ],
-            max_tokens=2048,
+            max_tokens=8192,
             temperature=0.01,
         )
         try:
