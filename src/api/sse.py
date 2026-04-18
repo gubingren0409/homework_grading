@@ -30,6 +30,18 @@ def get_task_channel(task_id: str) -> str:
     return f"task_status:{task_id}"
 
 
+def _status_event_fingerprint(event_data: Dict[str, Any]) -> str:
+    comparable = {
+        "status": event_data.get("status"),
+        "grading_status": event_data.get("grading_status"),
+        "progress": event_data.get("progress"),
+        "eta_seconds": event_data.get("eta_seconds"),
+        "error": event_data.get("error"),
+        "message": event_data.get("message"),
+    }
+    return json.dumps(comparable, sort_keys=True, ensure_ascii=False, default=str)
+
+
 async def _build_status_event(task: Dict[str, Any], source: str) -> Dict[str, Any]:
     event_data = {
         "task_id": task["task_id"],
@@ -37,8 +49,9 @@ async def _build_status_event(task: Dict[str, Any], source: str) -> Dict[str, An
         "source": source,
     }
     if task["status"] in ["PENDING", "PROCESSING"]:
-        event_data["progress"] = 0.5 if task["status"] == "PROCESSING" else 0.0
-        event_data["eta_seconds"] = 45
+        event_data["progress"] = float(task.get("progress") or 0.0)
+        eta_value = task.get("eta_seconds")
+        event_data["eta_seconds"] = int(eta_value) if eta_value is not None else 60
     elif task["status"] == "COMPLETED":
         event_data["message"] = "Grading completed successfully"
     elif task["status"] == "FAILED":
@@ -58,6 +71,7 @@ async def task_status_stream(
     start_time = time.monotonic()
     last_ping = start_time
     last_status: Optional[str] = None
+    last_event_fingerprint: Optional[str] = None
 
     task = await get_task(db_path, task_id)
     if not task:
@@ -67,6 +81,7 @@ async def task_status_stream(
     initial_event = await _build_status_event(task, source="initial")
     yield {"event": "status_update", "data": json.dumps(initial_event)}
     last_status = task["status"]
+    last_event_fingerprint = _status_event_fingerprint(initial_event)
     if last_status in ["COMPLETED", "FAILED"]:
         yield {"event": "complete", "data": json.dumps({"task_id": task_id, "status": last_status})}
         return
@@ -116,8 +131,12 @@ async def task_status_stream(
                 continue
             event_data["source"] = "pubsub"
             current_status = event_data.get("status")
-            if current_status and current_status != last_status:
+            if not current_status:
+                continue
+            current_fingerprint = _status_event_fingerprint(event_data)
+            if current_fingerprint != last_event_fingerprint:
                 yield {"event": "status_update", "data": json.dumps(event_data)}
+                last_event_fingerprint = current_fingerprint
                 last_status = str(current_status)
                 if last_status in ["COMPLETED", "FAILED"]:
                     yield {"event": "complete", "data": json.dumps({"task_id": task_id, "status": last_status})}
@@ -135,7 +154,12 @@ async def task_status_stream(
 
 def create_sse_response(db_path: str, task_id: str) -> EventSourceResponse:
     return EventSourceResponse(
-        task_status_stream(db_path, task_id),
+        task_status_stream(
+            db_path,
+            task_id,
+            timeout=settings.sse_stream_timeout_seconds,
+            heartbeat_interval=settings.sse_heartbeat_interval_seconds,
+        ),
         headers={
             "Cache-Control": "no-cache",
             "X-Accel-Buffering": "no",

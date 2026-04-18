@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>任务列表</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 24px; background: #f7f9fc; color: #1f2937; }
+    .card { background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 14px; max-width: 1100px; }
+    .row { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
+    select, button { padding: 8px; border-radius: 8px; border: 1px solid #cfd7e6; }
+    button { background: #3563e9; color: #fff; border: 0; cursor: pointer; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { text-align: left; padding: 8px; border-bottom: 1px solid #eef2f7; }
+    .mono { background: #f8fafc; border: 1px solid #e5e7eb; border-radius: 8px; padding: 8px; font-family: Consolas, monospace; font-size: 12px; margin-top: 10px; }
+  </style>
+</head>
+<body>
+  <h1>任务列表</h1>
+  <div class="card">
+    <div class="row">
+      <label>状态筛选</label>
+      <select id="status">
+        <option value="">全部</option>
+        <option>PENDING</option>
+        <option>PROCESSING</option>
+        <option>COMPLETED</option>
+        <option>FAILED</option>
+      </select>
+      <button id="loadBtn">刷新列表</button>
+      <a href="/task-progress">任务进度页</a>
+      <a href="/class-dashboard">班级结果看板</a>
+      <a href="/history-results">历史结果页</a>
+      <a href="/report-view">报告展示页</a>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th>task_id</th><th>status</th><th>grading_status</th><th>progress</th><th>results</th><th>updated_at</th><th>操作</th>
+        </tr>
+      </thead>
+      <tbody id="tbody"></tbody>
+    </table>
+    <div id="debug" class="mono"></div>
+  </div>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    function setDebug(v) { $("debug").textContent = typeof v === "string" ? v : JSON.stringify(v, null, 2); }
+    async function load() {
+      const s = $("status").value;
+      const url = s ? `/api/v1/tasks/history?page=1&limit=50&status=${encodeURIComponent(s)}` : "/api/v1/tasks/history?page=1&limit=50";
+      const resp = await fetch(url);
+      const data = await resp.json();
+      if (!resp.ok) { setDebug(data); return; }
+      const body = $("tbody");
+      body.innerHTML = "";
+      for (const item of data.items || []) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td>${item.task_id}</td>
+          <td>${item.status}</td>
+          <td>${item.grading_status || ""}</td>
+          <td>${Math.round((Number(item.progress || 0))*100)}%</td>
+          <td>${item.result_count}</td>
+          <td>${item.updated_at || ""}</td>
+          <td><a href="/task-progress?task_id=${encodeURIComponent(item.task_id)}">查看进度</a> | <a href="/class-dashboard?task_id=${encodeURIComponent(item.task_id)}">班级看板</a> | <a href="/report-view?task_id=${encodeURIComponent(item.task_id)}">查看报告</a></td>
+        `;
+        body.appendChild(tr);
+      }
+      setDebug({ count: (data.items || []).length, filter_status: s || "ALL" });
+    }
+    $("loadBtn").addEventListener("click", load);
+    load();
+  </script>
+</body>
+</html>

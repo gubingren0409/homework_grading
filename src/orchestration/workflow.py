@@ -1,39 +1,19 @@
 import asyncio
-import logging
-from dataclasses import dataclass
-from io import BytesIO
-from pathlib import Path
 from typing import Any, Optional
-from uuid import uuid4
-from PIL import Image
-from src.perception.base import BasePerceptionEngine
+
 from src.cognitive.base import BaseCognitiveAgent
-from src.schemas.cognitive_ir import EvaluationReport
-from src.schemas.perception_ir import PerceptionOutput, LayoutIR
-from src.schemas.rubric_ir import TeacherRubric
 from src.core.exceptions import PerceptionShortCircuitError
-from src.core.config import settings
+from src.perception.base import BasePerceptionEngine
+from src.schemas.cognitive_ir import EvaluationReport
+from src.schemas.perception_ir import PerceptionOutput
+from src.schemas.rubric_ir import TeacherRubric
 from src.utils.file_parsers import process_multiple_files
-from src.utils.image_slicer import slice_image_by_layout
-from src.skills.service import SkillService
-
-logger = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True)
-class _SliceLayoutBinding:
-    page_index: int
-    region_id: str
-    region_type: str
-    bbox: dict[str, float]
-    image_width: int
-    image_height: int
 
 
 class GradingWorkflow:
     """
-    Central orchestrator that manages the flow between perception and cognitive layers.
-    Now supports multi-page processing (PDF) and reference-based grading (Rubric).
+    Phase34-compatible orchestrator:
+    full-page perception aggregation without layout slicing preprocessing.
     """
 
     def __init__(
@@ -41,236 +21,17 @@ class GradingWorkflow:
         perception_engine: BasePerceptionEngine,
         cognitive_agent: BaseCognitiveAgent,
         *,
-        skill_service: Optional[SkillService] = None,
+        skill_service: Optional[Any] = None,
     ):
-        """
-        Initialize the workflow with injected engine instances.
-        """
+        del skill_service
         self._perception_engine = perception_engine
         self._cognitive_agent = cognitive_agent
-        self._skill_service = skill_service
 
-    @staticmethod
-    def _image_dimensions(image_bytes: bytes) -> tuple[int, int]:
-        with Image.open(BytesIO(image_bytes)) as img:
-            return img.size
-
-    def _build_layout_from_skill_result(self, *, image_bytes: bytes, layout_result: Any) -> LayoutIR:
-        width, height = self._image_dimensions(image_bytes)
-        target_question_no = None
-        if hasattr(layout_result, "target_question_no"):
-            target_question_no = layout_result.target_question_no
-        payload = {
-            "context_type": layout_result.context_type,
-            "target_question_no": target_question_no,
-            "page_index": layout_result.page_index,
-            "regions": [
-                {
-                    "target_id": region.target_id,
-                    "question_no": region.question_no,
-                    "region_type": region.region_type,
-                    "bbox": region.bbox,
-                }
-                for region in layout_result.regions
-            ],
-            "warnings": list(layout_result.warnings),
-        }
-        return LayoutIR.model_validate(payload, context={"image_width": width, "image_height": height})
-
-    def _enforce_phase35_contract_enabled(self) -> None:
-        if not settings.enable_layout_preprocess:
-            raise RuntimeError(
-                "PHASE35_CONTRACT_BLOCK: enable_layout_preprocess must remain enabled."
-            )
-
-    async def _persist_layout_slices(self, slices: dict[str, bytes], *, task_scope: str, page_idx: int) -> list[tuple[bytes, str]]:
-        """
-        Persist sliced images asynchronously to temporary folder and return pipeline-ready bytes.
-        Uses asyncio.to_thread to avoid blocking event loop on file I/O.
-        """
-        target_dir = settings.uploads_path / "layout_slices" / task_scope / f"page_{page_idx}"
-        await asyncio.to_thread(target_dir.mkdir, True, True)
-
-        def _write_file(path: Path, content: bytes) -> None:
-            path.write_bytes(content)
-
-        output_files: list[tuple[bytes, str]] = []
-        for target_id, content in slices.items():
-            filename = f"{target_id}.png"
-            out_path = target_dir / filename
-            await asyncio.to_thread(_write_file, out_path, content)
-            output_files.append((content, filename))
-        return output_files
-
-    async def _layout_preprocess(
+    async def _evaluate_from_images(
         self,
         image_bytes_list: list[bytes],
-        *,
-        context_type: str,
-    ) -> tuple[list[bytes], list[_SliceLayoutBinding], list[LayoutIR]]:
-        """
-        Phase 36: Mandatory two-stage perception preprocessor.
-        1) Extract LayoutIR
-        2) Slice image by layout
-        3) Persist slices asynchronously
-        4) Return sliced bytes with strict layout bindings
-        """
-        processed: list[bytes] = []
-        bindings: list[_SliceLayoutBinding] = []
-        layouts: list[LayoutIR] = []
-        task_scope = uuid4().hex
-        engine = self._perception_engine
-
-        # Hard capability gate: no layout capability means hard block.
-        if not hasattr(engine, "extract_layout"):
-            raise RuntimeError(
-                "PHASE35_CONTRACT_BLOCK: perception engine lacks extract_layout capability."
-            )
-
-        for page_idx, page_bytes in enumerate(image_bytes_list):
-            layout: Optional[LayoutIR] = None
-            if self._skill_service is not None:
-                skill_layout = await self._skill_service.try_parse_layout(
-                    page_bytes,
-                    context_type=context_type,
-                    page_index=page_idx,
-                )
-                if skill_layout is not None:
-                    try:
-                        layout = self._build_layout_from_skill_result(
-                            image_bytes=page_bytes,
-                            layout_result=skill_layout,
-                        )
-                    except Exception as exc:
-                        logger.warning("layout skill output invalid, fallback to engine layout: %s", exc)
-            if layout is None:
-                layout = await engine.extract_layout(  # type: ignore[attr-defined]
-                    page_bytes,
-                    context_type=context_type,
-                    page_index=page_idx,
-                )
-            image_width = int(layout.image_width or 0)
-            image_height = int(layout.image_height or 0)
-            if image_width <= 0 or image_height <= 0:
-                raise RuntimeError(
-                    f"PHASE35_CONTRACT_BLOCK: invalid layout dimensions on page {page_idx}."
-                )
-            if not layout.regions:
-                raise RuntimeError(
-                    f"PHASE35_CONTRACT_BLOCK: layout regions empty on page {page_idx}."
-                )
-
-            slices = slice_image_by_layout(page_bytes, layout)
-            if not slices:
-                raise RuntimeError(
-                    f"PHASE35_CONTRACT_BLOCK: slicing produced no regions on page {page_idx}."
-                )
-
-            persisted = await self._persist_layout_slices(
-                slices,
-                task_scope=task_scope,
-                page_idx=page_idx,
-            )
-            persisted_by_name = {name.rsplit(".", 1)[0]: content for content, name in persisted}
-
-            for region in layout.regions:
-                crop_bytes = persisted_by_name.get(region.target_id)
-                if crop_bytes is None:
-                    raise RuntimeError(
-                        "PHASE35_CONTRACT_BLOCK: missing sliced crop for region "
-                        f"{region.target_id} on page {page_idx}."
-                    )
-                canonical_region_id = f"p{page_idx}_{region.target_id}"
-                processed.append(crop_bytes)
-                bindings.append(
-                    _SliceLayoutBinding(
-                        page_index=page_idx,
-                        region_id=canonical_region_id,
-                        region_type=region.region_type,
-                        bbox=region.bbox.model_dump(),
-                        image_width=image_width,
-                        image_height=image_height,
-                    )
-                )
-            layouts.append(layout)
-
-        return processed, bindings, layouts
-
-    def _build_snapshot_payloads(
-        self,
-        *,
-        evaluation_report: EvaluationReport,
-        layout_bindings: list[_SliceLayoutBinding],
-        element_to_region: dict[str, str],
-        legacy_element_to_region: dict[str, str],
-    ) -> tuple[dict[str, Any], dict[str, Any]]:
-        unique_regions: dict[str, _SliceLayoutBinding] = {}
-        for binding in layout_bindings:
-            unique_regions[binding.region_id] = binding
-        if not unique_regions:
-            raise RuntimeError("PHASE35_CONTRACT_BLOCK: no layout regions available for snapshot persistence.")
-
-        perception_snapshot = {
-            "context_type": "STUDENT_ANSWER",
-            "regions": [
-                {
-                    "target_id": binding.region_id,
-                    "question_no": None,
-                    "region_type": binding.region_type,
-                    "bbox": binding.bbox,
-                    "page_index": binding.page_index,
-                    "image_width": binding.image_width,
-                    "image_height": binding.image_height,
-                }
-                for binding in unique_regions.values()
-            ],
-            "warnings": [],
-        }
-
-        cognitive_snapshot = evaluation_report.model_dump()
-        steps = cognitive_snapshot.get("step_evaluations", [])
-        if not isinstance(steps, list):
-            raise RuntimeError(
-                "PHASE35_CONTRACT_BLOCK: cognitive snapshot step_evaluations malformed."
-            )
-
-        for idx, step in enumerate(steps):
-            if not isinstance(step, dict):
-                raise RuntimeError(
-                    f"PHASE35_CONTRACT_BLOCK: cognitive step[{idx}] is not an object."
-                )
-            ref = str(step.get("reference_element_id") or "")
-            if not ref:
-                raise RuntimeError(
-                    f"PHASE35_CONTRACT_BLOCK: cognitive step[{idx}] missing reference_element_id."
-                )
-            region_id = element_to_region.get(ref)
-            if region_id is None:
-                region_id = legacy_element_to_region.get(ref)
-            if region_id is None:
-                raise RuntimeError(
-                    "PHASE35_CONTRACT_BLOCK: cognitive reference cannot be mapped to a layout region: "
-                    f"{ref}."
-                )
-            step["reference_element_id"] = region_id
-
-        return perception_snapshot, cognitive_snapshot
-
-    async def _run_pipeline_internal(
-        self,
-        files_data: list[tuple[bytes, str]],
         rubric: TeacherRubric | None = None,
     ) -> tuple[EvaluationReport, dict[str, Any], dict[str, Any]]:
-        """
-        Internal execution path returning grading report plus persisted snapshots.
-        """
-        image_bytes_list = await process_multiple_files(files_data)
-        self._enforce_phase35_contract_enabled()
-        image_bytes_list, slice_bindings, _ = await self._layout_preprocess(
-            image_bytes_list,
-            context_type="STUDENT_ANSWER",
-        )
-
         tasks = [
             self._perception_engine.process_image(page_bytes)
             for page_bytes in image_bytes_list
@@ -279,27 +40,21 @@ class GradingWorkflow:
 
         all_elements = []
         all_pages_blank = True
-        element_to_region: dict[str, str] = {}
-        legacy_element_to_region: dict[str, str] = {}
 
-        for slice_idx, perception_output in enumerate(perception_outputs):
+        for page_idx, perception_output in enumerate(perception_outputs):
             is_unreadable = perception_output.readability_status in ["HEAVILY_ALTERED", "UNREADABLE"]
             if perception_output.trigger_short_circuit or is_unreadable:
                 raise PerceptionShortCircuitError(
                     readability_status=perception_output.readability_status,
-                    message=f"Workflow halted on page {slice_idx}: Image quality too poor."
+                    message=f"Workflow halted on page {page_idx}: Image quality too poor.",
                 )
 
             if not perception_output.is_blank:
                 all_pages_blank = False
 
-            binding = slice_bindings[slice_idx]
             for elem in perception_output.elements:
-                original_id = elem.element_id
-                elem.element_id = f"{binding.region_id}::{original_id}"
+                elem.element_id = f"p{page_idx}_{elem.element_id}"
                 all_elements.append(elem)
-                element_to_region[elem.element_id] = binding.region_id
-                legacy_element_to_region.setdefault(original_id, binding.region_id)
 
         if all_pages_blank:
             report = EvaluationReport(
@@ -311,13 +66,14 @@ class GradingWorkflow:
                 system_confidence=1.0,
                 requires_human_review=False,
             )
-            perception_snapshot, cognitive_snapshot = self._build_snapshot_payloads(
-                evaluation_report=report,
-                layout_bindings=slice_bindings,
-                element_to_region=element_to_region,
-                legacy_element_to_region=legacy_element_to_region,
-            )
-            return report, perception_snapshot, cognitive_snapshot
+            perception_snapshot = {
+                "readability_status": "UNREADABLE",
+                "elements": [],
+                "global_confidence": 0.0,
+                "is_blank": True,
+                "trigger_short_circuit": False,
+            }
+            return report, perception_snapshot, report.model_dump()
 
         global_conf = (
             sum(p.global_confidence for p in perception_outputs) / len(perception_outputs)
@@ -333,28 +89,50 @@ class GradingWorkflow:
         )
 
         evaluation_report = await self._cognitive_agent.evaluate_logic(merged_ir, rubric)
-
         if global_conf < 0.80:
             evaluation_report.requires_human_review = True
 
-        perception_snapshot, cognitive_snapshot = self._build_snapshot_payloads(
-            evaluation_report=evaluation_report,
-            layout_bindings=slice_bindings,
-            element_to_region=element_to_region,
-            legacy_element_to_region=legacy_element_to_region,
+        return evaluation_report, merged_ir.model_dump(), evaluation_report.model_dump()
+
+    async def _generate_rubric_from_images(
+        self,
+        image_bytes_list: list[bytes],
+    ) -> TeacherRubric:
+        tasks = [
+            self._perception_engine.process_image(page_bytes)
+            for page_bytes in image_bytes_list
+        ]
+        perception_outputs = await asyncio.gather(*tasks)
+
+        all_elements = []
+        for page_idx, ir_data in enumerate(perception_outputs):
+            for elem in ir_data.elements:
+                elem.element_id = f"p{page_idx}_{elem.element_id}"
+                all_elements.append(elem)
+
+        merged_ir = PerceptionOutput(
+            readability_status="CLEAR",
+            elements=all_elements,
+            global_confidence=1.0,
+            trigger_short_circuit=False,
         )
-        return evaluation_report, perception_snapshot, cognitive_snapshot
+
+        rubric = await self._cognitive_agent.generate_rubric(merged_ir)
+        return rubric
+
+    async def _run_pipeline_internal(
+        self,
+        files_data: list[tuple[bytes, str]],
+        rubric: TeacherRubric | None = None,
+    ) -> tuple[EvaluationReport, dict[str, Any], dict[str, Any]]:
+        image_bytes_list = await process_multiple_files(files_data)
+        return await self._evaluate_from_images(image_bytes_list, rubric=rubric)
 
     async def run_pipeline(
-        self, 
-        files_data: list[tuple[bytes, str]], 
-        rubric: TeacherRubric | None = None
+        self,
+        files_data: list[tuple[bytes, str]],
+        rubric: TeacherRubric | None = None,
     ) -> EvaluationReport:
-        """
-        Executes the full grading pipeline for one or more student answer files.
-        Aggregates multi-page IR and avoids element_id conflicts.
-        Now uses asyncio.gather for parallel page perception.
-        """
         report, _, _ = await self._run_pipeline_internal(files_data, rubric=rubric)
         return report
 
@@ -363,51 +141,24 @@ class GradingWorkflow:
         files_data: list[tuple[bytes, str]],
         rubric: TeacherRubric | None = None,
     ) -> tuple[EvaluationReport, dict[str, Any], dict[str, Any]]:
-        """
-        Execute grading pipeline and return report + persisted snapshot payloads.
-        """
         return await self._run_pipeline_internal(files_data, rubric=rubric)
 
+    async def run_pipeline_with_preprocessed_images(
+        self,
+        image_bytes_list: list[bytes],
+        rubric: TeacherRubric | None = None,
+    ) -> tuple[EvaluationReport, dict[str, Any], dict[str, Any]]:
+        return await self._evaluate_from_images(image_bytes_list, rubric=rubric)
+
     async def generate_rubric_pipeline(
-        self, 
-        files_data: list[tuple[bytes, str]]
+        self,
+        files_data: list[tuple[bytes, str]],
     ) -> TeacherRubric:
-        """
-        Orchestrates the generation of a TeacherRubric from multiple model answer files.
-        Aggregates multi-page IR and avoids element_id conflicts.
-        Now uses asyncio.gather for parallel page perception.
-        """
-        # Step 1: Flatten and normalize all inputs
         image_bytes_list = await process_multiple_files(files_data)
-        self._enforce_phase35_contract_enabled()
-        image_bytes_list, _, _ = await self._layout_preprocess(
-            image_bytes_list,
-            context_type="REFERENCE",
-        )
-        
-        # Step 2: Parallel Perception (Throttled by engine-level semaphore)
-        tasks = [
-            self._perception_engine.process_image(page_bytes)
-            for page_bytes in image_bytes_list
-        ]
-        perception_outputs = await asyncio.gather(*tasks)
-        
-        all_elements = []
-        for page_idx, ir_data in enumerate(perception_outputs):
-            # Map elements with page-specific prefix
-            for elem in ir_data.elements:
-                elem.element_id = f"p{page_idx}_{elem.element_id}"
-                all_elements.append(elem)
-        
-        # Step 3: Global Perception Aggregation
-        merged_ir = PerceptionOutput(
-            readability_status="CLEAR",
-            elements=all_elements,
-            global_confidence=1.0,
-            trigger_short_circuit=False
-        )
-        
-        # Step 4: Cognition (Distill Rubric from Merged IR)
-        rubric = await self._cognitive_agent.generate_rubric(merged_ir)
-        
-        return rubric
+        return await self._generate_rubric_from_images(image_bytes_list)
+
+    async def generate_rubric_from_preprocessed_images(
+        self,
+        image_bytes_list: list[bytes],
+    ) -> TeacherRubric:
+        return await self._generate_rubric_from_images(image_bytes_list)

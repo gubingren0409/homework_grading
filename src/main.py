@@ -1,12 +1,15 @@
-from fastapi import FastAPI, Request
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
-from slowapi import Limiter, _rate_limit_exceeded_handler
-from slowapi.util import get_remote_address
+from fastapi.responses import FileResponse
+from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from starlette.middleware.base import BaseHTTPMiddleware
 import logging
 
-from src.api.routes import router as grading_router
+from src.api.routes import router as grading_router, limiter as api_limiter
 from src.core.exceptions import PerceptionShortCircuitError, GradingSystemError
 from src.core.json_logging import configure_json_logging
 from src.core.trace_context import bind_context, new_trace_id, reset_context
@@ -17,15 +20,24 @@ from src.prompts.provider import get_prompt_provider
 configure_json_logging(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Initialize Limiter
-limiter = Limiter(key_func=get_remote_address)
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    await _prompt_provider.start()
+    try:
+        yield
+    finally:
+        await _prompt_provider.stop()
+
+
 app = FastAPI(
     title="AI Homework Grader API",
     description="Scalable API for AI-driven homework evaluation using decoupled Perception and Cognition layers.",
-    version="0.1.0"
+    version="0.1.0",
+    lifespan=lifespan,
 )
 
 _prompt_provider = get_prompt_provider()
+_STATIC_DIR = Path(__file__).resolve().parent / "api" / "static"
 
 
 class TraceContextMiddleware(BaseHTTPMiddleware):
@@ -44,7 +56,7 @@ class TraceContextMiddleware(BaseHTTPMiddleware):
             reset_context(tokens)
 
 # Setup Limiter state and handlers
-app.state.limiter = limiter
+app.state.limiter = api_limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(
     HardBodyLimitMiddleware,
@@ -55,17 +67,6 @@ app.add_middleware(TraceContextMiddleware)
 
 # Register Routes
 app.include_router(grading_router)
-
-
-@app.on_event("startup")
-async def startup_prompt_provider() -> None:
-    await _prompt_provider.start()
-
-
-@app.on_event("shutdown")
-async def shutdown_prompt_provider() -> None:
-    await _prompt_provider.stop()
-
 
 @app.exception_handler(PerceptionShortCircuitError)
 async def perception_short_circuit_handler(request: Request, exc: PerceptionShortCircuitError):
@@ -99,7 +100,76 @@ async def grading_system_error_handler(request: Request, exc: GradingSystemError
     )
 
 
+@app.exception_handler(RateLimitExceeded)
+async def structured_rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    del request
+    return JSONResponse(
+        status_code=429,
+        content={
+            "detail": {
+                "error_code": "RATE_LIMITED",
+                "message": "Too many requests. Please retry later.",
+                "retryable": True,
+                "retry_hint": "retry_later",
+                "next_action": "wait_and_retry",
+            }
+        },
+    )
+
+
 @app.get("/")
 async def health_check():
     """Service health check endpoint."""
     return {"status": "healthy", "service": "homework-grader-core"}
+
+
+def _serve_console_page(filename: str) -> FileResponse:
+    page = (_STATIC_DIR / filename).resolve()
+    if not page.exists():
+        raise HTTPException(status_code=404, detail="console page not found")
+    return FileResponse(page)
+
+
+@app.get("/student-console", include_in_schema=False)
+async def student_console() -> FileResponse:
+    return _serve_console_page("student_console.html")
+
+
+@app.get("/student-console-batch", include_in_schema=False)
+async def student_console_batch() -> FileResponse:
+    return _serve_console_page("student_console_batch.html")
+
+
+@app.get("/review-console", include_in_schema=False)
+async def review_console() -> FileResponse:
+    return _serve_console_page("review_workbench.html")
+
+
+@app.get("/ops-console", include_in_schema=False)
+async def ops_console() -> FileResponse:
+    return _serve_console_page("ops_console.html")
+
+
+@app.get("/tasks-list", include_in_schema=False)
+async def tasks_list_page() -> FileResponse:
+    return _serve_console_page("task_list.html")
+
+
+@app.get("/task-progress", include_in_schema=False)
+async def task_progress_page() -> FileResponse:
+    return _serve_console_page("task_progress.html")
+
+
+@app.get("/class-dashboard", include_in_schema=False)
+async def class_dashboard_page() -> FileResponse:
+    return _serve_console_page("class_dashboard.html")
+
+
+@app.get("/history-results", include_in_schema=False)
+async def history_results_page() -> FileResponse:
+    return _serve_console_page("history_results.html")
+
+
+@app.get("/report-view", include_in_schema=False)
+async def report_view_page() -> FileResponse:
+    return _serve_console_page("report_view.html")

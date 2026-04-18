@@ -73,6 +73,34 @@ class QwenVLMPerceptionEngine(BasePerceptionEngine):
             return match.group(1).strip()
         return text.strip()
 
+    def _extract_json_object_candidate(self, text: str) -> str:
+        """
+        Extract the most likely JSON object payload from model text.
+        Handles fenced-json and polluted prefix/suffix text.
+        """
+        cleaned = self._clean_json_text(text)
+        if cleaned.startswith("{") and cleaned.endswith("}"):
+            return cleaned
+
+        start = cleaned.find("{")
+        end = cleaned.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            return cleaned[start:end + 1].strip()
+
+        start = text.find("{")
+        end = text.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            return text[start:end + 1].strip()
+
+        return cleaned
+
+    def _decode_json_object(self, text: str) -> Dict[str, Any]:
+        candidate = self._extract_json_object_candidate(text)
+        parsed = json.loads(candidate)
+        if not isinstance(parsed, dict):
+            raise ValueError("top-level JSON payload must be an object")
+        return parsed
+
     def _sanitize_coordinates(self, data: dict) -> dict:
         """Intercepts and clips VLM hallucinated coordinates."""
         if "elements" not in data or not isinstance(data["elements"], list):
@@ -115,8 +143,8 @@ class QwenVLMPerceptionEngine(BasePerceptionEngine):
                 bucket_key=bucket_key,
                 locale="zh-CN",
                 variables=list(variables),
-                max_input_tokens=8192,
-                reserve_output_tokens=1536,
+                max_input_tokens=settings.prompt_max_input_tokens,
+                reserve_output_tokens=settings.prompt_reserve_output_tokens,
             )
         )
         return prompt_bundle.messages
@@ -181,9 +209,12 @@ class QwenVLMPerceptionEngine(BasePerceptionEngine):
         """
         Shared low-level JSON call for Phase 35 dual-mode perception.
         """
+        if not settings.llm_egress_enabled:
+            raise GradingSystemError("LLM egress disabled by configuration (LLM_EGRESS_ENABLED=false)")
         connection_error_count = 0
         max_retries = 10
         max_connection_errors = 5
+        last_parse_error: Optional[str] = None
         messages = await self._resolve_prompt_messages(
             prompt_key=prompt_key,
             variables=prompt_variables,
@@ -218,8 +249,19 @@ class QwenVLMPerceptionEngine(BasePerceptionEngine):
                     raw = response.choices[0].message.content
                     if not raw:
                         raise GradingSystemError("Received empty response from Qwen-VL.")
-                    cleaned = self._clean_json_text(raw)
-                    return json.loads(cleaned)
+                    try:
+                        return self._decode_json_object(raw)
+                    except (json.JSONDecodeError, ValueError) as dec_err:
+                        last_parse_error = str(dec_err)
+                        logger.warning(
+                            "qwen_json_parse_failed prompt_key=%s attempt=%s error=%s raw_snippet=%s",
+                            prompt_key,
+                            attempt + 1,
+                            dec_err,
+                            raw[:240].replace("\n", " "),
+                        )
+                        await asyncio.sleep(0.5)
+                        continue
 
             except AllKeysExhaustedError:
                 raise
@@ -236,11 +278,13 @@ class QwenVLMPerceptionEngine(BasePerceptionEngine):
                     raise GradingSystemError(f"Persistent network instability for Qwen: {str(net_err)}")
                 await asyncio.sleep(2.0)
                 continue
-            except json.JSONDecodeError as dec_err:
-                raise GradingSystemError(f"VLM JSON decode failed: {dec_err}")
             except Exception as e:
                 raise GradingSystemError(f"An unexpected error occurred during perception: {str(e)}")
 
+        if last_parse_error:
+            raise GradingSystemError(
+                f"VLM JSON decode failed after retries (prompt_key={prompt_key}): {last_parse_error}"
+            )
         raise GradingSystemError("Qwen-VL request exhausted retries.")
 
     async def extract_layout(

@@ -9,6 +9,7 @@ from src.api.dependencies import get_db_path
 from src.db.client import (
     init_db,
     create_task,
+    insert_grading_results,
     update_task_status,
     create_hygiene_interception_record,
     migrate_drop_legacy_review_columns,
@@ -524,5 +525,191 @@ def test_phaseD2_review_annotation_asset_detail_not_found(tmp_path: Path):
         detail = resp.json()["detail"]
         assert detail["error_code"] == "ANNOTATION_ASSET_NOT_FOUND"
         assert detail["retryable"] is False
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_phaseD2_pending_review_workbench_priority_summary(tmp_path: Path):
+    db_path = str(tmp_path / "phaseD2_review_queue_priority.db")
+    asyncio.run(init_db(db_path))
+    asyncio.run(create_task(db_path, "review-task-a", submitted_count=1))
+    asyncio.run(
+        update_task_status(
+            db_path,
+            "review-task-a",
+            "COMPLETED",
+            grading_status="REJECTED_UNREADABLE",
+            review_status="PENDING_REVIEW",
+            fallback_reason="PERCEPTION_SHORT_CIRCUIT:UNREADABLE",
+        )
+    )
+    asyncio.run(create_task(db_path, "review-task-b", submitted_count=1))
+    asyncio.run(
+        update_task_status(
+            db_path,
+            "review-task-b",
+            "COMPLETED",
+            grading_status="SCORED",
+            review_status="PENDING_REVIEW",
+        )
+    )
+    asyncio.run(
+        insert_grading_results(
+            db_path,
+            records=[
+                {
+                    "task_id": "review-task-b",
+                    "student_id": "stu-001",
+                    "total_deduction": 4.0,
+                    "is_pass": False,
+                    "report_json": {
+                        "perception_output": {
+                            "elements": [
+                                {"element_id": "p0_1", "raw_content": "学生答案片段"}
+                            ]
+                        },
+                        "evaluation_report": {
+                            "status": "SCORED",
+                            "is_fully_correct": False,
+                            "total_score_deduction": 4.0,
+                            "step_evaluations": [
+                                {
+                                    "reference_element_id": "p0_1",
+                                    "is_correct": False,
+                                    "error_type": "LOGIC",
+                                    "correction_suggestion": "请补充关键推导。",
+                                }
+                            ],
+                            "overall_feedback": "存在逻辑问题。",
+                            "system_confidence": 0.55,
+                            "requires_human_review": True,
+                        },
+                    },
+                }
+            ],
+        )
+    )
+
+    client = _setup_client(db_path)
+    try:
+        resp = client.get("/api/v1/review/pending-workbench?page=1&limit=20&sort_by=priority")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["summary"]["pending_task_count"] == 2
+        assert data["summary"]["unreadable_task_count"] == 1
+        assert data["summary"]["human_review_task_count"] == 1
+        assert data["items"][0]["task_id"] == "review-task-a"
+        assert data["items"][0]["priority_bucket"] == "UNREADABLE"
+        assert data["items"][1]["task_id"] == "review-task-b"
+        assert data["items"][1]["priority_bucket"] == "HUMAN_REVIEW"
+        assert data["items"][1]["review_target_count"] >= 1
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_phaseD2_review_decision_and_workbench_flow(tmp_path: Path):
+    db_path = str(tmp_path / "phaseD2_review_decision_flow.db")
+    asyncio.run(init_db(db_path))
+    task_id = "phaseD2-review-task"
+    asyncio.run(create_task(db_path, task_id, submitted_count=1))
+    asyncio.run(
+        update_task_status(
+            db_path,
+            task_id,
+            "COMPLETED",
+            grading_status="SCORED",
+            review_status="PENDING_REVIEW",
+        )
+    )
+    asyncio.run(
+        insert_grading_results(
+            db_path,
+            records=[
+                {
+                    "task_id": task_id,
+                    "student_id": "stu-review-1",
+                    "total_deduction": 2.5,
+                    "is_pass": False,
+                    "report_json": {
+                        "perception_output": {
+                            "elements": [
+                                {"element_id": "p0_1", "raw_content": "关键作答片段"}
+                            ]
+                        },
+                        "perception_ir_snapshot": {
+                            "elements": [
+                                {"element_id": "p0_1", "raw_content": "关键作答片段"}
+                            ]
+                        },
+                        "cognitive_ir_snapshot": {
+                            "status": "SCORED",
+                            "step_evaluations": [
+                                {
+                                    "reference_element_id": "p0_1",
+                                    "is_correct": False,
+                                    "error_type": "CONCEPTUAL",
+                                    "correction_suggestion": "请重新判断受力方向。",
+                                }
+                            ],
+                            "overall_feedback": "存在概念偏差。",
+                            "system_confidence": 0.61,
+                            "requires_human_review": True,
+                        },
+                        "evaluation_report": {
+                            "status": "SCORED",
+                            "is_fully_correct": False,
+                            "total_score_deduction": 2.5,
+                            "step_evaluations": [
+                                {
+                                    "reference_element_id": "p0_1",
+                                    "is_correct": False,
+                                    "error_type": "CONCEPTUAL",
+                                    "correction_suggestion": "请重新判断受力方向。",
+                                }
+                            ],
+                            "overall_feedback": "存在概念偏差。",
+                            "system_confidence": 0.61,
+                            "requires_human_review": True,
+                        },
+                    },
+                }
+            ],
+        )
+    )
+
+    client = _setup_client(db_path)
+    try:
+        decision_resp = client.post(
+            "/api/v1/review/decisions",
+            json={
+                "task_id": task_id,
+                "sample_id": "stu-review-1",
+                "student_id": "stu-review-1",
+                "decision": "ADJUST_SCORE",
+                "final_score": 7.5,
+                "teacher_comment": "教师改判：步骤方向判断错误，但后续思路部分合理。",
+                "include_in_dataset": True,
+            },
+        )
+        assert decision_resp.status_code == 200
+        assert decision_resp.json()["decision"] == "ADJUST_SCORE"
+
+        list_resp = client.get(f"/api/v1/review/decisions?task_id={task_id}&page=1&limit=20")
+        assert list_resp.status_code == 200
+        assert len(list_resp.json()["items"]) == 1
+
+        workbench_resp = client.get(f"/api/v1/review/workbench/{task_id}")
+        assert workbench_resp.status_code == 200
+        workbench = workbench_resp.json()
+        assert workbench["review_status"] == "PENDING_REVIEW"
+        assert workbench["risk_summary"]["reviewed_decision_count"] == 1
+        assert workbench["samples"][0]["teacher_decision"]["decision"] == "ADJUST_SCORE"
+
+        mark_resp = client.post(
+            f"/api/v1/review/tasks/{task_id}/status",
+            json={"review_status": "REVIEWED"},
+        )
+        assert mark_resp.status_code == 200
+        assert mark_resp.json()["review_status"] == "REVIEWED"
     finally:
         app.dependency_overrides.clear()

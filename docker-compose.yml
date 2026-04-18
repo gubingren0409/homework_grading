@@ -52,6 +52,7 @@ services:
       BATCH_POSTPROCESS_CONCURRENCY: 6
       BATCH_PROGRESS_UPDATE_STEP: 2
       BATCH_PROGRESS_MIN_INTERVAL_SECONDS: 1.0
+      FILE_PREPROCESS_CONCURRENCY: ${FILE_PREPROCESS_CONCURRENCY:-3}
     depends_on:
       redis:
         condition: service_healthy

@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     batch_postprocess_concurrency: int = 4
     batch_progress_update_step: int = 2
     batch_progress_min_interval_seconds: float = 1.5
+    file_preprocess_concurrency: int = 3
 
     # SSE runtime behavior
     sse_stream_timeout_seconds: int = 1800
@@ -177,6 +178,7 @@ class Settings(BaseSettings):
         "batch_internal_concurrency",
         "batch_postprocess_concurrency",
         "batch_progress_update_step",
+        "file_preprocess_concurrency",
     )
     @classmethod
     def _validate_positive_int(cls, value: int) -> int:

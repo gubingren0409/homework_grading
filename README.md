@@ -1,340 +1,316 @@
-# AI Homework Grading System
+# AI 自动作业批改系统
 
-[![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://www.python.org/downloads/)
-[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Phase](https://img.shields.io/badge/Phase-D%20Complete-brightgreen.svg)](docs/handoffs/)
+面向**中学理科教师**的 AI 阅卷与复核工作台后端。当前仓库已经具备一条真实可运行的后端主链路：
 
-面向理科作业场景的多模态批改系统。当前代码已形成 **感知（Perception）+ 认知（Cognition）+ 异步编排（FastAPI + Celery + Redis）+ Prompt 控制面 + 复核运营 API** 的完整后端能力。
+> **教师上传参考答案/学生作答 -> 创建任务 -> 异步批改 -> 感知识别 -> 认知评分 -> 结果落库 -> SSE/轮询回传 -> 报告/复核页展示**
+
+它已经明显超过“接口 demo”，但还没有收束成“成熟可交付 SaaS”。更准确地说，它处在：
+
+> **后端能力完整度较高，教师工作流前端已完成第一轮收口，当前主要缺口转向部署治理、交付包装与更深层结构拆分**
 
 ---
 
-## 1. 当前完成度（按代码现状）
+## 1. 我对当前项目的判断
 
-| 领域 | 状态 | 说明 |
+### 最合理的当前定位
+
+> **教师侧 AI 阅卷与复核工作台**
+
+适合先解决这些问题：
+
+1. 教师上传标准答案，自动生成或复用 rubric。
+2. 教师批量上传学生作答，系统自动评分。
+3. 系统自动筛出低置信度、异常、不可读样本进入复核。
+4. 教师查看证据化报告，并写回反馈。
+5. 系统沉淀 rubric、标注资产、运行遥测和 prompt 运营数据。
+
+### 不建议现在这样定义
+
+1. 学生直接使用的 AI 学习 App
+2. 完整学校教务平台
+3. 通用 OCR / 文档理解平台
+4. 全学科通用教育大模型产品
+
+这些方向未来都能扩，但**和当前代码的最强能力不完全匹配**。
+
+---
+
+## 2. 仓库真实结构
+
+这个目录里其实同时存在两套东西：
+
+| 区域 | 作用 | 判断 |
 | --- | --- | --- |
-| Phase A（能力/契约/SLA） | 已完成 | 能力目录、契约目录、SLA 摘要接口均已上线 |
-| Phase B（能力库扩展） | 已完成（核心） | 多 provider、路由策略、自动熔断控制已接入 |
-| Phase C（数据与评测） | 已完成 | 数据集闭环指标、运行看板、回归矩阵自动化 |
-| Phase D（前端支撑接口） | 已完成 | D1 学生台 / D2 复核台 / D3 运营台接口收口 |
-| P0 技术债 | 已完成 | runtime telemetry 持久化 + 看板数据源硬化 |
-| P1 技术债 | 已完成 | Prompt 热更新控制面 + A/B 配置与审计 |
-| 外部 Skills 灰度 | 已落地基座 | Layout/Validation 网关可用，默认关闭外部调用 |
+| 根目录 `main.py`、`vlm_client.py`、`image_processor.py` 等 | 早期原型/实验脚本 | **历史遗留，不是当前主系统入口** |
+| `homework_grader_system/` | FastAPI + Celery + Redis + SQLite 的主系统 | **当前应视为唯一主工程** |
+
+如果你要重新接管项目，**请直接把 `homework_grader_system/` 当作主仓库看**，不要先从根目录原型脚本入手。
 
 ---
 
-## 2. 架构总览
-
-1. **API Gateway（`src/api`）**  
-   负责任务提交、状态查询、SSE 推送、复核接口、运营接口与契约目录接口。
-
-2. **异步 Worker（`src/worker`）**  
-   任务入队后由 Celery 执行工作流，写入结果、快照、遥测并发布状态事件。
-
-3. **编排层（`src/orchestration/workflow.py`）**  
-   当前采用 Phase34 兼容路径：整页感知聚合（不启用布局切片门禁），并输出感知/认知快照。
-
-4. **算法层（`src/perception` + `src/cognitive`）**  
-   - 感知：`qwen` / `mock` provider  
-   - 认知：DeepSeek 路由与降级策略（自动熔断 + token 阈值 + fallback）
-
-5. **Prompt 控制面（`src/prompts`）**  
-   L1/L2/LKG、失效广播、热更新、forced variant、A/B 灰度与审计链路。
-
-6. **Skills 基座（`src/skills`）**  
-   支持外接 Layout Parser 与 Validation Executor，带 fail-open 与记录落库。
-
-7. **数据层（`src/db` + SQLite）**  
-   任务状态、批改结果、标注资产、卫生拦截、运行遥测、Prompt 控制与审计持久化。
-
----
-
-## 3. 目录概览（职责维度）
+## 3. 当前系统主链路
 
 ```text
-homework_grader_system/
-├── src/
-│   ├── api/                # FastAPI 路由、依赖、SSE
-│   ├── worker/             # Celery worker 与异步执行链路
-│   ├── orchestration/      # 端到端流程编排（Phase34 兼容整页感知 + 快照）
-│   ├── perception/         # 视觉感知引擎与 provider factory
-│   ├── cognitive/          # 认知判分引擎与路由控制
-│   ├── prompts/            # Prompt provider、缓存、A/B、失效机制
-│   ├── skills/             # 外部 skill 适配与验证落库
-│   ├── db/                 # schema 与数据访问层
-│   ├── schemas/            # IR 与 API 数据模型
-│   └── core/               # 配置、日志、限流与中间件
-├── configs/prompts/        # Prompt 资产
-├── scripts/                # 回归脚本、迁移脚本、验证脚本
-├── tests/                  # API/工作流/策略/skills 回归测试
-├── .github/workflows/      # CI（Phase C 矩阵、Prompt 预检）
-├── docker-compose.yml
-├── Dockerfile
-└── README.md
+教师上传参考答案 / 学生作答
+  -> FastAPI API Gateway
+  -> 文件存储（LocalStorage / S3 适配层）
+  -> create_task(status=PENDING)
+  -> Celery worker / 本地后台回退
+  -> 文件预处理（图片归一化 / PDF 转图）
+  -> 感知层（Qwen-VL）
+  -> 认知层（DeepSeek）
+  -> 结果落库（tasks / grading_results / telemetry / audit）
+  -> Redis Pub/Sub 推送状态
+  -> SSE / 轮询查询
+  -> 报告 DTO
+  -> 报告页 / 历史页 / 复核页
 ```
 
 ---
 
-## 4. 快速启动
+## 4. 代码结构与职责
 
-### 4.1 本地运行
+| 目录/文件 | 职责 | 审计判断 |
+| --- | --- | --- |
+| `src/main.py` | FastAPI 入口、异常处理、静态页面路由 | 清晰，适合作为维护入口 |
+| `src/api/routes.py` | 核心 API 集中入口 | 功能全，但已膨胀到 **3120 行 / 54 个端点** |
+| `src/api/sse.py` | SSE 状态流、Redis Pub/Sub 订阅 | 实现清楚，工程化程度不错 |
+| `src/worker/main.py` | Celery worker、批处理编排、落库、Pub/Sub、DLQ | 核心价值区，也是主要维护风险点 |
+| `src/orchestration/workflow.py` | 感知 -> 认知的业务编排层 | 当前最清楚、最值得先读的业务文件之一 |
+| `src/perception/` | Qwen 感知层、布局识别 | 已从 OCR 升级为结构化 IR 输出 |
+| `src/cognitive/` | DeepSeek 评分、降级、JSON 修复、遥测 | 能力强，但复杂度高 |
+| `src/prompts/` | Prompt 资产、缓存、A/B、LKG、失效广播 | 平台化能力很强，是重要资产 |
+| `src/db/` | SQLite schema + DAO | 数据覆盖完整，但 `client.py` 已达 **2018 行** |
+| `src/skills/` | 外部 layout/validation skill 基座 | 可扩展钩子已具备，但默认仍偏可选能力 |
+| `src/api/static/` | 现有前端页面 | 已能串通链路，但仍是工具台形态 |
+
+---
+
+## 5. 当前完成情况
+
+| 方向 | 状态 | 说明 |
+| --- | --- | --- |
+| 单学生多页提交 | **已完成** | 图片/PDF 均可，多页汇总评分 |
+| 多学生单页批处理 | **已完成** | 单任务内并发处理多个学生文件 |
+| one-shot 批量入口 | **已完成** | 可一次提交参考答案与学生作答 |
+| rubric 生成与复用 | **已完成** | 支持内容指纹去重 |
+| 队列与本地回退 | **已完成** | Redis/Celery 不可用时能回退本地执行 |
+| SSE 实时回传 | **已完成** | 依赖 Redis Pub/Sub |
+| 报告 API | **已完成** | 任务、历史、报告读取链路齐全 |
+| 复核后端 | **已完成** | 待复核、标注资产、教师反馈写回已打通 |
+| Prompt 控制面 | **已完成** | L1/L2 缓存、A/B、forced variant、LKG、invalidate |
+| 运行时路由与熔断 | **已完成** | runtime router + circuit breaker 已接入 |
+| 运营/观测 API | **已完成** | runtime dashboard、queue diagnostics 等已具备 |
+| 前端产品化 | **第一轮已完成** | 教师任务创建、进度跟踪、班级看板、单份报告、复核工作台已串成完整工作流，当前仍以静态页形态交付 |
+| 部署治理 | **进行中** | Docker Compose 可运行，Nginx/HTTPS/云部署未收口 |
+
+---
+
+## 6. 系统最强的部分
+
+### 6.1 后端闭环已经做出来了
+
+它不是“调一下模型接口”的项目，而是已经把这些环节全部串起来：
+
+1. 任务状态
+2. 异步队列
+3. 本地回退
+4. 报告落库
+5. SSE 状态推送
+6. 复核链路
+7. prompt 控制
+8. runtime telemetry
+9. 数据卫生拦截
+10. 标注资产沉淀
+
+### 6.2 平台化雏形已经成立
+
+`src/prompts/provider.py`、`src/core/runtime_router.py`、`src/skills/`、`src/db/schema.sql` 说明这套系统已经有“**可配置、可治理、可实验**”的平台底子。
+
+### 6.3 数据模型不是临时拼的
+
+数据库不仅有 `tasks` / `grading_results`，还有：
+
+1. `task_runtime_telemetry`
+2. `prompt_control_state`
+3. `prompt_ab_configs`
+4. `prompt_ops_audit_log`
+5. `hygiene_interception_log`
+6. `golden_annotation_assets`
+7. `skill_validation_records`
+8. `rubrics`
+9. `rubric_generate_audit`
+
+这意味着系统已经开始从“功能脚本”进入“运营系统”。
+
+---
+
+## 7. 当前最伤维护者的地方
+
+### 7.1 主工程与原型代码并存
+
+仓库根目录保留了一批早期脚本，而真实系统在 `homework_grader_system/` 子目录。  
+这会直接增加接手者的认知噪音。
+
+### 7.2 巨型文件已经出现
+
+当前最典型的三个“认知黑洞”：
+
+1. `src/api/routes.py`
+2. `src/worker/main.py`
+3. `src/db/client.py`
+
+它们不是写坏了，而是因为 phase 式持续叠加导致**职责越来越多但还没完成模块化回收**。
+
+### 7.3 前端已能支撑教师工作流，但交付壳仍偏轻
+
+前端已经不再只是上传工具页，而是能覆盖：  
+任务创建 -> 进度跟踪 -> 班级汇总 -> 单份报告 -> 异常复核。  
+但它仍然是静态 HTML 交付形态，离成熟 SaaS 前端还有一层“统一设计系统 / 登录权限 / 部署外壳 / 试点包装”。
+
+### 7.4 文档历史包袱偏重
+
+`docs/handoffs/` 对追历史有价值，但不适合作为当前入口。  
+如果维护者先读这些阶段文档，很容易重新陷入 phase 细节，反而看不清现状。
+
+---
+
+## 8. 实际测试基线
+
+本轮围绕教师工作流与 worker 主链路做的针对性回归基线为：
+
+- **52 passed**
+
+已覆盖的关键变更包括：
+
+1. worker 事件循环兼容性修复；
+2. 教师任务创建页内嵌进度摘要与结果跳转；
+3. 独立进度页布局修复；
+4. 结果页原图预览；
+5. 批处理 `result_count` 按单份递增；
+6. `eta_seconds` 从固定常量改为动态估算。
+
+已用真实数据再次验证：
+
+1. `data\3.20_physics\question_13\students` 可正常完成批量任务；
+2. 状态接口中的 `result_count` 会在处理中递增，不再卡在 `0/N` 直到结束；
+3. 报告接口可返回原始作答图片预览链接；
+4. 当前 worker 在线，教师端主链路可继续使用。
+
+---
+
+## 9. 当前前端实际情况
+
+现有页面：
+
+1. `/student-console`
+2. `/student-console-batch`
+3. `/review-console`
+4. `/ops-console`
+5. `/tasks-list`
+6. `/history-results`
+7. `/report-view`
+
+以及一个历史保留页文件：`review_console.html`。
+
+这些页面的真实意义是：
+
+- **优点**：它们能把后端主链路跑通，适合联调、验流程、演示能力。
+- **不足**：它们仍是“工程控制台”，不是教师长期愿意用的产品前端。
+
+---
+
+## 10. 推荐维护阅读顺序
+
+如果你要重新掌握项目，建议按这个顺序读：
+
+1. `README.md`
+2. `EXECUTIVE_SUMMARY.md`
+3. `AUDIT_REPORT.md`
+4. `src/main.py`
+5. `src/api/routes.py`
+6. `src/worker/main.py`
+7. `src/orchestration/workflow.py`
+8. `src/cognitive/engines/deepseek_engine.py`
+9. `src/perception/engines/qwen_engine.py`
+10. `src/prompts/provider.py`
+11. `src/db/schema.sql`
+12. `docs/product_strategy_cn.md`
+
+---
+
+## 11. 本地运行
+
+### 安装依赖
 
 ```bash
 cd homework_grader_system
 pip install -r requirements.txt
 ```
 
-复制 `.env.example` 为 `.env`，再启动服务：
-
-```bash
-uvicorn src.main:app --host 0.0.0.0 --port 8000
-```
-
-```bash
-# Linux/macOS
-celery -A src.worker.main worker --loglevel=info --concurrency=4
-
-# Windows（推荐）
-celery -A src.worker.main worker --loglevel=info --pool=solo --concurrency=1
-```
-
-说明：若 Redis/Celery 短时不可用，`/api/v1/grade/submit` 与 `/api/v1/grade/submit-batch` 会自动回退到本地后台执行并继续返回 `task_id`；生产环境仍建议保持队列与 worker 常驻。
-
-若前端日志频繁出现 `SSE connection interrupted`，建议将 API 启动为：
+### 启动 API
 
 ```bash
 uvicorn src.main:app --host 0.0.0.0 --port 8000 --timeout-keep-alive 15
 ```
 
-### 4.2 Docker Compose
+### 启动 Worker
+
+```bash
+# Linux/macOS
+celery -A src.worker.main worker --loglevel=info --concurrency=4
+
+# Windows
+celery -A src.worker.main worker --loglevel=info --pool=solo --concurrency=1
+```
+
+### Docker Compose
 
 ```bash
 docker compose up --build
 ```
 
-启动后：
-- OpenAPI：`http://localhost:8000/docs`
-- 健康检查：`GET /`
-- 前端 MVP 入口：
-  - 学生台（单学生，可多页）：`/student-console`
-  - 学生批处理台（多学生单页）：`/student-console-batch`
-  - 复核台：`/review-console`
-  - 运营台：`/ops-console`
+默认服务：
 
-说明：
-- Compose 已包含 `grader-worker`，不再是仅 API + Redis。
-- 若需要更高吞吐，可横向扩容 worker：
+1. `grader-api`
+2. `grader-worker`
+3. `redis`
+
+---
+
+## 12. 测试方式
+
+建议这样跑测试：
 
 ```bash
-docker compose up --build --scale grader-worker=2
+pytest -q
 ```
 
 ---
 
-## 5. 关键配置项（含 Skills 说明）
+## 13. 当前最值得做的三件事
 
-常规核心配置：
-- `QWEN_API_KEYS`
-- `DEEPSEEK_API_KEYS`
-- `PERCEPTION_PROVIDER`（当前支持：`qwen` / `mock`）
-- `REDIS_HOST` / `REDIS_PORT` / `REDIS_DB`
-- `BATCH_INTERNAL_CONCURRENCY`（批量单页在单个 worker 任务内的并发数，默认 `3`）
-- `BATCH_POSTPROCESS_CONCURRENCY`（批量后处理并发：结果落库 + 校验，默认 `4`）
-- `BATCH_PROGRESS_UPDATE_STEP`（批量进度节流步长，默认 `2`）
-- `BATCH_PROGRESS_MIN_INTERVAL_SECONDS`（批量进度节流最小时间间隔，默认 `1.5` 秒）
-- `PENDING_ORPHAN_TIMEOUT_SECONDS`（陈旧孤儿 PENDING 自动清理阈值，默认 `900` 秒）
-- `PROMPT_MAX_INPUT_TOKENS`（默认 `32768`）
-- `PROMPT_RESERVE_OUTPUT_TOKENS`（默认 `1024`）
-- `SQLITE_DB_PATH`
-- `DEPLOYMENT_ENVIRONMENT`（`dev` / `staging` / `prod`）
-- `FEATURE_FLAG_PROVIDER_SWITCH`
-- `FEATURE_FLAG_PROMPT_CONTROL`
-- `FEATURE_FLAG_ROUTER_CONTROL`
+1. **部署与交付外壳收口**  
+   把当前可运行系统继续推进到“可试点交付”：反向代理、HTTPS、最小账号体系、运维脚本、部署模板。
 
-Prompt 预算判定逻辑（当前实现）：
-- 输入预估：`estimate_tokens(messages, model)`，其中 `text≈字符数/3`，每个 base64 图片按固定 `1024` token 计入，外加固定开销 `64`。
-- 生效预算：`budget = PROMPT_MAX_INPUT_TOKENS - PROMPT_RESERVE_OUTPUT_TOKENS`。
-- 当 `estimated > budget` 时触发 `PromptTokenBudgetExceeded`。
-- 该预算用于保护 prompt 构建阶段；当前已放宽默认值以优先保障 rubric 生成吞吐。
+2. **技术减认知负担**  
+   优先拆解 `routes.py` / `worker/main.py` / `db/client.py` 的阅读与维护入口。
 
-Skills 相关配置（见 `.env.example`）：
-- `SKILL_LAYOUT_PARSER_ENABLED`
-- `SKILL_LAYOUT_PARSER_PROVIDER`（`none` / `llamaparse` / `unstructured`）
-- `SKILL_LAYOUT_PARSER_API_URL`
-- `SKILL_VALIDATION_ENABLED`
-- `SKILL_VALIDATION_PROVIDER`（`none` / `e2b`）
-- `SKILL_VALIDATION_API_URL`
-- `SKILL_GATEWAY_AUTH_ENABLED`
-- `SKILL_GATEWAY_AUTH_TOKEN`
-- `SKILL_LAYOUT_PARSER_TIMEOUT_SECONDS`
-- `SKILL_VALIDATION_TIMEOUT_SECONDS`
-- `SKILL_VALIDATION_FAIL_OPEN`
-- `RUBRIC_DEDUPE_WINDOW_SECONDS`（默认 86400，按参考答案内容哈希复用近期 rubric，防止重复外呼模型）
-- `LLM_EGRESS_ENABLED`（紧急止损：设为 `false` 将阻断所有模型外呼）
-
-默认示例中：
-- `SKILL_LAYOUT_PARSER_API_URL=http://127.0.0.1:8000/api/v1/skills/layout/parse`
-- `SKILL_VALIDATION_API_URL=http://127.0.0.1:8000/api/v1/skills/validate`
-
-这两个默认值指向**本服务内置 skill 网关接口**（用于本地联调与契约占位）；接入外部实际服务时，改为外部网关地址并设置对应 `*_PROVIDER` 与 `*_API_KEY`。生产环境建议开启 `SKILL_GATEWAY_AUTH_ENABLED` 并配置 `SKILL_GATEWAY_AUTH_TOKEN` 作为网关请求头鉴权。
-
-外部 Skills 错误码语义（fail-open 场景将记录并回退主链路）：
-- Layout：`SKILL_LAYOUT_TIMEOUT` / `SKILL_LAYOUT_UNAVAILABLE` / `SKILL_LAYOUT_UNAUTHORIZED` / `SKILL_LAYOUT_RATE_LIMITED` / `SKILL_LAYOUT_UPSTREAM_ERROR` / `SKILL_LAYOUT_BAD_REQUEST` / `SKILL_LAYOUT_INVALID_RESPONSE`
-- Validation：`SKILL_VALIDATION_TIMEOUT` / `SKILL_VALIDATION_UNAVAILABLE` / `SKILL_VALIDATION_UNAUTHORIZED` / `SKILL_VALIDATION_RATE_LIMITED` / `SKILL_VALIDATION_UPSTREAM_ERROR` / `SKILL_VALIDATION_BAD_REQUEST` / `SKILL_VALIDATION_INVALID_RESPONSE`
+3. **试点包装与市场落地**  
+   明确卖点是“批量阅卷 + 复核提效 + 讲评依据生成”，并把它落实到首页文案、演示话术、试点交付材料。
 
 ---
 
-## 6. 接口总览（全局）
+## 14. 文档导航
 
-### 6.1 Rubric 领域
-- `POST /api/v1/rubric/generate`（支持 `force_regenerate=true` 跳过去重）
-- `GET /api/v1/rubrics`
-- `GET /api/v1/rubrics/{rubric_id}`
+1. `EXECUTIVE_SUMMARY.md`：适合快速看结论
+2. `AUDIT_REPORT.md`：适合看详细技术判断
+3. `docs/product_strategy_cn.md`：适合看市场、交互、前端建议
+4. `docs/deployment_guide_cn.md`：适合看单机/试点部署路径
+5. `docs/production_readiness_cn.md`：适合看生产前检查清单与单点风险
+6. `docs/postgresql_migration_plan_cn.md`：适合看数据库升级路线
+7. `docs/demo_script_cn.md`：适合看 5-10 分钟演示脚本
+8. `docs/go_to_market_cn.md`：适合看对外口径、试点沟通与 FAQ
+9. `INDEX.md`：适合重新建立阅读路径
 
-### 6.2 学生任务台（D1）
-- `POST /api/v1/grade/submit`（单学生提交，支持多页/多图聚合）
-- `POST /api/v1/grade/submit-batch`（多学生单页批处理）
-- `GET /api/v1/grade/flow-guide`
-- `GET /api/v1/grade/{task_id}`
-- `GET /api/v1/grade-batch/{task_id}`
-- `GET /api/v1/tasks/{task_id}/stream`（SSE）
-- `GET /api/v1/results`（支持 `task_id` 过滤）
-
-### 6.3 复核与标注（D2）
-- `GET /api/v1/tasks/pending-review`
-- `GET /api/v1/review/pending-workbench`
-- `GET /api/v1/review/flow-guide`
-- `POST /api/v1/annotations/feedback`
-- `GET /api/v1/annotations/assets`
-- `GET /api/v1/review/annotation-assets`
-- `GET /api/v1/review/annotation-assets/{asset_id}`
-- `GET /api/v1/hygiene/interceptions`
-- `POST /api/v1/hygiene/interceptions/{record_id}/action`
-- `POST /api/v1/hygiene/interceptions/bulk-action`
-
-### 6.4 运营与观测（D3 + Phase C + P0/P1）
-- `POST /api/v1/trace/probe`
-- `GET /api/v1/capabilities/catalog`
-- `GET /api/v1/contracts/catalog`
-- `GET /api/v1/sla/summary`
-- `GET /api/v1/metrics/provider-benchmark`
-- `GET /api/v1/router/policy`
-- `GET /api/v1/metrics/dataset-pipeline`
-- `GET /api/v1/metrics/runtime-dashboard`
-- `POST /api/v1/prompt/control`
-- `POST /api/v1/prompt/ab-config`
-- `POST /api/v1/prompt/refresh`
-- `POST /api/v1/prompt/invalidate`
-- `GET /api/v1/prompt/state`
-- `GET /api/v1/prompt/audit`
-- `GET /api/v1/ops/config/snapshot`
-- `GET /api/v1/ops/feature-flags`
-- `POST /api/v1/ops/feature-flags`
-- `GET /api/v1/ops/release/controls`
-- `POST /api/v1/ops/release/controls`
-- `POST /api/v1/ops/provider/switch`
-- `POST /api/v1/ops/router/control`
-- `GET /api/v1/ops/prompt/catalog`
-- `GET /api/v1/ops/audit/logs`
-- `POST /api/v1/ops/fault-drills/run`
-- `GET /api/v1/ops/fault-drills/history`
-- `GET /api/v1/ops/queue/diagnostics`
-- `POST /api/v1/ops/queue/cleanup-stale`
-- `POST /api/v1/ops/queue/cleanup-task`（按 `task_id` 定向清理）
-- `GET /api/v1/ops/rubric/audit`（查看 rubric 生成调用审计：来源 IP、UA、是否命中去重）
-
-### 6.5 Skills 内部网关
-- `POST /api/v1/skills/layout/parse`
-- `POST /api/v1/skills/validate`
-
----
-
-## 7. 核心状态与契约要点
-
-- `task.status`: `PENDING | PROCESSING | COMPLETED | FAILED`
-- `task.grading_status`: `SCORED | REJECTED_UNREADABLE`
-- `task.review_status`: `NOT_REQUIRED | PENDING_REVIEW | REVIEWED`
-
-统一错误契约采用结构化字段（例如 `error_code/retryable/retry_hint/next_action`），完整模型可通过：
-- `GET /api/v1/contracts/catalog`
-
----
-
-## 8. 核心数据表
-
-- `tasks`
-- `grading_results`
-- `rubrics`
-- `hygiene_interception_log`
-- `golden_annotation_assets`
-- `task_runtime_telemetry`
-- `prompt_control_state`
-- `prompt_ab_configs`
-- `prompt_ops_audit_log`
-- `ops_feature_flags`
-- `ops_release_controls`
-- `ops_fault_drill_reports`
-- `skill_validation_records`
-
-DDL 位于：`src/db/schema.sql`
-
----
-
-## 9. 测试与回归
-
-全量测试：
-
-```bash
-pytest tests/ -v
-```
-
-常用聚焦：
-
-```bash
-pytest tests/test_api.py tests/test_phase38_domain_split_api.py -q
-pytest tests/test_prompt_provider_foundation.py tests/test_prompt_control_db.py -q
-pytest tests/test_runtime_telemetry_db.py tests/test_runtime_router.py -q
-pytest tests/test_phase33_dlq_validation.py -q
-pytest tests/test_qwen_json_extraction.py -q
-```
-
-真实样例回归建议：
-- 优先使用 `data/3.20_physics/` 下真实物理卷（标准答案 + 学生作答）进行端到端调试。
-- 避免仅依赖临时构造样例，以便尽早暴露多页、复杂版面和真实书写噪声下的鲁棒性问题。
-
-Phase C 回归矩阵：
-
-```bash
-python scripts/run_phasec_regression_matrix.py
-```
-
-CI 工作流：
-- `.github/workflows/phasec-regression-matrix.yml`
-- `.github/workflows/prompt-assets-preflight.yml`
-
-说明：`phasec-regression-matrix` 在 CI 中启动 Redis service，并执行 `tests/test_phase33_dlq_validation.py` 以覆盖 DLQ 的真实依赖路径。
-
----
-
-## 10. 运行与提交流程说明
-
-- 运行产物目录（`outputs/`, `data/uploads/`）默认不纳入版本提交。
-- Windows 环境建议使用 `celery --pool=solo` 提高稳定性。
-- 若走代理，建议配置 `NO_PROXY` 以降低模型 API 连接抖动。
-
----
-
-## 11. 分阶段工作路线（MVP 调试优先）
-
-当前要求：**先把前端可观测下的批改队列跑稳定，再进入下一阶段。**
-
-| 分支 | 目标 | 进入条件（DoD） |
-| --- | --- | --- |
-| `feat/mvp-debug-observability` | 学生台/批处理台调试闭环：SSE、轮询、队列诊断、陈旧任务清理、错误提示可解释 | 连续多轮提交下，队列诊断可区分 `queued_waiting` 与 `orphan_local`，SSE 不再出现 5 秒断流，前端可恢复与排障 |
-| `feat/mvp-task-lifecycle` | 任务生命周期操作：取消、重试、重投与状态机约束 | 明确区分“排队中/执行中/失败可重试/终态”，前端操作与后端状态一致 |
-| `feat/mvp-queue-throughput` | 吞吐优化：并发策略、队列等待指标、批处理耗时拆分 | 在稳定链路下给出可复现实验数据（等待时长/处理时长/失败率） |
-| `feat/mvp-failure-replay` | 失败回放与问题归因：错误聚类、一键复跑最小样本 | 常见失败类型可在前端触发复现并沉淀定位信息 |
-| `feat/mvp-stabilization` | 发布前稳定化：回归基线、压测阈值、运行手册 | 关键路径回归通过并形成可执行的运维排障手册 |
-
-执行约束：
-- 在 **`feat/mvp-debug-observability`** 验收完成前，不切入后续分支开发。
-- 所有阶段以“可观测、可解释、可复现”为前置标准，再做功能扩展。
+如果你现在的目标是**重新获得对项目的掌控感**，建议先读这些文档，再回到代码。

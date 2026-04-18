@@ -94,3 +94,17 @@ Thumbs.db
 # Distribution
 *.tar.gz
 *.zip
+
+# Runtime uploads (学生作答上传目录)
+data/uploads/
+
+# Runtime outputs (临时验证产物)
+outputs/perception_isolation_*/
+outputs/phase*_*/
+outputs/phasec_regression_matrix_report.json
+
+# Local Docker artifacts
+DockerDesktopWSL/
+
+# Stray build artifacts
+Depends(get_db_path)

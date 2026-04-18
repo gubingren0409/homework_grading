@@ -1,5 +1,7 @@
 import base64
 import asyncio
+import hashlib
+import uuid
 from unittest.mock import patch, Mock
 from kombu.exceptions import OperationalError as KombuOperationalError
 from redis.exceptions import ConnectionError as RedisConnectionError
@@ -9,6 +11,7 @@ from src.schemas.perception_ir import LayoutIR
 from src.db.client import (
     init_db,
     create_task,
+    insert_grading_results,
     update_task_status,
     update_task_celery_id,
     get_task,
@@ -111,15 +114,30 @@ def test_console_entrypoints():
     student_batch = client.get("/student-console-batch")
     review = client.get("/review-console")
     ops = client.get("/ops-console")
+    tasks_list = client.get("/tasks-list")
+    task_progress = client.get("/task-progress")
+    class_dashboard = client.get("/class-dashboard")
+    history_results = client.get("/history-results")
+    report_view = client.get("/report-view")
     assert student.status_code == 200
     assert student_batch.status_code == 200
     assert review.status_code == 200
     assert ops.status_code == 200
+    assert tasks_list.status_code == 200
+    assert task_progress.status_code == 200
+    assert class_dashboard.status_code == 200
+    assert history_results.status_code == 200
+    assert report_view.status_code == 200
     assert "生成评分标准" in student.text
     assert "学生批处理任务台" in student_batch.text
-    assert "运行监听窗口" in student.text
+    assert "开发监听与原始响应" in student.text
     assert "复核工作台" in review.text
     assert "运营控制台" in ops.text
+    assert "任务列表" in tasks_list.text
+    assert "独立任务进度页（开发/调试）" in task_progress.text
+    assert "班级结果看板" in class_dashboard.text
+    assert "历史结果页" in history_results.text
+    assert "报告展示页" in report_view.text
 
 
 def test_skill_layout_parse_gateway(monkeypatch):
@@ -243,6 +261,7 @@ def test_grade_flow_guide_endpoint():
     data = response.json()
     assert data["submit_endpoint"] == "/api/v1/grade/submit"
     assert data["batch_submit_endpoint"] == "/api/v1/grade/submit-batch"
+    assert data["batch_submit_with_reference_endpoint"] == "/api/v1/grade/submit-batch-with-reference"
     assert data["status_endpoint_template"] == "/api/v1/grade/{task_id}"
     assert data["stream_endpoint_template"] == "/api/v1/tasks/{task_id}/stream"
     assert "SSE_BACKEND_UNAVAILABLE" in data["error_code_actions"]
@@ -268,6 +287,31 @@ def test_grade_submit_batch_endpoint_happy_path():
     assert data["submitted_count"] == 2
     assert mocked_apply_async.call_args.kwargs["retry"] is False
     assert mocked_apply_async.call_args.kwargs["ignore_result"] is True
+
+
+def test_grade_submit_batch_with_reference_endpoint_happy_path():
+    client.app.state.limiter.reset()
+    files = [
+        ("reference_files", ("reference.jpg", b"fake_reference", "image/jpeg")),
+        ("files", ("stu_001.jpg", b"fake_img_1", "image/jpeg")),
+        ("files", ("stu_002.png", b"fake_img_2", "image/png")),
+    ]
+    with patch("src.api.routes.grade_homework_task.apply_async", return_value=Mock(id="mock-celery-id")) as mocked_apply_async:
+        response = client.post("/api/v1/grade/submit-batch-with-reference", files=files)
+    assert response.status_code == 202
+    data = response.json()
+    assert "task_id" in data
+    assert data["status"] == "PENDING"
+    assert data["mode"] == "batch_single_page"
+    assert data["submitted_count"] == 2
+    assert data["rubric_id"] is None
+    kwargs = mocked_apply_async.call_args.kwargs
+    assert kwargs["retry"] is False
+    assert kwargs["ignore_result"] is True
+    payload = kwargs["args"][1]
+    assert "reference_file_refs" in payload
+    assert isinstance(payload["reference_file_refs"], list)
+    assert len(payload["reference_file_refs"]) == 1
 
 
 def test_grade_submit_batch_queue_unavailable_falls_back_to_local():
@@ -329,8 +373,8 @@ def test_rubric_generate_runtime_phase35_non_gate_maps_upstream(monkeypatch):
         raise RuntimeError("PHASE35_CONTRACT_BLOCK: slicing produced no regions on page 0.")
 
     monkeypatch.setattr("src.api.routes.GradingWorkflow.generate_rubric_pipeline", _raise_runtime)
-    files = [("files", ("reference.jpg", b"fake_reference", "image/jpeg"))]
-    response = client.post("/api/v1/rubric/generate", files=files)
+    files = [("files", ("reference.jpg", f"fake_reference_{uuid.uuid4()}".encode(), "image/jpeg"))]
+    response = client.post("/api/v1/rubric/generate", files=files, data={"force_regenerate": "true"})
     assert response.status_code == 503
     detail = response.json()["detail"]
     assert detail["error_code"] == "UPSTREAM_UNAVAILABLE"
@@ -345,8 +389,8 @@ def test_rubric_generate_rejects_unsupported_format(monkeypatch):
         raise UnsupportedFormatError("Word documents are unsupported. Please convert to PDF.")
 
     monkeypatch.setattr("src.api.routes.GradingWorkflow.generate_rubric_pipeline", _raise_unsupported)
-    files = [("files", ("reference.jpg", b"fake_reference", "image/jpeg"))]
-    response = client.post("/api/v1/rubric/generate", files=files)
+    files = [("files", ("reference.jpg", f"fake_reference_{uuid.uuid4()}".encode(), "image/jpeg"))]
+    response = client.post("/api/v1/rubric/generate", files=files, data={"force_regenerate": "true"})
     assert response.status_code == 422
     detail = response.json()["detail"]
     assert detail["error_code"] == "INPUT_REJECTED"
@@ -361,13 +405,30 @@ def test_rubric_generate_upstream_unavailable_returns_503(monkeypatch):
         raise GradingSystemError("redis unavailable")
 
     monkeypatch.setattr("src.api.routes.GradingWorkflow.generate_rubric_pipeline", _raise_upstream)
-    files = [("files", ("reference.jpg", b"fake_reference", "image/jpeg"))]
-    response = client.post("/api/v1/rubric/generate", files=files)
+    files = [("files", ("reference.jpg", f"fake_reference_{uuid.uuid4()}".encode(), "image/jpeg"))]
+    response = client.post("/api/v1/rubric/generate", files=files, data={"force_regenerate": "true"})
     assert response.status_code == 503
     detail = response.json()["detail"]
     assert detail["error_code"] == "UPSTREAM_UNAVAILABLE"
     assert detail["retryable"] is True
     assert detail["next_action"] == "retry_upload"
+
+
+def test_rubric_generate_egress_disabled_maps_explicit_error(monkeypatch):
+    client.app.state.limiter.reset()
+
+    async def _raise_egress_disabled(self, files_data):
+        del self, files_data
+        raise GradingSystemError("LLM egress disabled by configuration (LLM_EGRESS_ENABLED=false)")
+
+    monkeypatch.setattr("src.api.routes.GradingWorkflow.generate_rubric_pipeline", _raise_egress_disabled)
+    files = [("files", ("reference.jpg", f"fake_reference_{uuid.uuid4()}".encode(), "image/jpeg"))]
+    response = client.post("/api/v1/rubric/generate", files=files, data={"force_regenerate": "true"})
+    assert response.status_code == 503
+    detail = response.json()["detail"]
+    assert detail["error_code"] == "EGRESS_DISABLED"
+    assert detail["retryable"] is False
+    assert detail["next_action"] == "enable_llm_egress"
 
 
 def test_rubric_generate_response_contains_source_file_count(monkeypatch):
@@ -386,14 +447,88 @@ def test_rubric_generate_response_contains_source_file_count(monkeypatch):
 
     monkeypatch.setattr("src.api.routes.GradingWorkflow.generate_rubric_pipeline", _ok)
     files = [
-        ("files", ("reference-1.jpg", b"fake_reference_1", "image/jpeg")),
-        ("files", ("reference-2.jpg", b"fake_reference_2", "image/jpeg")),
+        ("files", ("reference-1.jpg", f"fake_reference_1_{uuid.uuid4()}".encode(), "image/jpeg")),
+        ("files", ("reference-2.jpg", f"fake_reference_2_{uuid.uuid4()}".encode(), "image/jpeg")),
     ]
-    response = client.post("/api/v1/rubric/generate", files=files)
+    response = client.post("/api/v1/rubric/generate", files=files, data={"force_regenerate": "true"})
     assert response.status_code == 201
     data = response.json()
     assert data["grading_points_count"] == 2
     assert data["source_file_count"] == 2
+    assert data["reused_from_cache"] is False
+
+
+def test_rubric_generate_reuses_recent_same_source(monkeypatch):
+    client.app.state.limiter.reset()
+    call_count = {"value": 0}
+
+    class _FakeRubric:
+        question_id = "q-1"
+        grading_points = [object()]
+
+        def model_dump(self):
+            return {"question_id": "q-1", "correct_answer": "a", "grading_points": [{"id": "p1"}]}
+
+    async def _ok(self, files_data):
+        del self
+        call_count["value"] += 1
+        assert len(files_data) == 1
+        return _FakeRubric()
+
+    monkeypatch.setattr("src.api.routes.GradingWorkflow.generate_rubric_pipeline", _ok)
+    unique_blob = f"same_reference_{uuid.uuid4()}".encode()
+    files = [("files", ("reference-1.jpg", unique_blob, "image/jpeg"))]
+
+    first = client.post("/api/v1/rubric/generate", files=files, data={"force_regenerate": "true"})
+    second = client.post("/api/v1/rubric/generate", files=files)
+
+    assert first.status_code == 201
+    assert second.status_code == 201
+    first_data = first.json()
+    second_data = second.json()
+    assert call_count["value"] == 1
+    assert second_data["rubric_id"] == first_data["rubric_id"]
+    assert first_data["reused_from_cache"] is False
+    assert second_data["reused_from_cache"] is True
+
+
+def test_ops_rubric_audit_records_generate_calls(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "rubric_audit.db")
+    asyncio.run(init_db(db_path))
+    app.dependency_overrides[get_db_path] = lambda: db_path
+    client.app.state.limiter.reset()
+
+    class _FakeRubric:
+        question_id = "q-audit"
+        grading_points = [object()]
+
+        def model_dump(self):
+            return {"question_id": "q-audit", "correct_answer": "a", "grading_points": [{"id": "p1"}]}
+
+    async def _ok(self, files_data):
+        del self
+        assert len(files_data) == 1
+        return _FakeRubric()
+
+    monkeypatch.setattr("src.api.routes.GradingWorkflow.generate_rubric_pipeline", _ok)
+    blob = f"audit_reference_{uuid.uuid4()}".encode()
+    files = [("files", ("reference-audit.jpg", blob, "image/jpeg"))]
+
+    first = client.post("/api/v1/rubric/generate", files=files)
+    second = client.post("/api/v1/rubric/generate", files=files)
+    assert first.status_code == 201
+    assert second.status_code == 201
+
+    # Compute expected fingerprint from single file content.
+    expected_fp = hashlib.sha256(hashlib.sha256(blob).hexdigest().encode("utf-8")).hexdigest()
+    audit_resp = client.get("/api/v1/ops/rubric/audit?page=1&limit=20")
+    assert audit_resp.status_code == 200
+    items = audit_resp.json()["items"]
+    matched = [x for x in items if x["source_fingerprint"] == expected_fp]
+    assert len(matched) >= 2
+    assert any(x["reused_from_cache"] is False for x in matched)
+    assert any(x["reused_from_cache"] is True for x in matched)
+    app.dependency_overrides.clear()
 
 
 def test_grade_status_not_found_error_contract(tmp_path, monkeypatch):
@@ -429,6 +564,278 @@ def test_results_by_task_requires_completed_state(tmp_path, monkeypatch):
     app.dependency_overrides.clear()
 
 
+def test_tasks_history_endpoint_returns_items(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "tasks_history.db")
+    asyncio.run(init_db(db_path))
+    app.dependency_overrides[get_db_path] = lambda: db_path
+
+    task_id = "history-task-1"
+    asyncio.run(create_task(db_path, task_id))
+    asyncio.run(update_task_status(db_path, task_id, "COMPLETED"))
+    asyncio.run(
+        insert_grading_results(
+            db_path,
+            records=[
+                {
+                    "task_id": task_id,
+                    "student_id": "stu_h1",
+                    "question_id": None,
+                    "total_deduction": 1.0,
+                    "is_pass": False,
+                    "report_json": {"evaluation_report": {"status": "SCORED", "overall_feedback": "ok"}},
+                }
+            ],
+            task_id=task_id,
+        )
+    )
+
+    response = client.get("/api/v1/tasks/history?page=1&limit=20&status=COMPLETED")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["page"] == 1
+    assert data["limit"] == 20
+    assert len(data["items"]) >= 1
+    target = next((x for x in data["items"] if x["task_id"] == task_id), None)
+    assert target is not None
+    assert target["status"] == "COMPLETED"
+    assert target["result_count"] >= 1
+    app.dependency_overrides.clear()
+
+
+def test_task_report_requires_completed_state(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "task_report_state.db")
+    asyncio.run(init_db(db_path))
+    app.dependency_overrides[get_db_path] = lambda: db_path
+    asyncio.run(create_task(db_path, "pending-task-report"))
+
+    pending_resp = client.get("/api/v1/grade/pending-task-report/report")
+    assert pending_resp.status_code == 409
+    detail = pending_resp.json()["detail"]
+    assert detail["error_code"] == "TASK_NOT_COMPLETED"
+    app.dependency_overrides.clear()
+
+
+def test_task_report_returns_user_facing_cards(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "task_report_cards.db")
+    asyncio.run(init_db(db_path))
+    app.dependency_overrides[get_db_path] = lambda: db_path
+
+    task_id = "completed-task-report"
+    asyncio.run(create_task(db_path, task_id))
+    asyncio.run(update_task_status(db_path, task_id, "COMPLETED"))
+
+    report_payload = {
+        "evaluation_report": {
+            "status": "SCORED",
+            "is_fully_correct": False,
+            "total_score_deduction": 2.0,
+            "step_evaluations": [
+                {
+                    "reference_element_id": "p0_1",
+                    "is_correct": False,
+                    "error_type": "CALCULATION",
+                    "correction_suggestion": "注意单位换算",
+                }
+            ],
+            "overall_feedback": "总体思路正确，但计算细节有误。",
+            "system_confidence": 0.91,
+            "requires_human_review": False,
+        },
+        "perception_output": {
+            "elements": [
+                {
+                    "element_id": "p0_1",
+                    "raw_content": "v = s / t = 10 / 2 = 6 m/s",
+                    "content_type": "plain_text",
+                }
+            ]
+        },
+    }
+    asyncio.run(
+        insert_grading_results(
+            db_path,
+            records=[
+                {
+                    "task_id": task_id,
+                    "student_id": "stu_001",
+                    "question_id": None,
+                    "total_deduction": 2.0,
+                    "is_pass": False,
+                    "report_json": report_payload,
+                }
+            ],
+            task_id=task_id,
+        )
+    )
+
+    response = client.get(f"/api/v1/grade/{task_id}/report")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["task_id"] == task_id
+    assert data["task_status"] == "COMPLETED"
+    assert len(data["cards"]) == 1
+    card = data["cards"][0]
+    assert card["student_id"] == "stu_001"
+    assert card["total_deduction"] == 2.0
+    assert card["is_pass"] is False
+    assert "计算细节有误" in card["overall_feedback"]
+    assert len(card["deductions"]) == 1
+    assert card["deductions"][0]["error_type"] == "CALCULATION"
+    assert card["deductions"][0]["suggestion"] == "注意单位换算"
+    assert "10 / 2" in card["deductions"][0]["evidence_snippet"]
+    app.dependency_overrides.clear()
+
+
+def test_task_report_exposes_input_images_and_asset_endpoint(tmp_path):
+    db_path = str(tmp_path / "task_report_images.db")
+    asyncio.run(init_db(db_path))
+    app.dependency_overrides[get_db_path] = lambda: db_path
+
+    from src.api import routes as api_routes
+
+    uploads_root = api_routes.settings.uploads_path
+    task_upload_dir = uploads_root / "task-report-images"
+    task_upload_dir.mkdir(parents=True, exist_ok=True)
+    image_path = task_upload_dir / "stu_001.png"
+    image_bytes = b"\x89PNG\r\n\x1a\nfakepng"
+    image_path.write_bytes(image_bytes)
+
+    task_id = "completed-task-report-images"
+    asyncio.run(create_task(db_path, task_id))
+    asyncio.run(update_task_status(db_path, task_id, "COMPLETED"))
+
+    asyncio.run(
+        insert_grading_results(
+            db_path,
+            records=[
+                {
+                    "task_id": task_id,
+                    "student_id": "stu_001",
+                    "question_id": None,
+                    "total_deduction": 1.0,
+                    "is_pass": False,
+                    "report_json": {
+                        "evaluation_report": {
+                            "status": "SCORED",
+                            "is_fully_correct": False,
+                            "total_score_deduction": 1.0,
+                            "step_evaluations": [],
+                            "overall_feedback": "可查看原始图片。",
+                            "system_confidence": 0.88,
+                            "requires_human_review": False,
+                        },
+                        "input_file_refs": [image_path.resolve().as_uri()],
+                        "input_filenames": ["stu_001.png"],
+                    },
+                }
+            ],
+            task_id=task_id,
+        )
+    )
+
+    report_resp = client.get(f"/api/v1/grade/{task_id}/report")
+    assert report_resp.status_code == 200
+    report_data = report_resp.json()
+    assert len(report_data["cards"]) == 1
+    card = report_data["cards"][0]
+    assert len(card["input_images"]) == 1
+    assert card["input_images"][0]["name"] == "stu_001.png"
+
+    results_resp = client.get(f"/api/v1/results?task_id={task_id}&page=1&limit=10")
+    assert results_resp.status_code == 200
+    result_id = results_resp.json()[0]["id"]
+
+    asset_resp = client.get(f"/api/v1/results/{result_id}/inputs/0")
+    assert asset_resp.status_code == 200
+    assert asset_resp.headers["content-type"] == "image/png"
+    assert asset_resp.content == image_bytes
+    app.dependency_overrides.clear()
+
+
+def test_task_insights_returns_error_stats_and_lecture_suggestions(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "task_insights_cards.db")
+    asyncio.run(init_db(db_path))
+    app.dependency_overrides[get_db_path] = lambda: db_path
+
+    task_id = "completed-task-insights"
+    asyncio.run(create_task(db_path, task_id, submitted_count=2))
+    asyncio.run(update_task_status(db_path, task_id, "COMPLETED"))
+
+    asyncio.run(
+        insert_grading_results(
+            db_path,
+            records=[
+                {
+                    "task_id": task_id,
+                    "student_id": "stu_001",
+                    "total_deduction": 3.0,
+                    "is_pass": False,
+                    "report_json": {
+                        "evaluation_report": {
+                            "status": "SCORED",
+                            "is_fully_correct": False,
+                            "total_score_deduction": 3.0,
+                            "step_evaluations": [
+                                {
+                                    "reference_element_id": "p0_1",
+                                    "is_correct": False,
+                                    "error_type": "CONCEPTUAL",
+                                    "correction_suggestion": "先判断受力方向。",
+                                }
+                            ],
+                            "overall_feedback": "存在概念偏差。",
+                            "system_confidence": 0.62,
+                            "requires_human_review": True,
+                        },
+                        "perception_output": {
+                            "elements": [{"element_id": "p0_1", "raw_content": "错误答案片段"}]
+                        },
+                    },
+                },
+                {
+                    "task_id": task_id,
+                    "student_id": "stu_002",
+                    "total_deduction": 1.0,
+                    "is_pass": False,
+                    "report_json": {
+                        "evaluation_report": {
+                            "status": "SCORED",
+                            "is_fully_correct": False,
+                            "total_score_deduction": 1.0,
+                            "step_evaluations": [
+                                {
+                                    "reference_element_id": "p0_2",
+                                    "is_correct": False,
+                                    "error_type": "CONCEPTUAL",
+                                    "correction_suggestion": "注意概念定义。",
+                                }
+                            ],
+                            "overall_feedback": "细节概念有误。",
+                            "system_confidence": 0.84,
+                            "requires_human_review": False,
+                        },
+                        "perception_output": {
+                            "elements": [{"element_id": "p0_2", "raw_content": "另一段错误答案"}]
+                        },
+                    },
+                },
+            ],
+            task_id=task_id,
+        )
+    )
+
+    response = client.get(f"/api/v1/grade/{task_id}/insights")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["task_id"] == task_id
+    assert data["error_type_counts"]["CONCEPTUAL"] == 2
+    assert data["review_bucket_counts"]["requires_human_review"] >= 1
+    assert len(data["hotspots"]) >= 1
+    assert len(data["lecture_suggestions"]) >= 1
+    assert "概念" in data["lecture_suggestions"][0]["reason"]
+    app.dependency_overrides.clear()
+
+
 def test_grade_status_failed_retry_hints(tmp_path, monkeypatch):
     db_path = str(tmp_path / "grade_status_failed.db")
     asyncio.run(init_db(db_path))
@@ -452,7 +859,7 @@ def test_grade_status_uses_db_progress_snapshot(tmp_path, monkeypatch):
     asyncio.run(init_db(db_path))
     app.dependency_overrides[get_db_path] = lambda: db_path
     task_id = "progress-task"
-    asyncio.run(create_task(db_path, task_id))
+    asyncio.run(create_task(db_path, task_id, submitted_count=4))
     async def _set_progress():
         from src.db.client import update_task_progress
         await update_task_progress(db_path, task_id, progress=0.66, eta_seconds=18)
@@ -466,6 +873,8 @@ def test_grade_status_uses_db_progress_snapshot(tmp_path, monkeypatch):
     assert data["status"] == "PROCESSING"
     assert data["progress"] == 0.66
     assert data["eta_seconds"] == 18
+    assert data["submitted_count"] == 4
+    assert data["result_count"] == 0
     app.dependency_overrides.clear()
 
 
@@ -655,6 +1064,9 @@ def test_ops_queue_diagnostics_endpoint_classifies_stale_pending(tmp_path):
             await create_task(db_path, "processing-task")
             await update_task_status(db_path, "processing-task", "PROCESSING")
             await update_task_celery_id(db_path, "processing-task", "processing-task-id")
+            await create_task(db_path, "completed-queued")
+            await update_task_status(db_path, "completed-queued", "COMPLETED")
+            await update_task_celery_id(db_path, "completed-queued", "completed-task-id")
 
             async with aiosqlite.connect(db_path) as db:
                 await db.execute(
@@ -674,7 +1086,7 @@ def test_ops_queue_diagnostics_endpoint_classifies_stale_pending(tmp_path):
 
         with patch(
             "src.api.routes._fetch_celery_queue_snapshot",
-            return_value=(1, ["queued-task-id"], None),
+            return_value=(2, ["queued-task-id", "completed-task-id"], None),
         ):
             response = client.get("/api/v1/ops/queue/diagnostics?stale_threshold_seconds=300&sample_limit=20")
 
@@ -682,6 +1094,8 @@ def test_ops_queue_diagnostics_endpoint_classifies_stale_pending(tmp_path):
         data = response.json()
         assert data["redis_available"] is True
         assert data["celery_queue_length"] == 1
+        assert "queued-task-id" in data["queued_task_ids_sample"]
+        assert "completed-task-id" not in data["queued_task_ids_sample"]
         assert data["stale_pending_summary"]["total"] >= 2
         assert data["stale_pending_summary"]["orphan_local"] >= 1
         assert data["stale_pending_summary"]["queued_waiting"] >= 1
@@ -729,6 +1143,50 @@ def test_ops_queue_cleanup_stale_endpoint_marks_orphans_failed(tmp_path):
         assert stale_row is not None and stale_row["status"] == "FAILED"
         assert stale_row["fallback_reason"] == "QUEUE_STALE_ORPHAN"
         assert fresh_row is not None and fresh_row["status"] == "PENDING"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_ops_queue_cleanup_task_endpoint_marks_failed_by_task_id(tmp_path):
+    db_path = str(tmp_path / "ops_queue_cleanup_task.db")
+    asyncio.run(init_db(db_path))
+    app.dependency_overrides[get_db_path] = lambda: db_path
+    try:
+        async def _seed():
+            await create_task(db_path, "cleanup-by-id-task")
+            await update_task_status(db_path, "cleanup-by-id-task", "PROCESSING")
+            await update_task_celery_id(db_path, "cleanup-by-id-task", "cleanup-by-id-task")
+
+        asyncio.run(_seed())
+
+        with patch("src.api.routes._remove_task_from_celery_queue", return_value=(1, None)):
+            response = client.post(
+                "/api/v1/ops/queue/cleanup-task?task_id=cleanup-by-id-task&remove_from_queue=true"
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["task_id"] == "cleanup-by-id-task"
+        assert data["marked_failed"] is True
+        assert data["removed_from_queue_count"] == 1
+
+        row = asyncio.run(get_task(db_path, "cleanup-by-id-task"))
+        assert row is not None
+        assert row["status"] == "FAILED"
+        assert row["fallback_reason"] == "MANUAL_QUEUE_CLEANUP"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_ops_queue_cleanup_task_endpoint_not_found(tmp_path):
+    db_path = str(tmp_path / "ops_queue_cleanup_task_404.db")
+    asyncio.run(init_db(db_path))
+    app.dependency_overrides[get_db_path] = lambda: db_path
+    try:
+        response = client.post("/api/v1/ops/queue/cleanup-task?task_id=missing-task-id")
+        assert response.status_code == 404
+        detail = response.json()["detail"]
+        assert detail["error_code"] == "TASK_NOT_FOUND"
     finally:
         app.dependency_overrides.clear()
 

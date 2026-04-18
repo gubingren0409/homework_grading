@@ -12,6 +12,23 @@ from src.skills.interfaces import LayoutParseResult, LayoutParserSkill, LayoutRe
 logger = logging.getLogger(__name__)
 
 
+def _map_layout_http_error(exc: requests.RequestException) -> str:
+    if isinstance(exc, requests.Timeout):
+        return "SKILL_LAYOUT_TIMEOUT"
+    if isinstance(exc, requests.ConnectionError):
+        return "SKILL_LAYOUT_UNAVAILABLE"
+    if isinstance(exc, requests.HTTPError):
+        status_code = exc.response.status_code if exc.response is not None else None
+        if status_code in {401, 403}:
+            return "SKILL_LAYOUT_UNAUTHORIZED"
+        if status_code == 429:
+            return "SKILL_LAYOUT_RATE_LIMITED"
+        if status_code is not None and status_code >= 500:
+            return "SKILL_LAYOUT_UPSTREAM_ERROR"
+        return "SKILL_LAYOUT_BAD_REQUEST"
+    return "SKILL_LAYOUT_REQUEST_FAILED"
+
+
 class HttpLayoutParserSkill(LayoutParserSkill):
     """
     Generic HTTP adapter for external layout parsing services (e.g., LlamaParse/Unstructured proxy).
@@ -64,9 +81,9 @@ class HttpLayoutParserSkill(LayoutParserSkill):
             resp.raise_for_status()
             data = resp.json()
         except requests.RequestException as exc:
-            raise RuntimeError(f"layout parser request failed: {exc}") from exc
+            raise RuntimeError(_map_layout_http_error(exc)) from exc
         except ValueError as exc:
-            raise RuntimeError(f"layout parser response is not valid JSON: {exc}") from exc
+            raise RuntimeError("SKILL_LAYOUT_INVALID_RESPONSE") from exc
         regions: List[LayoutRegion] = []
         for item in data.get("regions", []):
             if not isinstance(item, dict):

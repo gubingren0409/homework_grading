@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>历史结果</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 24px; background: #f7f9fc; color: #1f2937; }
+    .card { background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 14px; max-width: 1100px; }
+    .row { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
+    input, button { padding: 8px; border-radius: 8px; border: 1px solid #cfd7e6; }
+    button { background: #3563e9; color: #fff; border: 0; cursor: pointer; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { text-align: left; padding: 8px; border-bottom: 1px solid #eef2f7; }
+    .mono { background: #f8fafc; border: 1px solid #e5e7eb; border-radius: 8px; padding: 8px; font-family: Consolas, monospace; font-size: 12px; margin-top: 10px; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <h1>历史结果页</h1>
+  <div class="card">
+    <div class="row">
+      <label>task_id（可选）</label>
+      <input id="taskId" type="text" placeholder="留空=全局结果；填写=该任务结果" />
+      <button id="loadBtn">查询</button>
+      <a href="/tasks-list">任务列表页</a>
+      <a href="/class-dashboard">班级结果看板</a>
+      <a href="/report-view">报告展示页</a>
+    </div>
+    <table>
+      <thead>
+        <tr><th>id</th><th>student_id</th><th>deduction</th><th>pass</th><th>report</th></tr>
+      </thead>
+      <tbody id="tbody"></tbody>
+    </table>
+    <div id="debug" class="mono"></div>
+  </div>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    function setDebug(v) { $("debug").textContent = typeof v === "string" ? v : JSON.stringify(v, null, 2); }
+    async function load() {
+      const tid = $("taskId").value.trim();
+      const url = tid ? `/api/v1/results?task_id=${encodeURIComponent(tid)}&page=1&limit=50` : "/api/v1/results?page=1&limit=50";
+      const resp = await fetch(url);
+      const data = await resp.json();
+      if (!resp.ok) { setDebug(data); return; }
+      const body = $("tbody");
+      body.innerHTML = "";
+      for (const item of data || []) {
+        const reportPreview = String(item.report_json || "").slice(0, 120);
+        const tr = document.createElement("tr");
+        tr.innerHTML = `<td>${item.id}</td><td>${item.student_id || ""}</td><td>${item.total_deduction}</td><td>${item.is_pass}</td><td>${reportPreview}</td>`;
+        body.appendChild(tr);
+      }
+      setDebug({ count: (data || []).length, task_id: tid || "ALL" });
+    }
+    $("loadBtn").addEventListener("click", load);
+    load();
+  </script>
+</body>
+</html>

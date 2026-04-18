@@ -1,6 +1,8 @@
 import io
+import asyncio
 import fitz  # PyMuPDF
 from PIL import Image
+from src.core.config import settings
 
 
 class UnsupportedFormatError(Exception):
@@ -8,7 +10,7 @@ class UnsupportedFormatError(Exception):
     pass
 
 
-async def _downsample_and_compress(img_bytes: bytes) -> bytes:
+def _downsample_and_compress(img_bytes: bytes) -> bytes:
     """
     Standardizes image dimensions to max 2048x2048, strips EXIF,
     and compresses to JPEG 85 quality.
@@ -28,7 +30,7 @@ async def _downsample_and_compress(img_bytes: bytes) -> bytes:
         return buffer.getvalue()
 
 
-async def normalize_to_images(file_bytes: bytes, filename: str) -> list[bytes]:
+def _normalize_to_images_sync(file_bytes: bytes, filename: str) -> list[bytes]:
     """
     Normalizes input files (PDF or standard images) into a list of JPEG image bytes.
     Includes mandatory downsampling and quality compression.
@@ -44,13 +46,20 @@ async def normalize_to_images(file_bytes: bytes, filename: str) -> list[bytes]:
             for page in doc:
                 pix = page.get_pixmap(dpi=150)
                 page_bytes = pix.tobytes("jpeg")
-                normalized_images.append(await _downsample_and_compress(page_bytes))
+                normalized_images.append(_downsample_and_compress(page_bytes))
     
     # Case 2: Standard Image formats
     else:
-        normalized_images.append(await _downsample_and_compress(file_bytes))
+        normalized_images.append(_downsample_and_compress(file_bytes))
 
     return normalized_images
+
+
+async def normalize_to_images(file_bytes: bytes, filename: str) -> list[bytes]:
+    """
+    Async wrapper to offload CPU-heavy normalization to worker threads.
+    """
+    return await asyncio.to_thread(_normalize_to_images_sync, file_bytes, filename)
 
 
 async def process_multiple_files(files_data: list[tuple[bytes, str]]) -> list[bytes]:
@@ -66,11 +75,18 @@ async def process_multiple_files(files_data: list[tuple[bytes, str]]) -> list[by
     Raises:
         UnsupportedFormatError: If any file is a Word document.
     """
-    all_image_bytes = []
-    
-    for file_bytes, filename in files_data:
-        # Re-use normalized_to_images for consistency and error catching
-        images = await normalize_to_images(file_bytes, filename)
+    if not files_data:
+        return []
+
+    preprocess_concurrency = max(1, int(settings.file_preprocess_concurrency))
+    sem = asyncio.Semaphore(preprocess_concurrency)
+
+    async def _normalize_one(file_bytes: bytes, filename: str) -> list[bytes]:
+        async with sem:
+            return await normalize_to_images(file_bytes, filename)
+
+    chunks = await asyncio.gather(*[_normalize_one(file_bytes, filename) for file_bytes, filename in files_data])
+    all_image_bytes: list[bytes] = []
+    for images in chunks:
         all_image_bytes.extend(images)
-        
     return all_image_bytes

@@ -5,10 +5,13 @@ import hashlib
 import math
 import asyncio
 import tempfile
+import mimetypes
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Literal
+from urllib.parse import urlparse, unquote
 
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, Query, Request, Response, BackgroundTasks
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from slowapi import Limiter
 from slowapi.util import get_remote_address
@@ -18,17 +21,24 @@ from redis.exceptions import RedisError
 
 from src.api.dependencies import get_db_path
 from src.api.sse import create_sse_response
+from src.core.config import settings
 from src.db.client import (
     create_task,
     update_task_celery_id,
     update_task_status,
+    set_task_review_status,
     set_task_rubric_id,
     get_task,
     fetch_results,
+    fetch_results_by_task,
     list_pending_review_tasks,
+    list_pending_review_task_rows,
     save_rubric,
     get_rubric,
     list_rubrics,
+    get_recent_rubric_by_fingerprint,
+    append_rubric_generate_audit,
+    list_rubric_generate_audit,
     list_hygiene_interceptions,
     get_hygiene_interception_by_id,
     update_hygiene_interception_action,
@@ -37,6 +47,7 @@ from src.db.client import (
     list_golden_annotation_assets,
     get_annotation_asset_by_id,
     get_task_status_counts,
+    get_task_statuses_by_celery_ids,
     list_processing_tasks,
     list_stale_pending_tasks,
     fail_stale_pending_orphan_tasks,
@@ -47,6 +58,9 @@ from src.db.client import (
     get_prompt_cache_level_stats,
     get_runtime_telemetry_model_hits,
     get_runtime_telemetry_fallback_stats,
+    get_teacher_review_decision_counts,
+    list_teacher_review_decisions,
+    upsert_teacher_review_decision,
     upsert_prompt_control_state,
     get_prompt_control_state,
     upsert_prompt_ab_config,
@@ -79,6 +93,107 @@ from src.prompts.schemas import PromptInvalidationEvent
 from src.perception.factory import create_perception_engine
 from src.utils.file_parsers import UnsupportedFormatError
 from src.core.exceptions import GradingSystemError
+from src.api.route_helpers import (
+    best_effort_cleanup_stale_pending_orphans as _best_effort_cleanup_stale_pending_orphans,
+    compute_source_fingerprint as _compute_source_fingerprint,
+    deserialize_json_object as _deserialize_json_object,
+    derive_student_ids_from_filenames as _derive_student_ids_from_filenames,
+    error_detail as _error_detail,
+    fetch_celery_queue_snapshot as _fetch_celery_queue_snapshot,
+    is_orphan_local_celery_id as _is_orphan_local_celery_id,
+    load_settings_from_env as _load_settings_from_env,
+    percentile as _percentile,
+    remove_task_from_celery_queue as _remove_task_from_celery_queue,
+    request_client_ip as _request_client_ip,
+    schema_fields_from_model as _schema_fields_from_model,
+    store_upload_file_with_limits as _store_upload_file_with_limits,
+    build_pending_review_queue_item as _build_pending_review_queue_item,
+    build_review_workbench_sample as _build_review_workbench_sample,
+    build_task_insights as _build_task_insights,
+    compute_review_priority as _compute_review_priority,
+    to_release_control_item as _to_release_control_item,
+    to_report_card as _to_report_card,
+    validate_annotation_anchor as _validate_annotation_anchor,
+    validate_batch_single_page_file as _validate_batch_single_page_file,
+    validate_skill_gateway_token as _validate_skill_gateway_token,
+)
+from src.api.route_models import (
+    AnnotationAssetDetailResponse,
+    AnnotationAssetListResponse,
+    AnnotationFeedbackRequest,
+    AnnotationFeedbackResponse,
+    ApiContractCatalogResponse,
+    BoundingBoxInput,
+    CapabilityCatalogResponse,
+    CapabilityDomainItem,
+    CapabilityEndpointItem,
+    ContractFieldItem,
+    ContractSchemaItem,
+    DatasetPipelineSummaryResponse,
+    GradeFlowGuideResponse,
+    GradingResultItem,
+    GoldenAnnotationAssetItem,
+    HygieneActionUpdateRequest,
+    HygieneBulkActionUpdateRequest,
+    HygieneInterceptionItem,
+    LectureSuggestionItem,
+    OpsAuditLogItem,
+    OpsAuditLogResponse,
+    OpsConfigSnapshotResponse,
+    OpsFaultDrillHistoryResponse,
+    OpsFaultDrillRequest,
+    OpsFaultDrillResponse,
+    OpsFeatureFlagsRequest,
+    OpsFeatureFlagsResponse,
+    OpsPromptCatalogItem,
+    OpsPromptCatalogResponse,
+    OpsProviderSwitchRequest,
+    OpsReleaseControlLayerItem,
+    OpsReleaseControlListResponse,
+    OpsReleaseControlRequest,
+    OpsReleaseControlResponse,
+    OpsRouterControlRequest,
+    OpsRouterControlResponse,
+    PendingReviewTaskItem,
+    PendingReviewTasksResponse,
+    PromptAbConfigRequest,
+    PromptControlRequest,
+    PromptOpsAuditItem,
+    ProviderBenchmarkResponse,
+    QueueCleanupResponse,
+    QueueDiagnosticsResponse,
+    QueueProcessingTaskItem,
+    QueueStalePendingItem,
+    QueueTaskCleanupResponse,
+    ReportCardItem,
+    ReportDeductionItem,
+    ReviewDecisionItem,
+    ReviewDecisionListResponse,
+    ReviewDecisionUpsertRequest,
+    ReviewFlowGuideResponse,
+    ReviewTaskStatusResponse,
+    ReviewTaskStatusUpdateRequest,
+    ReviewWorkbenchSampleItem,
+    ReviewWorkbenchTaskResponse,
+    RouterPolicyResponse,
+    RubricDetailResponse,
+    RubricGenerateAuditItem,
+    RubricGenerateAuditResponse,
+    RubricGenerateResponse,
+    RubricSummaryItem,
+    RuntimeDashboardResponse,
+    SkillLayoutParseRequest,
+    SkillValidationRequest,
+    SlaSummaryResponse,
+    TaskHistoryItem,
+    TaskHistoryResponse,
+    TaskInsightHotspotItem,
+    TaskInsightsResponse,
+    TaskReportResponse,
+    TaskResponse,
+    TaskStatusResponse,
+    TraceProbeResponse,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -86,81 +201,53 @@ router = APIRouter(prefix="/api/v1", tags=["grading"])
 limiter = Limiter(key_func=get_remote_address)
 
 
-async def _store_upload_file_with_limits(task_id: str, upload: UploadFile) -> str:
-    filename = upload.filename or "upload.bin"
-    total_bytes = 0
-    try:
-        with tempfile.SpooledTemporaryFile(
-            max_size=settings.upload_spool_max_size_bytes,
-            mode="w+b",
-        ) as spool:
-            while True:
-                try:
-                    chunk = await asyncio.wait_for(
-                        upload.read(settings.upload_chunk_size_bytes),
-                        timeout=settings.request_body_read_timeout_seconds,
-                    )
-                except asyncio.TimeoutError as exc:
-                    raise HTTPException(
-                        status_code=408,
-                        detail=_error_detail(
-                            error_code="UPLOAD_TIMEOUT",
-                            message="upload read timeout",
-                            retryable=True,
-                            retry_hint="retry_submit",
-                            next_action="retry_upload",
-                        ),
-                    ) from exc
-                if not chunk:
-                    break
-                total_bytes += len(chunk)
-                if total_bytes > settings.max_request_body_bytes:
-                    raise HTTPException(
-                        status_code=413,
-                        detail=_error_detail(
-                            error_code="FILE_TOO_LARGE",
-                            message="file too large",
-                            retryable=False,
-                            retry_hint="compress_or_split_file",
-                            next_action="adjust_file",
-                        ),
-                    )
-                spool.write(chunk)
-            spool.seek(0)
-            return storage.store_fileobj(task_id, spool, filename)
-    finally:
-        await upload.close()
-
-
-def _derive_student_ids_from_filenames(files: List[UploadFile]) -> List[str]:
-    """
-    Build stable student ids for batch mode from uploaded filenames.
-    If duplicated stems exist, append deterministic suffix (_2, _3...).
-    """
-    seen: Dict[str, int] = {}
-    student_ids: List[str] = []
-    for idx, upload in enumerate(files, start=1):
-        raw_name = upload.filename or f"student_{idx}.jpg"
-        stem = Path(raw_name).stem.strip() or f"student_{idx}"
-        count = seen.get(stem, 0) + 1
-        seen[stem] = count
-        student_ids.append(stem if count == 1 else f"{stem}_{count}")
-    return student_ids
-
-
-def _validate_batch_single_page_file(upload: UploadFile) -> None:
-    filename = upload.filename or "upload.bin"
-    ext = Path(filename).suffix.lower()
-    if ext not in {".jpg", ".jpeg", ".png"}:
-        raise HTTPException(
-            status_code=422,
-            detail=_error_detail(
-                error_code="BATCH_FILE_TYPE_UNSUPPORTED",
-                message="Batch mode accepts image files only (.jpg/.jpeg/.png).",
-                retryable=False,
-                next_action="adjust_file",
+def _sort_pending_review_items(
+    items: List[PendingReviewTaskItem],
+    *,
+    sort_by: str,
+    sort_direction: str,
+) -> List[PendingReviewTaskItem]:
+    reverse = str(sort_direction).strip().lower() == "desc"
+    normalized = str(sort_by).strip().lower()
+    if normalized == "priority":
+        return sorted(
+            items,
+            key=lambda item: (
+                int(item.priority_rank),
+                -(item.review_target_count or 0),
+                -(item.max_total_deduction or 0.0),
+                item.avg_confidence if item.avg_confidence is not None else 1.0,
+                str(item.updated_at or ""),
             ),
         )
+    if normalized == "task_id":
+        return sorted(items, key=lambda item: str(item.task_id), reverse=reverse)
+    if normalized == "created_at":
+        return sorted(items, key=lambda item: str(item.created_at or ""), reverse=reverse)
+    return sorted(items, key=lambda item: str(item.updated_at or ""), reverse=reverse)
+
+
+def _build_pending_review_summary(items: List[PendingReviewTaskItem]) -> Dict[str, Any]:
+    summary = {
+        "pending_task_count": len(items),
+        "unreadable_task_count": 0,
+        "human_review_task_count": 0,
+        "low_confidence_task_count": 0,
+        "weak_evidence_task_count": 0,
+        "review_target_count": 0,
+    }
+    for item in items:
+        bucket = str(item.priority_bucket or "GENERAL")
+        if bucket == "UNREADABLE":
+            summary["unreadable_task_count"] += 1
+        elif bucket == "HUMAN_REVIEW":
+            summary["human_review_task_count"] += 1
+        elif bucket == "LOW_CONFIDENCE":
+            summary["low_confidence_task_count"] += 1
+        elif bucket == "WEAK_EVIDENCE":
+            summary["weak_evidence_task_count"] += 1
+        summary["review_target_count"] += int(item.review_target_count or 0)
+    return summary
 
 
 def _run_task_locally(task_id: str, payload: Dict[str, Any], db_path: str, trace_id: str) -> None:
@@ -204,727 +291,13 @@ def _dispatch_grading_task(
         return f"local:{task_id}", "local_fallback"
 
 
-def _is_orphan_local_celery_id(celery_task_id: Optional[str]) -> bool:
-    if celery_task_id is None:
-        return True
-    normalized = str(celery_task_id).strip()
-    if not normalized:
-        return True
-    if normalized.startswith("local:"):
-        return True
-    if normalized == "mock-celery-id":
-        return True
-    return False
-
-
-def _fetch_celery_queue_snapshot(sample_limit: int = 200) -> tuple[Optional[int], Optional[List[str]], Optional[str]]:
-    try:
-        import redis
-
-        client = redis.Redis(
-            host=settings.redis_host,
-            port=settings.redis_port,
-            db=settings.redis_db,
-            socket_connect_timeout=0.5,
-            socket_timeout=0.5,
-        )
-        queue_name = "celery"
-        queue_length = int(client.llen(queue_name))
-        safe_limit = max(1, int(sample_limit))
-        raw_items = client.lrange(queue_name, 0, safe_limit - 1)
-
-        task_ids: List[str] = []
-        for raw in raw_items:
-            payload_text: Optional[str] = None
-            if isinstance(raw, bytes):
-                payload_text = raw.decode("utf-8", errors="ignore")
-            elif isinstance(raw, str):
-                payload_text = raw
-            if not payload_text:
-                continue
-            try:
-                envelope = json.loads(payload_text)
-            except json.JSONDecodeError:
-                continue
-            headers = envelope.get("headers") if isinstance(envelope, dict) else None
-            task_id = headers.get("id") if isinstance(headers, dict) else None
-            if isinstance(task_id, str) and task_id:
-                task_ids.append(task_id)
-
-        return queue_length, task_ids, None
-    except Exception as exc:
-        return None, None, str(exc)
-
-
-async def _best_effort_cleanup_stale_pending_orphans(db_path: str) -> None:
-    try:
-        cleaned_task_ids = await fail_stale_pending_orphan_tasks(
-            db_path,
-            timeout_seconds=settings.pending_orphan_timeout_seconds,
-            limit=200,
-        )
-        if cleaned_task_ids:
-            logger.warning(
-                "stale_pending_orphans_cleaned",
-                extra={
-                    "extra_fields": {
-                        "event": "stale_pending_orphans_cleaned",
-                        "cleaned_count": len(cleaned_task_ids),
-                        "sample_task_ids": cleaned_task_ids[:10],
-                    }
-                },
-            )
-    except Exception as exc:
-        logger.warning(
-            "stale_pending_orphan_cleanup_failed",
-            extra={
-                "extra_fields": {
-                    "event": "stale_pending_orphan_cleanup_failed",
-                    "reason": str(exc),
-                }
-            },
-        )
-
-
-# --- Schemas ---
-class TaskResponse(BaseModel):
-    task_id: str
-    status: str
-    rubric_id: Optional[str] = None
-    mode: Optional[str] = None
-    submitted_count: Optional[int] = None
-    status_endpoint: Optional[str] = None
-    stream_endpoint: Optional[str] = None
-    suggested_poll_interval_seconds: Optional[int] = None
-
-class TaskStatusResponse(BaseModel):
-    task_id: str
-    status: str
-    grading_status: Optional[str] = None
-    rubric_id: Optional[str] = None
-    review_status: Optional[str] = None
-    fallback_reason: Optional[str] = None
-    error_message: Optional[str] = None
-    error_code: Optional[str] = None  # Phase 29: Sanitized error codes
-    progress: Optional[float] = None  # Phase 29: Progress percentage (0.0-1.0)
-    eta_seconds: Optional[int] = None  # Phase 29: Estimated time to completion
-    retryable: Optional[bool] = None
-    retry_hint: Optional[str] = None
-    next_action: Optional[str] = None
-    status_endpoint: Optional[str] = None
-    stream_endpoint: Optional[str] = None
-    suggested_poll_interval_seconds: Optional[int] = None
-    results: Optional[List[Dict[str, Any]]] = None
-
-class GradingResultItem(BaseModel):
-    id: int
-    student_id: Optional[str]
-    total_deduction: float
-    is_pass: bool
-    report_json: str
-
-
-class TraceProbeResponse(BaseModel):
-    trace_id: str
-    task_id: str
-    celery_task_id: str
-    status: str
-
-
-class PendingReviewTaskItem(BaseModel):
-    task_id: str
-    status: str
-    grading_status: Optional[str] = None
-    rubric_id: Optional[str] = None
-    review_status: str
-    error_message: Optional[str] = None
-    fallback_reason: Optional[str] = None
-    created_at: Optional[str] = None
-    updated_at: Optional[str] = None
-
-
-class PendingReviewTasksResponse(BaseModel):
-    page: int
-    limit: int
-    items: List[PendingReviewTaskItem]
-
-
-class ReviewFlowGuideResponse(BaseModel):
-    pending_list_endpoint: str
-    task_status_enum: List[str]
-    grading_status_enum: List[str]
-    notes: List[str]
-
-
-class GradeFlowGuideResponse(BaseModel):
-    submit_endpoint: str
-    batch_submit_endpoint: Optional[str] = None
-    status_endpoint_template: str
-    stream_endpoint_template: str
-    task_status_enum: List[str]
-    terminal_statuses: List[str]
-    error_code_actions: Dict[str, str]
-    notes: List[str]
-
-
-class RubricGenerateResponse(BaseModel):
-    rubric_id: str
-    question_id: Optional[str] = None
-    grading_points_count: int
-    source_file_count: int
-
-
-class RubricSummaryItem(BaseModel):
-    rubric_id: str
-    question_id: Optional[str] = None
-    created_at: Optional[str] = None
-
-
-class RubricDetailResponse(BaseModel):
-    rubric_id: str
-    question_id: Optional[str] = None
-    created_at: Optional[str] = None
-    rubric_json: Dict[str, Any]
-
-
-class HygieneInterceptionItem(BaseModel):
-    id: int
-    trace_id: str
-    task_id: Optional[str] = None
-    interception_node: str
-    raw_image_path: Optional[str] = None
-    action: str
-    created_at: Optional[str] = None
-
-
-class HygieneActionUpdateRequest(BaseModel):
-    action: str
-
-
-class HygieneBulkActionUpdateRequest(BaseModel):
-    record_ids: List[int]
-    action: str
-
-
-class BoundingBoxInput(BaseModel):
-    x1: float
-    y1: float
-    x2: float
-    y2: float
-
-
-class AnnotationFeedbackRequest(BaseModel):
-    task_id: str
-    region_id: str
-    region_type: Literal["question_region", "answer_region"]
-    image_width: int = Field(..., gt=0)
-    image_height: int = Field(..., gt=0)
-    bbox: BoundingBoxInput
-    teacher_text_feedback: str = Field(..., min_length=1)
-    expected_score: float = Field(..., ge=0.0)
-    perception_ir_snapshot: Dict[str, Any]
-    cognitive_ir_snapshot: Dict[str, Any]
-    is_integrated_to_dataset: bool = False
-
-
-class AnnotationFeedbackResponse(BaseModel):
-    status: str
-    trace_id: str
-    task_id: str
-    region_id: str
-
-
-class GoldenAnnotationAssetItem(BaseModel):
-    id: int
-    trace_id: str
-    task_id: str
-    region_id: str
-    region_type: str
-    image_width: int
-    image_height: int
-    bbox_coordinates: List[float]
-    teacher_text_feedback: str
-    expected_score: float
-    is_integrated_to_dataset: bool
-    created_at: Optional[str] = None
-    updated_at: Optional[str] = None
-
-
-class AnnotationAssetDetailResponse(BaseModel):
-    id: int
-    trace_id: str
-    task_id: str
-    region_id: str
-    region_type: str
-    image_width: int
-    image_height: int
-    bbox_coordinates: List[float]
-    teacher_text_feedback: str
-    expected_score: float
-    is_integrated_to_dataset: bool
-    perception_ir_snapshot: Dict[str, Any]
-    cognitive_ir_snapshot: Dict[str, Any]
-    created_at: Optional[str] = None
-    updated_at: Optional[str] = None
-
-
-class AnnotationAssetListResponse(BaseModel):
-    page: int
-    limit: int
-    items: List[GoldenAnnotationAssetItem]
-
-
-class SkillLayoutParseRequest(BaseModel):
-    image_base64: str = Field(..., min_length=1)
-    context_type: str = Field(default="STUDENT_ANSWER")
-    page_index: int = Field(default=0, ge=0)
-    target_question_no: Optional[str] = None
-
-
-class SkillValidationRequest(BaseModel):
-    task_id: str
-    question_id: Optional[str] = None
-    perception_payload: Dict[str, Any]
-    evaluation_payload: Dict[str, Any]
-    rubric_payload: Optional[Dict[str, Any]] = None
-
-
-class CapabilityEndpointItem(BaseModel):
-    method: str
-    path: str
-    response_model: Optional[str] = None
-    notes: Optional[str] = None
-
-
-class CapabilityDomainItem(BaseModel):
-    domain: str
-    endpoints: List[CapabilityEndpointItem]
-
-
-class CapabilityCatalogResponse(BaseModel):
-    version: str
-    domains: List[CapabilityDomainItem]
-
-
-class ContractFieldItem(BaseModel):
-    name: str
-    type: str
-    required: bool
-
-
-class ContractSchemaItem(BaseModel):
-    schema_name: str
-    fields: List[ContractFieldItem]
-
-
-class ApiContractCatalogResponse(BaseModel):
-    version: str
-    status_enums: Dict[str, List[str]]
-    error_codes: List[str]
-    schemas: List[ContractSchemaItem]
-
-
-class SlaSummaryResponse(BaseModel):
-    version: str
-    queue_latency_target_ms: int
-    completion_target_seconds_p95: int
-    sse_reliability_target: str
-    observed_status_counts: Dict[str, int]
-    observed_completion_seconds_p50: Optional[float] = None
-    observed_completion_seconds_p95: Optional[float] = None
-    notes: List[str] = Field(default_factory=list)
-
-
-class ProviderBenchmarkResponse(BaseModel):
-    version: str
-    window_hours: int
-    task_volume: Dict[str, int]
-    throughput_tasks_per_hour: float
-    cognitive_router: Dict[str, Any]
-    estimated_cost: Dict[str, float]
-    notes: List[str] = Field(default_factory=list)
-
-
-class RouterPolicyResponse(BaseModel):
-    version: str
-    policy: Dict[str, Any]
-    live_snapshot: Dict[str, Any]
-    notes: List[str] = Field(default_factory=list)
-
-
-class DatasetPipelineSummaryResponse(BaseModel):
-    version: str
-    window_hours: int
-    dataset_assets: Dict[str, int]
-    review_queue: Dict[str, int]
-    notes: List[str] = Field(default_factory=list)
-
-
-class RuntimeDashboardResponse(BaseModel):
-    version: str
-    window_hours: int
-    provider_hits: Dict[str, int]
-    fallback_triggers: Dict[str, Any]
-    prompt_cache_hits: Dict[str, int]
-    human_review_rate: float
-    notes: List[str] = Field(default_factory=list)
-
-
-class QueueProcessingTaskItem(BaseModel):
-    task_id: str
-    celery_task_id: Optional[str] = None
-    progress: float = 0.0
-    eta_seconds: Optional[int] = None
-    created_at: Optional[str] = None
-    updated_at: Optional[str] = None
-    age_seconds: Optional[int] = None
-
-
-class QueueStalePendingItem(BaseModel):
-    task_id: str
-    celery_task_id: Optional[str] = None
-    created_at: Optional[str] = None
-    updated_at: Optional[str] = None
-    age_seconds: int
-    classification: Literal["orphan_local", "queued_waiting", "unknown"]
-
-
-class QueueDiagnosticsResponse(BaseModel):
-    version: str
-    stale_threshold_seconds: int
-    redis_available: bool
-    redis_error: Optional[str] = None
-    celery_queue_length: Optional[int] = None
-    queued_task_ids_sample: List[str] = Field(default_factory=list)
-    db_status_counts: Dict[str, int]
-    processing_tasks: List[QueueProcessingTaskItem] = Field(default_factory=list)
-    stale_pending_summary: Dict[str, int]
-    stale_pending_sample: List[QueueStalePendingItem] = Field(default_factory=list)
-    notes: List[str] = Field(default_factory=list)
-
-
-class QueueCleanupResponse(BaseModel):
-    stale_threshold_seconds: int
-    cleaned_count: int
-    cleaned_task_ids: List[str] = Field(default_factory=list)
-
-
-class PromptControlRequest(BaseModel):
-    prompt_key: str
-    forced_variant_id: Optional[str] = None
-    lkg_mode: bool = False
-    operator_id: Optional[str] = None
-
-
-class PromptAbConfigRequest(BaseModel):
-    prompt_key: str
-    enabled: bool
-    rollout_percentage: int = Field(..., ge=0, le=100)
-    variant_weights: Dict[str, int] = Field(default_factory=dict)
-    segment_prefixes: List[str] = Field(default_factory=list)
-    sticky_salt: str = ""
-    operator_id: Optional[str] = None
-
-
-class PromptOpsAuditItem(BaseModel):
-    id: int
-    trace_id: str
-    operator_id: Optional[str] = None
-    action: str
-    prompt_key: Optional[str] = None
-    payload_json: str
-    created_at: Optional[str] = None
-
-
-class OpsProviderSwitchRequest(BaseModel):
-    provider: str
-    operator_id: Optional[str] = None
-
-
-class OpsRouterControlRequest(BaseModel):
-    enabled: bool
-    failure_rate_threshold: float = Field(..., gt=0.0)
-    token_spike_threshold: float = Field(..., gt=0.0)
-    min_samples: int = Field(..., ge=1)
-    budget_token_limit: int = Field(..., ge=1)
-    operator_id: Optional[str] = None
-
-
-class OpsRouterControlResponse(BaseModel):
-    enabled: bool
-    failure_rate_threshold: float
-    token_spike_threshold: float
-    min_samples: int
-    budget_token_limit: int
-
-
-class OpsConfigSnapshotResponse(BaseModel):
-    perception_provider: str
-    prompt_settings: Dict[str, Any]
-    router_policy: OpsRouterControlResponse
-    environment: str = "dev"
-    feature_flags: Dict[str, bool] = Field(default_factory=dict)
-
-
-class OpsAuditLogItem(BaseModel):
-    trace_id: str
-    operator_id: Optional[str] = None
-    action: str
-    component: str
-    payload: Dict[str, Any]
-
-
-class OpsAuditLogResponse(BaseModel):
-    page: int
-    limit: int
-    items: List[OpsAuditLogItem]
-
-
-class OpsPromptCatalogItem(BaseModel):
-    prompt_key: str
-    control_state: Dict[str, Any]
-    ab_state: Dict[str, Any]
-    runtime_state: Dict[str, Any]
-
-
-class OpsPromptCatalogResponse(BaseModel):
-    page: int
-    limit: int
-    items: List[OpsPromptCatalogItem]
-
-
-class OpsFeatureFlagsRequest(BaseModel):
-    deployment_environment: Literal["dev", "staging", "prod"]
-    provider_switch_enabled: bool = True
-    prompt_control_enabled: bool = True
-    router_control_enabled: bool = True
-    operator_id: Optional[str] = None
-
-
-class OpsFeatureFlagsResponse(BaseModel):
-    deployment_environment: Literal["dev", "staging", "prod"]
-    provider_switch_enabled: bool
-    prompt_control_enabled: bool
-    router_control_enabled: bool
-    updated_at: Optional[str] = None
-
-
-class OpsReleaseControlLayerItem(BaseModel):
-    layer: Literal["api", "prompt", "router"]
-    strategy: Literal["stable", "canary", "rollback"]
-    rollout_percentage: int
-    target_version: Optional[str] = None
-    config: Dict[str, Any] = Field(default_factory=dict)
-    rollback_config: Dict[str, Any] = Field(default_factory=dict)
-    updated_at: Optional[str] = None
-
-
-class OpsReleaseControlListResponse(BaseModel):
-    items: List[OpsReleaseControlLayerItem]
-
-
-class OpsReleaseControlRequest(BaseModel):
-    layer: Literal["api", "prompt", "router"]
-    strategy: Literal["stable", "canary", "rollback"]
-    rollout_percentage: int = Field(..., ge=0, le=100)
-    target_version: Optional[str] = None
-    config: Dict[str, Any] = Field(default_factory=dict)
-    rollback_config: Dict[str, Any] = Field(default_factory=dict)
-    operator_id: Optional[str] = None
-
-
-class OpsReleaseControlResponse(BaseModel):
-    layer: Literal["api", "prompt", "router"]
-    strategy: Literal["stable", "canary", "rollback"]
-    rollout_percentage: int
-    target_version: Optional[str] = None
-    config: Dict[str, Any] = Field(default_factory=dict)
-    rollback_config: Dict[str, Any] = Field(default_factory=dict)
-    updated_at: Optional[str] = None
-
-
-class OpsFaultDrillRequest(BaseModel):
-    drill_type: Literal["redis_unavailable", "model_failure", "sse_disconnect", "db_pressure"]
-    operator_id: Optional[str] = None
-
-
-class OpsFaultDrillResponse(BaseModel):
-    report_id: int
-    drill_type: Literal["redis_unavailable", "model_failure", "sse_disconnect", "db_pressure"]
-    status: Literal["passed", "failed"]
-    details: Dict[str, Any] = Field(default_factory=dict)
-    created_at: Optional[str] = None
-
-
-class OpsFaultDrillHistoryResponse(BaseModel):
-    page: int
-    limit: int
-    items: List[OpsFaultDrillResponse]
-
-
-def _percentile(values: List[float], p: float) -> Optional[float]:
-    if not values:
-        return None
-    sorted_values = sorted(values)
-    idx = int(round((len(sorted_values) - 1) * p))
-    idx = max(0, min(idx, len(sorted_values) - 1))
-    return float(sorted_values[idx])
-
-
-def _schema_fields_from_model(model: type[BaseModel]) -> List[ContractFieldItem]:
-    fields: List[ContractFieldItem] = []
-    for name, field in model.model_fields.items():
-        required = field.is_required()
-        annotation = field.annotation
-        fields.append(
-            ContractFieldItem(
-                name=name,
-                type=str(annotation),
-                required=required,
-            )
-        )
-    return fields
-
-
-def _error_detail(
-    *,
-    error_code: str,
-    message: str,
-    retryable: bool = False,
-    retry_hint: Optional[str] = None,
-    next_action: Optional[str] = None,
-) -> Dict[str, Any]:
-    payload: Dict[str, Any] = {
-        "error_code": error_code,
-        "message": message,
-        "retryable": retryable,
-    }
-    if retry_hint:
-        payload["retry_hint"] = retry_hint
-    if next_action:
-        payload["next_action"] = next_action
-    return payload
-
-
-def _load_settings_from_env() -> None:
-    settings.__dict__.clear()
-    refreshed = settings.__class__()  # type: ignore[call-arg]
-    settings.__dict__.update(refreshed.__dict__)
-
-
-def _validate_skill_gateway_token(request: Request) -> None:
-    if not settings.skill_gateway_auth_enabled:
-        return
-    expected = settings.skill_gateway_auth_token
-    if not expected:
-        raise HTTPException(status_code=503, detail="skill gateway auth misconfigured")
-    received = request.headers.get("X-Skill-Gateway-Token")
-    if received != expected:
-        raise HTTPException(status_code=403, detail="skill gateway unauthorized")
-
-
-def _validate_bbox_in_image_space(*, bbox: BoundingBoxInput, image_width: int, image_height: int) -> List[float]:
-    if image_width <= 0 or image_height <= 0:
-        raise HTTPException(status_code=422, detail="image_width and image_height must be positive")
-
-    coords = [bbox.x1, bbox.y1, bbox.x2, bbox.y2]
-    if not all(math.isfinite(v) for v in coords):
-        raise HTTPException(status_code=422, detail="bbox contains non-finite values")
-
-    x1, y1, x2, y2 = coords
-    if x2 < x1 or y2 < y1:
-        raise HTTPException(status_code=422, detail="bbox must satisfy x2>=x1 and y2>=y1")
-    if x1 < 0 or y1 < 0 or x2 > image_width or y2 > image_height:
-        raise HTTPException(status_code=422, detail="bbox out of image bounds")
-    return [x1, y1, x2, y2]
-
-
-def _extract_layout_region_from_snapshot(perception_ir_snapshot: Dict[str, Any], region_id: str) -> Optional[Dict[str, Any]]:
-    regions = perception_ir_snapshot.get("regions")
-    if not isinstance(regions, list):
-        return None
-    for item in regions:
-        if isinstance(item, dict) and str(item.get("target_id")) == region_id:
-            return item
-    return None
-
-
-def _bbox_from_snapshot_region(region: Dict[str, Any], *, image_width: int, image_height: int) -> List[float]:
-    bbox = region.get("bbox")
-    if not isinstance(bbox, dict):
-        raise HTTPException(status_code=422, detail="perception_ir_snapshot region bbox must be object")
-
-    try:
-        x_min = float(bbox["x_min"])
-        y_min = float(bbox["y_min"])
-        x_max = float(bbox["x_max"])
-        y_max = float(bbox["y_max"])
-    except Exception:
-        raise HTTPException(status_code=422, detail="perception_ir_snapshot bbox malformed")
-
-    return [x_min * image_width, y_min * image_height, x_max * image_width, y_max * image_height]
-
-
-def _validate_annotation_anchor(payload: AnnotationFeedbackRequest) -> List[float]:
-    """
-    Enforce strict spatial anchor contract:
-    - region_id must exist in PerceptionIR snapshot
-    - region_type must match
-    - submitted bbox must be fully contained in source region bbox
-    """
-    bbox_abs = _validate_bbox_in_image_space(
-        bbox=payload.bbox,
-        image_width=payload.image_width,
-        image_height=payload.image_height,
-    )
-
-    region = _extract_layout_region_from_snapshot(payload.perception_ir_snapshot, payload.region_id)
-    if region is not None:
-        source_region_type = str(region.get("region_type") or "")
-        if source_region_type != payload.region_type:
-            raise HTTPException(status_code=422, detail="region_type mismatch against perception_ir_snapshot")
-
-        source_bbox_abs = _bbox_from_snapshot_region(
-            region,
-            image_width=payload.image_width,
-            image_height=payload.image_height,
-        )
-        sx1, sy1, sx2, sy2 = source_bbox_abs
-        x1, y1, x2, y2 = bbox_abs
-        if x1 < sx1 or y1 < sy1 or x2 > sx2 or y2 > sy2:
-            raise HTTPException(status_code=422, detail="bbox is outside source perception region")
-
-    # Cognition snapshot anchor check:
-    # - region-mode: requires region_id anchor (Phase35 style)
-    # - full-page mode: accepts any non-empty reference anchor (Phase34 style)
-    evaluations = payload.cognitive_ir_snapshot.get("step_evaluations")
-    if isinstance(evaluations, list):
-        if region is not None:
-            has_region_anchor = any(
-                isinstance(item, dict) and str(item.get("reference_element_id")) == payload.region_id
-                for item in evaluations
-            )
-            if not has_region_anchor:
-                raise HTTPException(status_code=422, detail="cognitive_ir_snapshot lacks region_id anchor")
-        else:
-            has_any_anchor = any(
-                isinstance(item, dict) and str(item.get("reference_element_id") or "").strip()
-                for item in evaluations
-            )
-            if not has_any_anchor:
-                raise HTTPException(status_code=422, detail="cognitive_ir_snapshot.step_evaluations has no anchor")
-    else:
-        raise HTTPException(status_code=422, detail="cognitive_ir_snapshot.step_evaluations missing")
-
-    return bbox_abs
-
-
 # --- API Endpoints (Phase 28: Celery-decoupled) ---
 @router.post("/rubric/generate", response_model=RubricGenerateResponse, status_code=201)
 @limiter.limit("5/minute")
 async def generate_rubric_job(
     request: Request,
     files: List[UploadFile] = File(...),
+    force_regenerate: bool = Form(False),
     db_path: str = Depends(get_db_path),
 ):
     """
@@ -935,6 +308,52 @@ async def generate_rubric_job(
     for file in files:
         content = await file.read()
         files_data.append((content, file.filename))
+
+    source_fingerprint = _compute_source_fingerprint(files_data)
+    trace_id = get_trace_id()
+    client_ip = _request_client_ip(request)
+    user_agent = request.headers.get("user-agent")
+    referer = request.headers.get("referer")
+    if not force_regenerate:
+        cached = await get_recent_rubric_by_fingerprint(
+            db_path,
+            source_fingerprint=source_fingerprint,
+            within_seconds=settings.rubric_dedupe_window_seconds,
+        )
+        if cached:
+            logger.warning(
+                "rubric_generation_dedup_hit",
+                extra={
+                    "extra_fields": {
+                        "rubric_id": cached["rubric_id"],
+                        "dedupe_window_seconds": settings.rubric_dedupe_window_seconds,
+                    }
+                },
+            )
+            row = await get_rubric(db_path, cached["rubric_id"])
+            grading_points_count = 0
+            if row:
+                rubric_payload = json.loads(row["rubric_json"])
+                grading_points_count = len(rubric_payload.get("grading_points", []))
+            await append_rubric_generate_audit(
+                db_path,
+                trace_id=trace_id,
+                rubric_id=cached["rubric_id"],
+                source_fingerprint=source_fingerprint,
+                reused_from_cache=True,
+                force_regenerate=force_regenerate,
+                source_file_count=len(files),
+                client_ip=client_ip,
+                user_agent=user_agent,
+                referer=referer,
+            )
+            return RubricGenerateResponse(
+                rubric_id=cached["rubric_id"],
+                question_id=cached.get("question_id"),
+                grading_points_count=grading_points_count,
+                source_file_count=len(files),
+                reused_from_cache=True,
+            )
 
     perception_engine = create_perception_engine()
     cognitive_agent = DeepSeekCognitiveEngine()
@@ -971,11 +390,22 @@ async def generate_rubric_job(
             ) from exc
         raise
     except GradingSystemError as exc:
+        error_text = str(exc)
+        if "LLM egress disabled by configuration" in error_text:
+            raise HTTPException(
+                status_code=503,
+                detail=_error_detail(
+                    error_code="EGRESS_DISABLED",
+                    message=error_text,
+                    retryable=False,
+                    next_action="enable_llm_egress",
+                ),
+            ) from exc
         raise HTTPException(
             status_code=503,
             detail=_error_detail(
                 error_code="UPSTREAM_UNAVAILABLE",
-                message=f"Rubric generation upstream unavailable: {str(exc)}",
+                message=f"Rubric generation upstream unavailable: {error_text}",
                 retryable=True,
                 retry_hint="retry_submit",
                 next_action="retry_upload",
@@ -987,12 +417,26 @@ async def generate_rubric_job(
         rubric_id=rubric_id,
         question_id=rubric.question_id,
         rubric_json=rubric.model_dump(),
+        source_fingerprint=source_fingerprint,
+    )
+    await append_rubric_generate_audit(
+        db_path,
+        trace_id=trace_id,
+        rubric_id=rubric_id,
+        source_fingerprint=source_fingerprint,
+        reused_from_cache=False,
+        force_regenerate=force_regenerate,
+        source_file_count=len(files),
+        client_ip=client_ip,
+        user_agent=user_agent,
+        referer=referer,
     )
     return RubricGenerateResponse(
         rubric_id=rubric_id,
         question_id=rubric.question_id,
         grading_points_count=len(rubric.grading_points),
         source_file_count=len(files),
+        reused_from_cache=False,
     )
 
 
@@ -1072,7 +516,7 @@ async def submit_grading_job(
         file_refs.append(file_ref)
     
     # 3. Pre-persist task state (PENDING) BEFORE queueing
-    await create_task(db_path, task_id)
+    await create_task(db_path, task_id, submitted_count=len(file_refs))
 
     bound_rubric: Optional[Dict[str, Any]] = None
     if rubric_id:
@@ -1173,7 +617,7 @@ async def submit_batch_grading_job(
         file_ref = await _store_upload_file_with_limits(task_id, file)
         file_refs.append(file_ref)
 
-    await create_task(db_path, task_id)
+    await create_task(db_path, task_id, submitted_count=len(file_refs))
 
     bound_rubric: Optional[Dict[str, Any]] = None
     if rubric_id:
@@ -1229,6 +673,99 @@ async def submit_batch_grading_job(
     )
 
 
+@router.post("/grade/submit-batch-with-reference", response_model=TaskResponse, status_code=202)
+@limiter.limit("40/minute")
+async def submit_batch_with_reference_grading_job(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    reference_files: List[UploadFile] = File(...),
+    files: List[UploadFile] = File(...),
+    db_path: str = Depends(get_db_path),
+):
+    """
+    One-shot smart batch mode:
+    - upload reference + student answers in one request
+    - worker auto-generates rubric and grades in a single task
+    """
+    del request
+    if not reference_files:
+        raise HTTPException(
+            status_code=422,
+            detail=_error_detail(
+                error_code="INPUT_REJECTED",
+                message="No reference files provided.",
+                retryable=False,
+                next_action="adjust_file",
+            ),
+        )
+    if not files:
+        raise HTTPException(
+            status_code=422,
+            detail=_error_detail(
+                error_code="INPUT_REJECTED",
+                message="No student files provided for batch grading.",
+                retryable=False,
+                next_action="adjust_file",
+            ),
+        )
+
+    for upload in files:
+        _validate_batch_single_page_file(upload)
+
+    await _best_effort_cleanup_stale_pending_orphans(db_path)
+
+    task_id = str(uuid.uuid4())
+    trace_id = get_trace_id()
+    student_ids = _derive_student_ids_from_filenames(files)
+
+    file_refs: List[str] = []
+    for file in files:
+        file_ref = await _store_upload_file_with_limits(task_id, file)
+        file_refs.append(file_ref)
+
+    reference_file_refs: List[str] = []
+    for file in reference_files:
+        file_ref = await _store_upload_file_with_limits(task_id, file)
+        reference_file_refs.append(file_ref)
+
+    await create_task(db_path, task_id, submitted_count=len(file_refs))
+
+    payload = storage.prepare_payload(file_refs)
+    payload["mode"] = "batch_single_page"
+    payload["student_ids"] = student_ids
+    payload["reference_file_refs"] = reference_file_refs
+
+    celery_task_id, dispatch_mode = _dispatch_grading_task(
+        task_id=task_id,
+        payload=payload,
+        db_path=db_path,
+        trace_id=trace_id,
+        background_tasks=background_tasks,
+    )
+
+    await update_task_celery_id(db_path, task_id, celery_task_id)
+    logger.info(
+        "task_enqueued",
+        extra={
+            "extra_fields": {
+                "task_id": task_id,
+                "event": "task_enqueued_batch_with_reference",
+                "dispatch_mode": dispatch_mode,
+            }
+        },
+    )
+    return TaskResponse(
+        task_id=task_id,
+        status="PENDING",
+        rubric_id=None,
+        mode="batch_single_page",
+        submitted_count=len(file_refs),
+        status_endpoint=f"/api/v1/grade/{task_id}",
+        stream_endpoint=f"/api/v1/tasks/{task_id}/stream",
+        suggested_poll_interval_seconds=2,
+    )
+
+
 @router.get("/grade/flow-guide", response_model=GradeFlowGuideResponse)
 async def get_grade_flow_guide():
     """
@@ -1238,6 +775,7 @@ async def get_grade_flow_guide():
     return GradeFlowGuideResponse(
         submit_endpoint="/api/v1/grade/submit",
         batch_submit_endpoint="/api/v1/grade/submit-batch",
+        batch_submit_with_reference_endpoint="/api/v1/grade/submit-batch-with-reference",
         status_endpoint_template="/api/v1/grade/{task_id}",
         stream_endpoint_template="/api/v1/tasks/{task_id}/stream",
         task_status_enum=["PENDING", "PROCESSING", "COMPLETED", "FAILED"],
@@ -1311,13 +849,25 @@ async def get_job_status_and_results(
         "grading_status": task.get("grading_status"),
         "rubric_id": task.get("rubric_id"),
         "review_status": task.get("review_status"),
+        "submitted_count": int(task.get("submitted_count") or 0),
         "fallback_reason": task.get("fallback_reason"),
         "retryable": False,
         "status_endpoint": f"/api/v1/grade/{task_id}",
         "stream_endpoint": f"/api/v1/tasks/{task_id}/stream",
         "suggested_poll_interval_seconds": 2,
     }
-    
+
+    from src.db.client import _open_connection, aiosqlite
+
+    async with _open_connection(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT COUNT(1) FROM grading_results WHERE task_id = ?",
+            (task_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+            response_data["result_count"] = int((row[0] if row else 0) or 0)
+
     # Phase 29: Status-specific enrichment
     if task["status"] in ["PENDING", "PROCESSING"]:
         response_data["progress"] = float(task.get("progress") or 0.0)
@@ -1348,7 +898,6 @@ async def get_job_status_and_results(
         else:
             response_data["next_action"] = "view_results"
         # Retrieve results associated with this task
-        from src.db.client import _open_connection, aiosqlite
         async with _open_connection(db_path) as db:
             db.row_factory = aiosqlite.Row
             async with db.execute("SELECT * FROM grading_results WHERE task_id = ?", (task_id,)) as cursor:
@@ -1366,7 +915,10 @@ async def get_job_status_and_results(
     
     # Phase 32: Generate ETag from task state
     # ETag = hash(status + updated_at + error_message)
-    state_string = f"{task['status']}_{task.get('updated_at', '')}_{task.get('error_message', '')}"
+    state_string = (
+        f"{task['status']}_{task.get('updated_at', '')}_{task.get('error_message', '')}_"
+        f"{response_data.get('submitted_count', 0)}_{response_data.get('result_count', 0)}"
+    )
     etag = hashlib.md5(state_string.encode()).hexdigest()
     
     # Check If-None-Match header (conditional request)
@@ -1504,6 +1056,183 @@ async def get_all_results(
     return [GradingResultItem(**r) for r in results]
 
 
+@router.get("/results/{result_id}/inputs/{index}")
+async def get_result_input_asset(
+    result_id: int,
+    index: int,
+    db_path: str = Depends(get_db_path),
+):
+    from src.db.client import _open_connection, aiosqlite
+
+    async with _open_connection(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT report_json FROM grading_results WHERE id = ?",
+            (result_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="result not found")
+
+    try:
+        payload = json.loads(row["report_json"])
+    except Exception:
+        payload = {}
+
+    file_refs = payload.get("input_file_refs") if isinstance(payload.get("input_file_refs"), list) else []
+    if index < 0 or index >= len(file_refs):
+        raise HTTPException(status_code=404, detail="input asset not found")
+
+    file_ref = str(file_refs[index] or "").strip()
+    parsed = urlparse(file_ref)
+    if parsed.scheme != "file":
+        raise HTTPException(status_code=400, detail="unsupported input asset scheme")
+
+    raw_path = unquote(parsed.path or "")
+    if raw_path.startswith("/") and len(raw_path) > 2 and raw_path[2] == ":":
+        raw_path = raw_path[1:]
+    asset_path = Path(raw_path).resolve()
+    uploads_root = settings.uploads_path.resolve()
+    try:
+        asset_path.relative_to(uploads_root)
+    except ValueError as exc:
+        raise HTTPException(status_code=403, detail="input asset path rejected") from exc
+    if not asset_path.exists():
+        raise HTTPException(status_code=404, detail="input asset missing")
+
+    media_type = mimetypes.guess_type(asset_path.name)[0] or "application/octet-stream"
+    return FileResponse(asset_path, media_type=media_type, filename=asset_path.name)
+
+
+@router.get("/tasks/history", response_model=TaskHistoryResponse)
+async def get_task_history(
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+    status: Optional[str] = Query(default=None, pattern="^(PENDING|PROCESSING|COMPLETED|FAILED)$"),
+    db_path: str = Depends(get_db_path),
+):
+    offset = (page - 1) * limit
+    where_clause = ""
+    params: List[Any] = []
+    if status:
+        where_clause = "WHERE t.status = ?"
+        params.append(status)
+    params.extend([limit, offset])
+
+    from src.db.client import _open_connection, aiosqlite
+
+    async with _open_connection(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            f"""
+            SELECT
+                t.task_id,
+                t.status,
+                t.grading_status,
+                t.review_status,
+                t.rubric_id,
+                t.submitted_count,
+                t.progress,
+                t.created_at,
+                t.updated_at,
+                COALESCE(COUNT(gr.id), 0) AS result_count
+            FROM tasks t
+            LEFT JOIN grading_results gr ON gr.task_id = t.task_id
+            {where_clause}
+            GROUP BY t.task_id
+            ORDER BY t.updated_at DESC
+            LIMIT ? OFFSET ?
+            """,
+            tuple(params),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            items = [TaskHistoryItem(**dict(r)) for r in rows]
+    return TaskHistoryResponse(page=page, limit=limit, items=items)
+
+
+@router.get("/grade/{task_id}/report", response_model=TaskReportResponse)
+async def get_task_report(
+    task_id: str,
+    db_path: str = Depends(get_db_path),
+):
+    task = await get_task(db_path, task_id)
+    if not task:
+        raise HTTPException(
+            status_code=404,
+            detail=_error_detail(
+                error_code="TASK_NOT_FOUND",
+                message="Task not found",
+                retryable=False,
+                next_action="submit_new_task",
+            ),
+        )
+    if task.get("status") != "COMPLETED":
+        raise HTTPException(
+            status_code=409,
+            detail=_error_detail(
+                error_code="TASK_NOT_COMPLETED",
+                message="Task is not completed yet",
+                retryable=True,
+                retry_hint="wait_and_poll_status",
+                next_action="wait_for_completion",
+            ),
+        )
+
+    from src.db.client import _open_connection, aiosqlite
+
+    async with _open_connection(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """
+            SELECT id, student_id, total_deduction, is_pass, report_json
+            FROM grading_results
+            WHERE task_id = ?
+            ORDER BY created_at ASC
+            """,
+            (task_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            records = [dict(r) for r in rows]
+
+    cards = [_to_report_card(record) for record in records]
+    return TaskReportResponse(
+        task_id=task_id,
+        task_status=str(task.get("status") or "UNKNOWN"),
+        cards=cards,
+    )
+
+
+@router.get("/grade/{task_id}/insights", response_model=TaskInsightsResponse)
+async def get_task_insights(
+    task_id: str,
+    db_path: str = Depends(get_db_path),
+):
+    task = await get_task(db_path, task_id)
+    if not task:
+        raise HTTPException(
+            status_code=404,
+            detail=_error_detail(
+                error_code="TASK_NOT_FOUND",
+                message="Task not found",
+                retryable=False,
+                next_action="submit_new_task",
+            ),
+        )
+
+    rows = await fetch_results_by_task(db_path, task_id)
+    cards = [_to_report_card(record) for record in rows]
+    insights = _build_task_insights(cards)
+    return TaskInsightsResponse(
+        task_id=task_id,
+        task_status=str(task.get("status") or "UNKNOWN"),
+        error_type_counts=insights["error_type_counts"],
+        review_bucket_counts=insights["review_bucket_counts"],
+        hotspots=insights["hotspots"],
+        lecture_suggestions=insights["lecture_suggestions"],
+    )
+
+
 @router.get("/tasks/pending-review", response_model=List[PendingReviewTaskItem])
 async def get_pending_review_tasks(
     status: Optional[str] = Query(default=None, pattern="^(SCORED|REJECTED_UNREADABLE)$"),
@@ -1535,26 +1264,226 @@ async def get_pending_review_tasks(
 async def get_pending_review_workbench(
     status: Optional[str] = Query(default=None, pattern="^(SCORED|REJECTED_UNREADABLE)$"),
     task_id: Optional[str] = Query(default=None),
-    sort_by: str = Query(default="updated_at", pattern="^(updated_at|created_at|task_id)$"),
+    sort_by: str = Query(default="priority", pattern="^(priority|updated_at|created_at|task_id)$"),
     sort_direction: str = Query(default="desc", pattern="^(asc|desc)$"),
+    priority_bucket: Optional[str] = Query(default=None, pattern="^(UNREADABLE|HUMAN_REVIEW|LOW_CONFIDENCE|WEAK_EVIDENCE|GENERAL)$"),
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+    db_path: str = Depends(get_db_path),
+):
+    raw_rows = await list_pending_review_task_rows(
+        db_path,
+        task_id=task_id,
+        grading_status_filter=status,
+    )
+    decision_counts = await get_teacher_review_decision_counts(
+        db_path,
+        task_ids=[str(row.get("task_id") or "") for row in raw_rows],
+    )
+
+    enriched_items: List[PendingReviewTaskItem] = []
+    for row in raw_rows:
+        task_results = await fetch_results_by_task(db_path, str(row.get("task_id") or ""))
+        enriched_items.append(
+            _build_pending_review_queue_item(
+                row,
+                task_results,
+                reviewed_decision_count=decision_counts.get(str(row.get("task_id") or ""), 0),
+            )
+        )
+
+    if priority_bucket:
+        enriched_items = [
+            item for item in enriched_items if str(item.priority_bucket or "") == priority_bucket
+        ]
+
+    sorted_items = _sort_pending_review_items(
+        enriched_items,
+        sort_by=sort_by,
+        sort_direction=sort_direction,
+    )
+    total_items = len(sorted_items)
+    offset = (page - 1) * limit
+    paged_items = sorted_items[offset: offset + limit]
+    summary = _build_pending_review_summary(sorted_items)
+    summary["total_items"] = total_items
+    return PendingReviewTasksResponse(page=page, limit=limit, items=paged_items, summary=summary)
+
+
+@router.get("/review/workbench/{task_id}", response_model=ReviewWorkbenchTaskResponse)
+async def get_review_workbench_task(
+    task_id: str,
+    db_path: str = Depends(get_db_path),
+):
+    task = await get_task(db_path, task_id)
+    if not task:
+        raise HTTPException(
+            status_code=404,
+            detail=_error_detail(
+                error_code="TASK_NOT_FOUND",
+                message="Task not found",
+                retryable=False,
+                next_action="refresh_review_queue",
+            ),
+        )
+
+    rows = await fetch_results_by_task(db_path, task_id)
+    decision_rows = await list_teacher_review_decisions(db_path, task_id=task_id, limit=500, offset=0)
+    decision_map: Dict[str, ReviewDecisionItem] = {}
+    for row in decision_rows:
+        row["include_in_dataset"] = bool(row.get("include_in_dataset", 0))
+        item = ReviewDecisionItem(**row)
+        decision_map[item.sample_id] = item
+
+    samples: List[ReviewWorkbenchSampleItem] = []
+    for row in rows:
+        sample = _build_review_workbench_sample(
+            row,
+            task_fallback_reason=task.get("fallback_reason"),
+            teacher_decision=decision_map.get(str(row.get("student_id") or "").strip() or str(task_id)),
+        )
+        samples.append(sample)
+
+    if not samples:
+        fallback_sample_id = task_id
+        synthetic_rank, synthetic_bucket, synthetic_reason = _compute_review_priority(
+            status=str(task.get("grading_status") or "REJECTED_UNREADABLE"),
+            requires_human_review=True,
+            system_confidence=0.0,
+            total_deduction=0.0,
+            evidence_count=0,
+            fallback_reason=task.get("fallback_reason"),
+        )
+        samples.append(
+            ReviewWorkbenchSampleItem(
+                sample_id=fallback_sample_id,
+                student_id=None,
+                status=str(task.get("grading_status") or "REJECTED_UNREADABLE"),
+                is_pass=False,
+                total_deduction=0.0,
+                overall_feedback=str(task.get("error_message") or task.get("fallback_reason") or "当前任务没有可展示的结构化结果。"),
+                system_confidence=0.0,
+                requires_human_review=True,
+                priority_rank=synthetic_rank,
+                priority_bucket=synthetic_bucket,
+                review_reason=synthetic_reason,
+                teacher_decision=decision_map.get(fallback_sample_id),
+            )
+        )
+
+    samples.sort(
+        key=lambda item: (
+            int(item.priority_rank),
+            -float(item.total_deduction),
+            float(item.system_confidence),
+            str(item.student_id or item.sample_id),
+        )
+    )
+    risk_summary = {
+        "sample_count": len(samples),
+        "reviewed_decision_count": len(decision_map),
+        "pending_sample_count": max(len(samples) - len(decision_map), 0),
+        "unreadable_count": sum(1 for item in samples if item.priority_bucket == "UNREADABLE"),
+        "human_review_count": sum(1 for item in samples if item.priority_bucket == "HUMAN_REVIEW"),
+        "low_confidence_count": sum(1 for item in samples if item.priority_bucket == "LOW_CONFIDENCE"),
+        "weak_evidence_count": sum(1 for item in samples if item.priority_bucket == "WEAK_EVIDENCE"),
+    }
+    return ReviewWorkbenchTaskResponse(
+        task_id=task_id,
+        task_status=str(task.get("status") or "UNKNOWN"),
+        review_status=str(task.get("review_status") or "NOT_REQUIRED"),
+        samples=samples,
+        risk_summary=risk_summary,
+    )
+
+
+@router.get("/review/decisions", response_model=ReviewDecisionListResponse)
+async def get_review_decisions(
+    task_id: str = Query(...),
+    sample_id: Optional[str] = Query(default=None),
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
     db_path: str = Depends(get_db_path),
 ):
     offset = (page - 1) * limit
-    rows = await list_pending_review_tasks(
+    rows = await list_teacher_review_decisions(
         db_path,
         task_id=task_id,
-        grading_status_filter=status,
-        order_by=sort_by,
-        order_direction=sort_direction,
+        sample_id=sample_id,
         limit=limit,
         offset=offset,
     )
-    return PendingReviewTasksResponse(
-        page=page,
-        limit=limit,
-        items=[PendingReviewTaskItem(**row) for row in rows],
+    items: List[ReviewDecisionItem] = []
+    for row in rows:
+        row["include_in_dataset"] = bool(row.get("include_in_dataset", 0))
+        items.append(ReviewDecisionItem(**row))
+    return ReviewDecisionListResponse(page=page, limit=limit, items=items)
+
+
+@router.post("/review/decisions", response_model=ReviewDecisionItem)
+async def upsert_review_decision(
+    payload: ReviewDecisionUpsertRequest,
+    db_path: str = Depends(get_db_path),
+):
+    task = await get_task(db_path, payload.task_id)
+    if not task:
+        raise HTTPException(
+            status_code=404,
+            detail=_error_detail(
+                error_code="TASK_NOT_FOUND",
+                message="Task not found",
+                retryable=False,
+                next_action="refresh_review_queue",
+            ),
+        )
+
+    await upsert_teacher_review_decision(
+        db_path,
+        task_id=payload.task_id,
+        sample_id=payload.sample_id,
+        student_id=(payload.student_id.strip() if payload.student_id else None),
+        decision=payload.decision,
+        final_score=payload.final_score,
+        teacher_comment=payload.teacher_comment.strip(),
+        include_in_dataset=payload.include_in_dataset,
+    )
+    rows = await list_teacher_review_decisions(
+        db_path,
+        task_id=payload.task_id,
+        sample_id=payload.sample_id,
+        limit=1,
+        offset=0,
+    )
+    if not rows:
+        raise HTTPException(status_code=500, detail="review decision persistence failed")
+    row = rows[0]
+    row["include_in_dataset"] = bool(row.get("include_in_dataset", 0))
+    return ReviewDecisionItem(**row)
+
+
+@router.post("/review/tasks/{task_id}/status", response_model=ReviewTaskStatusResponse)
+async def update_review_task_status(
+    task_id: str,
+    payload: ReviewTaskStatusUpdateRequest,
+    db_path: str = Depends(get_db_path),
+):
+    task = await get_task(db_path, task_id)
+    if not task:
+        raise HTTPException(
+            status_code=404,
+            detail=_error_detail(
+                error_code="TASK_NOT_FOUND",
+                message="Task not found",
+                retryable=False,
+                next_action="refresh_review_queue",
+            ),
+        )
+    await set_task_review_status(db_path, task_id, payload.review_status)
+    latest = await get_task(db_path, task_id)
+    return ReviewTaskStatusResponse(
+        task_id=task_id,
+        status=str((latest or task).get("status") or "UNKNOWN"),
+        review_status=str((latest or task).get("review_status") or payload.review_status),
     )
 
 
@@ -1890,6 +1819,8 @@ async def get_capability_catalog():
                     CapabilityEndpointItem(method="GET", path="/api/v1/metrics/runtime-dashboard", response_model="RuntimeDashboardResponse"),
                     CapabilityEndpointItem(method="GET", path="/api/v1/ops/queue/diagnostics", response_model="QueueDiagnosticsResponse"),
                     CapabilityEndpointItem(method="POST", path="/api/v1/ops/queue/cleanup-stale", response_model="QueueCleanupResponse"),
+                    CapabilityEndpointItem(method="POST", path="/api/v1/ops/queue/cleanup-task", response_model="QueueTaskCleanupResponse"),
+                    CapabilityEndpointItem(method="GET", path="/api/v1/ops/rubric/audit", response_model="RubricGenerateAuditResponse"),
                     CapabilityEndpointItem(method="POST", path="/api/v1/prompt/control"),
                     CapabilityEndpointItem(method="POST", path="/api/v1/prompt/ab-config"),
                     CapabilityEndpointItem(method="POST", path="/api/v1/prompt/refresh"),
@@ -1933,6 +1864,9 @@ async def get_contract_catalog():
         ContractSchemaItem(schema_name="RuntimeDashboardResponse", fields=_schema_fields_from_model(RuntimeDashboardResponse)),
         ContractSchemaItem(schema_name="QueueDiagnosticsResponse", fields=_schema_fields_from_model(QueueDiagnosticsResponse)),
         ContractSchemaItem(schema_name="QueueCleanupResponse", fields=_schema_fields_from_model(QueueCleanupResponse)),
+        ContractSchemaItem(schema_name="QueueTaskCleanupResponse", fields=_schema_fields_from_model(QueueTaskCleanupResponse)),
+        ContractSchemaItem(schema_name="RubricGenerateAuditItem", fields=_schema_fields_from_model(RubricGenerateAuditItem)),
+        ContractSchemaItem(schema_name="RubricGenerateAuditResponse", fields=_schema_fields_from_model(RubricGenerateAuditResponse)),
         ContractSchemaItem(schema_name="PromptControlRequest", fields=_schema_fields_from_model(PromptControlRequest)),
         ContractSchemaItem(schema_name="PromptAbConfigRequest", fields=_schema_fields_from_model(PromptAbConfigRequest)),
         ContractSchemaItem(schema_name="PromptOpsAuditItem", fields=_schema_fields_from_model(PromptOpsAuditItem)),
@@ -2141,9 +2075,18 @@ async def get_ops_queue_diagnostics(
     sample_limit: int = Query(20, ge=1, le=100),
     db_path: str = Depends(get_db_path),
 ):
-    queue_length, queued_task_ids, redis_error = _fetch_celery_queue_snapshot(sample_limit=2000)
-    queued_task_ids = queued_task_ids or []
+    queue_length_raw, queued_task_ids_raw, redis_error = _fetch_celery_queue_snapshot(sample_limit=2000)
+    queued_task_ids_raw = queued_task_ids_raw or []
+    task_status_map = await get_task_statuses_by_celery_ids(db_path, celery_task_ids=queued_task_ids_raw)
+    terminal_statuses = {"COMPLETED", "FAILED"}
+    queued_task_ids = [
+        task_id
+        for task_id in queued_task_ids_raw
+        if task_status_map.get(task_id) not in terminal_statuses
+    ]
     queued_task_id_set = set(queued_task_ids)
+    queue_length = len(queued_task_ids) if queue_length_raw is not None else None
+    filtered_terminal_count = len(queued_task_ids_raw) - len(queued_task_ids)
 
     status_counts = await get_task_status_counts(db_path)
     processing_rows = await list_processing_tasks(db_path, limit=sample_limit)
@@ -2203,6 +2146,11 @@ async def get_ops_queue_diagnostics(
         notes=[
             "orphan_local indicates stale pending rows likely created by local fallback/test flow and never consumed by worker.",
             "queued_waiting indicates pending rows still present in Redis celery queue (not zombie).",
+            *(
+                [f"filtered_terminal_queue_items={filtered_terminal_count} (COMPLETED/FAILED hidden from queue panel)."]
+                if filtered_terminal_count > 0
+                else []
+            ),
         ],
     )
 
@@ -2222,6 +2170,72 @@ async def cleanup_ops_queue_stale_pending(
         stale_threshold_seconds=int(stale_threshold_seconds),
         cleaned_count=len(cleaned_task_ids),
         cleaned_task_ids=cleaned_task_ids,
+    )
+
+
+@router.post("/ops/queue/cleanup-task", response_model=QueueTaskCleanupResponse)
+async def cleanup_ops_queue_task_by_id(
+    task_id: str = Query(..., min_length=8, max_length=128),
+    remove_from_queue: bool = Query(True),
+    db_path: str = Depends(get_db_path),
+):
+    normalized_task_id = str(task_id).strip()
+    task = await get_task(db_path, normalized_task_id)
+    if not task:
+        raise HTTPException(
+            status_code=404,
+            detail=_error_detail(
+                error_code="TASK_NOT_FOUND",
+                message="Task not found",
+                retryable=False,
+                next_action="submit_new_task",
+            ),
+        )
+
+    previous_status = str(task.get("status") or "")
+    removed_from_queue_count = 0
+    queue_error: Optional[str] = None
+    if remove_from_queue:
+        removed_from_queue_count, queue_error = _remove_task_from_celery_queue(normalized_task_id)
+
+    marked_failed = False
+    if previous_status in {"PENDING", "PROCESSING"}:
+        await update_task_status(
+            db_path,
+            normalized_task_id,
+            "FAILED",
+            error="Manual queue cleanup by operator",
+            fallback_reason="MANUAL_QUEUE_CLEANUP",
+        )
+        marked_failed = True
+
+    message = (
+        "Task marked as FAILED by operator."
+        if marked_failed
+        else f"Task already terminal ({previous_status})."
+    )
+    if queue_error:
+        message = f"{message} Queue removal warning: {queue_error[:120]}"
+
+    logger.info(
+        "ops_queue_task_cleanup",
+        extra={
+            "extra_fields": {
+                "event": "ops_queue_task_cleanup",
+                "task_id": normalized_task_id,
+                "previous_status": previous_status,
+                "marked_failed": marked_failed,
+                "removed_from_queue_count": removed_from_queue_count,
+            }
+        },
+    )
+    return QueueTaskCleanupResponse(
+        task_id=normalized_task_id,
+        existed=True,
+        previous_status=previous_status,
+        marked_failed=marked_failed,
+        removed_from_queue_count=removed_from_queue_count,
+        message=message,
     )
 
 
@@ -2592,31 +2606,6 @@ async def set_ops_feature_flags(
     )
 
 
-def _deserialize_json_object(payload: Any) -> Dict[str, Any]:
-    if isinstance(payload, dict):
-        return payload
-    if isinstance(payload, str):
-        try:
-            parsed = json.loads(payload)
-            if isinstance(parsed, dict):
-                return parsed
-        except Exception:
-            return {}
-    return {}
-
-
-def _to_release_control_item(row: Dict[str, Any]) -> OpsReleaseControlLayerItem:
-    return OpsReleaseControlLayerItem(
-        layer=str(row.get("layer") or "api"),  # type: ignore[arg-type]
-        strategy=str(row.get("strategy") or "stable"),  # type: ignore[arg-type]
-        rollout_percentage=int(row.get("rollout_percentage") or 100),
-        target_version=row.get("target_version"),
-        config=_deserialize_json_object(row.get("config_json")),
-        rollback_config=_deserialize_json_object(row.get("rollback_config_json")),
-        updated_at=row.get("updated_at"),
-    )
-
-
 @router.get("/ops/release/controls", response_model=OpsReleaseControlListResponse)
 async def get_ops_release_controls(
     db_path: str = Depends(get_db_path),
@@ -2831,6 +2820,33 @@ async def get_ops_audit_logs(
         if len(items) >= limit:
             break
     return OpsAuditLogResponse(page=page, limit=limit, items=items)
+
+
+@router.get("/ops/rubric/audit", response_model=RubricGenerateAuditResponse)
+async def get_ops_rubric_audit(
+    page: int = Query(1, ge=1),
+    limit: int = Query(50, ge=1, le=200),
+    db_path: str = Depends(get_db_path),
+):
+    offset = (page - 1) * limit
+    rows = await list_rubric_generate_audit(db_path, limit=limit, offset=offset)
+    items = [
+        RubricGenerateAuditItem(
+            id=int(row["id"]),
+            trace_id=str(row.get("trace_id") or ""),
+            rubric_id=row.get("rubric_id"),
+            source_fingerprint=str(row.get("source_fingerprint") or ""),
+            reused_from_cache=bool(row.get("reused_from_cache")),
+            force_regenerate=bool(row.get("force_regenerate")),
+            source_file_count=int(row.get("source_file_count") or 0),
+            client_ip=row.get("client_ip"),
+            user_agent=row.get("user_agent"),
+            referer=row.get("referer"),
+            created_at=row.get("created_at"),
+        )
+        for row in rows
+    ]
+    return RubricGenerateAuditResponse(page=page, limit=limit, items=items)
 
 
 @router.post("/skills/layout/parse")

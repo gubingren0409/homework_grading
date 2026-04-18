@@ -32,6 +32,17 @@
     .chip.info { background: #1d4ed8; color: #e0ecff; }
     .chip.ok { background: #0f9d58; color: #e9fff3; }
     .chip.err { background: #b42318; color: #ffe8e5; }
+    .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+    .queue-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .queue-table th, .queue-table td { border-bottom: 1px solid #edf1f7; padding: 6px 8px; text-align: left; vertical-align: middle; }
+    .queue-table th { background: #f8fafc; color: #475569; position: sticky; top: 0; z-index: 1; }
+    .queue-table tr:last-child td { border-bottom: 0; }
+    .btn-xs { padding: 4px 8px; border-radius: 6px; font-size: 12px; font-weight: 600; margin-right: 4px; }
+    .btn-link { background: transparent; color: #3563e9; padding: 0; border: 0; cursor: pointer; font-family: Consolas, monospace; }
+    .tag { display: inline-block; padding: 2px 6px; border-radius: 999px; font-size: 11px; }
+    .tag-orphan { background: #fee2e2; color: #b42318; }
+    .tag-waiting { background: #dcfce7; color: #166534; }
+    .tag-unknown { background: #e2e8f0; color: #334155; }
   </style>
 </head>
 <body>
@@ -102,15 +113,62 @@
       <div class="row">
         <button id="resultBtn" class="secondary">查看最终结果</button>
         <button id="flowBtn" class="secondary">流程说明</button>
-        <button id="queueDiagBtn" class="secondary">队列诊断</button>
-        <button id="queueCleanupBtn" class="secondary">清理陈旧任务</button>
       </div>
       <div id="extra" class="mono"></div>
+    </div>
+
+    <div class="card">
+      <div class="step">队列观测与交互清理</div>
+      <div class="row">
+        <button id="queueDiagBtn" class="secondary">刷新队列看板</button>
+        <button id="queueCleanupBtn" class="secondary">清理陈旧任务</button>
+        <label>task_id 清理</label>
+        <input id="queueTaskIdInput" type="text" placeholder="输入 task_id 后点“按 task_id 清理”" />
+        <button id="queueKillBtn">按 task_id 清理</button>
+      </div>
+      <div class="kv">
+        <div>Redis 状态</div><div id="qRedis">-</div>
+        <div>队列长度</div><div id="qLen">-</div>
+        <div>执行中数量</div><div id="qProcessing">-</div>
+        <div>陈旧待处理</div><div id="qStale">-</div>
+        <div>孤儿任务</div><div id="qOrphan">-</div>
+        <div>排队等待</div><div id="qWaiting">-</div>
+      </div>
+      <div id="queueHint" class="muted" style="margin-top:8px;">点击“刷新队列看板”获取当前状态。</div>
+      <div class="row" style="align-items:flex-start;">
+        <div style="flex:1; min-width:420px;">
+          <div class="muted">执行中任务（PROCESSING）</div>
+          <div class="table-wrap" style="margin-top:6px;">
+            <table class="queue-table">
+              <thead>
+                <tr><th>task_id</th><th>进度</th><th>ETA</th><th>已运行</th><th>操作</th></tr>
+              </thead>
+              <tbody id="processingRows">
+                <tr><td colspan="5" class="muted">暂无数据</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div style="flex:1; min-width:420px;">
+          <div class="muted">陈旧待处理任务（PENDING）</div>
+          <div class="table-wrap" style="margin-top:6px;">
+            <table class="queue-table">
+              <thead>
+                <tr><th>task_id</th><th>类型</th><th>等待时长</th><th>celery_id</th><th>操作</th></tr>
+              </thead>
+              <tbody id="staleRows">
+                <tr><td colspan="5" class="muted">暂无数据</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 
   <script>
     let es = null;
+    let lastSseErrorLogAt = 0;
     const maxLogLines = 120;
     let rubricInFlight = false;
     let submitInFlight = false;
@@ -198,6 +256,172 @@
         return data.detail;
       }
       return data;
+    }
+
+    function shortId(id) {
+      const text = String(id || "");
+      if (text.length <= 16) return text;
+      return `${text.slice(0, 8)}...${text.slice(-6)}`;
+    }
+
+    function fmtEta(seconds) {
+      const n = Number(seconds);
+      return Number.isFinite(n) ? `${Math.max(0, Math.round(n))}s` : "-";
+    }
+
+    function fmtAge(seconds) {
+      const n = Number(seconds);
+      if (!Number.isFinite(n)) return "-";
+      if (n < 60) return `${Math.round(n)}s`;
+      if (n < 3600) return `${Math.round(n / 60)}m`;
+      return `${(n / 3600).toFixed(1)}h`;
+    }
+
+    function classificationMeta(classification) {
+      const kind = String(classification || "unknown");
+      if (kind === "orphan_local") return { label: "孤儿任务", cls: "tag tag-orphan" };
+      if (kind === "queued_waiting") return { label: "排队等待", cls: "tag tag-waiting" };
+      return { label: "待确认", cls: "tag tag-unknown" };
+    }
+
+    function fillTaskInputs(taskId) {
+      if (!taskId) return;
+      $("taskId").value = taskId;
+      $("queueTaskIdInput").value = taskId;
+    }
+
+    function setQueueHint(text, isError = false) {
+      const el = $("queueHint");
+      el.textContent = text;
+      el.className = isError ? "err" : "muted";
+    }
+
+    function renderProcessingRows(items) {
+      const tbody = $("processingRows");
+      tbody.innerHTML = "";
+      if (!Array.isArray(items) || items.length === 0) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = '<td colspan="5" class="muted">当前无执行中任务</td>';
+        tbody.appendChild(tr);
+        return;
+      }
+
+      for (const item of items) {
+        const taskId = String(item.task_id || "");
+        const progress = Math.round(Math.max(0, Math.min(1, Number(item.progress || 0))) * 100);
+        const tr = document.createElement("tr");
+
+        const tdTask = document.createElement("td");
+        const btnTask = document.createElement("button");
+        btnTask.type = "button";
+        btnTask.className = "btn-link";
+        btnTask.textContent = shortId(taskId);
+        btnTask.title = taskId;
+        btnTask.addEventListener("click", () => fillTaskInputs(taskId));
+        tdTask.appendChild(btnTask);
+
+        const tdProgress = document.createElement("td");
+        tdProgress.textContent = `${progress}%`;
+
+        const tdEta = document.createElement("td");
+        tdEta.textContent = fmtEta(item.eta_seconds);
+
+        const tdAge = document.createElement("td");
+        tdAge.textContent = fmtAge(item.age_seconds);
+
+        const tdActions = document.createElement("td");
+        const watchBtn = document.createElement("button");
+        watchBtn.type = "button";
+        watchBtn.className = "btn-xs secondary";
+        watchBtn.textContent = "观测";
+        watchBtn.addEventListener("click", () => {
+          fillTaskInputs(taskId);
+          watch();
+        });
+        const killBtn = document.createElement("button");
+        killBtn.type = "button";
+        killBtn.className = "btn-xs";
+        killBtn.textContent = "清理";
+        killBtn.addEventListener("click", () => cleanupTaskById(taskId));
+        tdActions.appendChild(watchBtn);
+        tdActions.appendChild(killBtn);
+
+        tr.appendChild(tdTask);
+        tr.appendChild(tdProgress);
+        tr.appendChild(tdEta);
+        tr.appendChild(tdAge);
+        tr.appendChild(tdActions);
+        tbody.appendChild(tr);
+      }
+    }
+
+    function renderStaleRows(items) {
+      const tbody = $("staleRows");
+      tbody.innerHTML = "";
+      if (!Array.isArray(items) || items.length === 0) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = '<td colspan="5" class="muted">当前无陈旧待处理任务</td>';
+        tbody.appendChild(tr);
+        return;
+      }
+
+      for (const item of items) {
+        const taskId = String(item.task_id || "");
+        const celeryId = String(item.celery_task_id || "-");
+        const meta = classificationMeta(item.classification);
+        const tr = document.createElement("tr");
+
+        const tdTask = document.createElement("td");
+        const btnTask = document.createElement("button");
+        btnTask.type = "button";
+        btnTask.className = "btn-link";
+        btnTask.textContent = shortId(taskId);
+        btnTask.title = taskId;
+        btnTask.addEventListener("click", () => fillTaskInputs(taskId));
+        tdTask.appendChild(btnTask);
+
+        const tdType = document.createElement("td");
+        const tag = document.createElement("span");
+        tag.className = meta.cls;
+        tag.textContent = meta.label;
+        tdType.appendChild(tag);
+
+        const tdAge = document.createElement("td");
+        tdAge.textContent = fmtAge(item.age_seconds);
+
+        const tdCelery = document.createElement("td");
+        tdCelery.textContent = shortId(celeryId);
+        tdCelery.title = celeryId;
+
+        const tdActions = document.createElement("td");
+        const killBtn = document.createElement("button");
+        killBtn.type = "button";
+        killBtn.className = "btn-xs";
+        killBtn.textContent = "清理";
+        killBtn.addEventListener("click", () => cleanupTaskById(taskId));
+        tdActions.appendChild(killBtn);
+
+        tr.appendChild(tdTask);
+        tr.appendChild(tdType);
+        tr.appendChild(tdAge);
+        tr.appendChild(tdCelery);
+        tr.appendChild(tdActions);
+        tbody.appendChild(tr);
+      }
+    }
+
+    function renderQueueSummary(payload) {
+      const summary = payload && payload.stale_pending_summary ? payload.stale_pending_summary : {};
+      const processingItems = payload && Array.isArray(payload.processing_tasks) ? payload.processing_tasks : [];
+
+      $("qRedis").textContent = payload && payload.redis_available ? "正常" : "异常";
+      $("qLen").textContent = payload && Number.isFinite(Number(payload.celery_queue_length))
+        ? String(Number(payload.celery_queue_length))
+        : "-";
+      $("qProcessing").textContent = String(processingItems.length);
+      $("qStale").textContent = String(Number(summary.total || 0));
+      $("qOrphan").textContent = String(Number(summary.orphan_local || 0));
+      $("qWaiting").textContent = String(Number(summary.queued_waiting || 0));
     }
 
     async function refreshRubrics() {
@@ -355,8 +579,11 @@
       stopWatch();
       setMonitorStatus("SSE 连接中");
       es = new EventSource(`/api/v1/tasks/${taskId}/stream`);
+      const activeEs = es;
+      lastSseErrorLogAt = 0;
       appendLog("info", "SSE", `connect /api/v1/tasks/${taskId}/stream`);
       es.addEventListener("status_update", (ev) => {
+        if (es !== activeEs) return;
         try {
           const data = JSON.parse(ev.data);
           applyProgress(data);
@@ -369,6 +596,7 @@
         }
       });
       es.addEventListener("complete", (ev) => {
+        if (es !== activeEs) return;
         try {
           const data = JSON.parse(ev.data);
           $("bar").style.width = "100%";
@@ -383,6 +611,10 @@
         stopWatch();
       });
       es.addEventListener("error", () => {
+        if (es !== activeEs) return;
+        const now = Date.now();
+        if (now - lastSseErrorLogAt < 1500) return;
+        lastSseErrorLogAt = now;
         setMonitorStatus("SSE 异常");
         appendLog("err", "SSE", "connection interrupted");
         setText("status", "SSE 异常或中断，建议切换“查询状态”", "err");
@@ -414,13 +646,27 @@
       setText("extra", payload, resp.ok ? "" : "err");
     }
 
-    async function queueDiagnostics() {
+    async function queueDiagnostics(silent = false) {
       const resp = await fetch("/api/v1/ops/queue/diagnostics?stale_threshold_seconds=900&sample_limit=20");
       appendLog("info", "HTTP", "GET /api/v1/ops/queue/diagnostics");
       const data = await parseResponseSafe(resp);
       const payload = resp.ok ? data : normalizeErrorPayload(data);
-      appendLog(resp.ok ? "ok" : "err", "QUEUE", payload);
-      setText("extra", payload, resp.ok ? "" : "err");
+      if (!resp.ok) {
+        setQueueHint(`队列诊断失败：${payload && payload.message ? payload.message : "unknown error"}`, true);
+        appendLog("err", "QUEUE", payload);
+        return;
+      }
+
+      renderQueueSummary(payload);
+      renderProcessingRows(payload.processing_tasks || []);
+      renderStaleRows(payload.stale_pending_sample || []);
+      const staleTotal = payload.stale_pending_summary && Number(payload.stale_pending_summary.total || 0);
+      const queueLen = Number(payload.celery_queue_length || 0);
+      const processingCount = Array.isArray(payload.processing_tasks) ? payload.processing_tasks.length : 0;
+      setQueueHint(`队列长度 ${queueLen}，执行中 ${processingCount}，陈旧待处理 ${staleTotal}`);
+      if (!silent) {
+        appendLog("ok", "QUEUE", `queue=${queueLen}, processing=${processingCount}, stale=${staleTotal}`);
+      }
     }
 
     async function cleanupStaleQueue() {
@@ -430,8 +676,43 @@
       appendLog("info", "HTTP", "POST /api/v1/ops/queue/cleanup-stale");
       const data = await parseResponseSafe(resp);
       const payload = resp.ok ? data : normalizeErrorPayload(data);
-      appendLog(resp.ok ? "ok" : "err", "CLEANUP", payload);
-      setText("extra", payload, resp.ok ? "" : "err");
+      if (!resp.ok) {
+        setQueueHint(`清理失败：${payload && payload.message ? payload.message : "unknown error"}`, true);
+        appendLog("err", "CLEANUP", payload);
+        return;
+      }
+      setQueueHint(`已清理 ${payload.cleaned_count} 个陈旧任务`);
+      appendLog("ok", "CLEANUP", `cleaned=${payload.cleaned_count}`);
+      await queueDiagnostics(true);
+    }
+
+    async function cleanupTaskById(overrideTaskId = "") {
+      const taskId = String(overrideTaskId || $("queueTaskIdInput").value || "").trim();
+      if (!taskId) {
+        setQueueHint("请先输入 task_id", true);
+        return;
+      }
+      fillTaskInputs(taskId);
+      const resp = await fetch(
+        `/api/v1/ops/queue/cleanup-task?task_id=${encodeURIComponent(taskId)}&remove_from_queue=true`,
+        { method: "POST" },
+      );
+      appendLog("info", "HTTP", `POST /api/v1/ops/queue/cleanup-task?task_id=${taskId}`);
+      const data = await parseResponseSafe(resp);
+      const payload = resp.ok ? data : normalizeErrorPayload(data);
+      if (!resp.ok) {
+        setQueueHint(`按 task_id 清理失败：${payload && payload.message ? payload.message : "unknown error"}`, true);
+        appendLog("err", "CLEANUP", payload);
+        return;
+      }
+      setQueueHint(payload.message || `已处理 task_id=${taskId}`);
+      appendLog(
+        "ok",
+        "CLEANUP",
+        `task=${payload.task_id}, marked_failed=${payload.marked_failed}, removed_queue=${payload.removed_from_queue_count}`,
+      );
+      await queueDiagnostics(true);
+      await poll();
     }
 
     $("generateRubricBtn").addEventListener("click", generateRubric);
@@ -446,8 +727,10 @@
     $("flowBtn").addEventListener("click", flowGuide);
     $("queueDiagBtn").addEventListener("click", queueDiagnostics);
     $("queueCleanupBtn").addEventListener("click", cleanupStaleQueue);
+    $("queueKillBtn").addEventListener("click", () => cleanupTaskById());
 
     refreshRubrics();
+    queueDiagnostics(true);
     appendLog("info", "BOOT", "student batch console ready");
   </script>
 </body>
