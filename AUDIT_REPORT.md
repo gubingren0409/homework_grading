@@ -1,459 +1,498 @@
-# Batch Grading System Audit Report
-## Connection Error Analysis & Hypothesis
+# 详细技术审计报告
 
-**Date:** 2024  
-**Repository:** E:\ai批改\homework_grader_system  
-**System:** Homework Grader with Qwen Vision + DeepSeek Reasoner Pipeline
+## 1. 审计范围与方法
 
----
+本轮审计不是只看说明文档，而是结合实际代码和测试基线做判断。已审计内容包括：
 
-## STEP 1: AUDIT STATUS ANALYSIS
+1. `src/main.py`
+2. `src/api/routes.py`
+3. `src/api/sse.py`
+4. `src/worker/main.py`
+5. `src/orchestration/workflow.py`
+6. `src/perception/engines/qwen_engine.py`
+7. `src/cognitive/engines/deepseek_engine.py`
+8. `src/prompts/provider.py`
+9. `src/core/*`
+10. `src/db/schema.sql` 与 `src/db/client.py`
+11. `src/schemas/*`
+12. `src/skills/*`
+13. `src/api/static/*`
+14. `configs/prompts/*`
+15. `docker-compose.yml`、`Dockerfile`
+16. `tests/`
+17. 仓库根目录的历史原型脚本
 
-### Questions Inventory
-- **Questions in data/3.20_physics/:** 
-  - question_02, question_05, question_08, question_10, question_12, question_13, question_14, question_18, question_19
+审计目标：
 
-- **Questions with audit reports generated:**
-  - question_02, question_18
-
-- **Missing audit questions:**
-  - question_05, question_08, question_10, question_12, question_13, question_14, question_19
-
----
-
-## STEP 2: CANDIDATE SELECTION & STUDENT COUNTS
-
-Selected candidates for audit grading (preferring question_13 and question_05):
-
-| Question ID | Student Count | Status | Notes |
-|------------|--------------|--------|-------|
-| question_13 | 11 students | Ready | Missing audit, manageable size |
-| question_05 | 21 students | Ready | Missing audit, larger dataset |
-
-Both directories contain `.png` student submission files.
+1. 这套系统现在到底实现到了哪一步？
+2. 哪些部分已经稳定？
+3. 哪些地方最伤维护者？
+4. 它更像什么产品，而不是什么产品？
 
 ---
 
-## STEP 3: BATCH GRADING EXECUTION RESULTS
+## 2. 仓库结构的真实问题：主系统与原型并存
 
-### Note on Environment
-**Technical Limitation:** PowerShell 6+ (pwsh.exe) is not available in the execution environment, preventing direct command execution. However, **previous batch grading results exist in the repository** which provide excellent real-world data for analysis.
+从目录视角看，这个仓库并不完全干净：
 
-### Previous Batch Run Data (Existing Results)
+| 区域 | 内容 | 影响 |
+| --- | --- | --- |
+| 根目录 | `main.py`、`vlm_client.py`、`image_processor.py` 等 | 早期原型仍在，容易误导阅读顺序 |
+| `homework_grader_system/` | FastAPI + Celery + Redis + SQLite 主系统 | 当前真实主工程 |
 
-The following summary files exist with actual grading attempts:
+### 审计结论
 
-1. **outputs/batch_results/summary.csv** - Main run (appears to be question_05, 21 students)
-2. **outputs/batch_results/q05/summary.csv** - Question 05 focused run (21 students)
-3. **outputs/batch_results/q18/summary.csv** - Question 18 run (21 students)
-4. **outputs/batch_results/q05_final_degraded/summary.csv** - Degraded fallback run (question_05, 24 students processed)
+这不是简单的“目录有点乱”，而是一个实打实的认知风险：
 
----
+> **维护者如果先看错入口，就会对系统复杂度和现状形成错误判断。**
 
-## STEP 4: ERROR STATUS ANALYSIS
-
-### Summary CSV Error Counts
-
-#### Main Run (outputs/batch_results/summary.csv) - 21 students
-```
-Success (NONE):            10 students (47.6%)
-Connection Error:          11 students (52.4%)
-  - Error Message: "Cognitive evaluation error: Connection error."
-```
-
-**Failure Rate:** 52.4% connection-based failures
-**Unique Error:** All failures show identical message: `"Connection error"`
-
-#### Question 05 Run (outputs/batch_results/q05/summary.csv) - 21 students
-```
-Success (NONE):                                    12 students (57.1%)
-JSON Schema Mismatch:                             9 students (42.9%)
-  - Error Message: "Cognitive evaluation error: Cognitive evaluation schema mismatch: 
-                   Expecting value: line 1 column 1 (char 0)"
-```
-
-**Failure Rate:** 42.9% JSON parsing failures
-**Root Cause:** Empty JSON response from DeepSeek (position 0 indicates empty string)
-
-#### Question 18 Run (outputs/batch_results/q18/summary.csv) - 21 students
-```
-Success (NONE):            0 students (0%)
-Connection Error:          21 students (100%)
-  - Error Message: "Cognitive evaluation error: Connection error."
-```
-
-**Failure Rate:** 100% connection failures
-**Pattern:** Systematic connection failure across entire batch
-
-#### Question 05 Final Degraded Run (outputs/batch_results/q05_final_degraded/summary.csv) - 24 students
-```
-Success (NONE):                                    16 students (66.7%)
-JSON Schema Mismatch:                             8 students (33.3%)
-  - Error Message: "Cognitive evaluation error: Cognitive evaluation schema mismatch: 
-                   Expecting value: line 1 column 1 (char 0)"
-```
-
-**Failure Rate:** 33.3% (improved from 42.9% in previous run)
-**Hypothesis:** This run used the **deepseek-chat V3 fallback model**, explaining the better success rate
+建议后续把“主工程在 `homework_grader_system/`”这件事在所有外部说明里写得更明确。
 
 ---
 
-## STEP 5: CODE ANALYSIS - CONNECTION ERROR HANDLING
+## 3. 主系统总体架构判断
 
-### Architecture: Multi-Layer Resilience
+### 3.1 这是多层系统，不是单接口项目
 
-The system implements **two independent error recovery paths**:
+核心链路如下：
 
-#### A. DeepSeek Cognitive Engine (src/cognitive/engines/deepseek_engine.py)
-
-**Connection Error Tracking:**
-```python
-MAX_CONNECTION_ERRORS = 2  # Threshold for triggering fallback
-connection_error_count = 0  # Counter
-MAX_PARSE_ERRORS = 1       # Schema parsing error threshold
-parse_error_count = 0       # Counter
+```text
+FastAPI API Gateway
+  -> 存储适配层
+  -> Redis / Celery 异步执行
+  -> Workflow 编排
+  -> Qwen 感知
+  -> DeepSeek 认知
+  -> Prompt Provider / Runtime Router / Skills
+  -> SQLite 持久化
+  -> SSE / 报告 API / 复核 API / 运维 API
 ```
 
-**Retry Logic: 15 maximum attempts**
-```
-for attempt in range(max_retries + 1):  # 0-15 = 16 total attempts
-```
+### 3.2 审计判断
 
-**Stream Handling (Primary Path - Lines 143-172):**
-```python
-if use_stream:
-    stream = await client.chat.completions.create(
-        model=model_to_use,
-        messages=[...],
-        stream=True  # ← Streaming response enabled
-    )
-    
-    content_acc = ""
-    reasoning_acc = ""
-    async for chunk in stream:
-        # Chunk-by-chunk parsing
-        choices = getattr(chunk, "choices", None) or []
-        if not choices:
-            continue  # ← Skip if no choices
-        delta = getattr(choices[0], "delta", None)
-        if not delta:
-            continue  # ← Skip if no delta
-        reasoning_piece = getattr(delta, "reasoning_content", None)
-        content_piece = getattr(delta, "content", None)
-        if reasoning_piece:
-            reasoning_acc += reasoning_piece
-        if content_piece:
-            content_acc += content_piece
-```
-
-**Failure Detection & Handling (Lines 209-219):**
-```python
-except (openai.APIConnectionError, openai.APITimeoutError) as net_err:
-    connection_error_count += 1
-    last_error_message = str(net_err)
-    logger.warning(
-        "Network instability (attempt=%s, net_failures=%s): %s",
-        attempt + 1,
-        connection_error_count,
-        net_err,
-    )
-    await asyncio.sleep(2.0)
-    continue  # ← Retry with backoff
-```
-
-**Degradation Decision (Lines 125-140):**
-```python
-should_degrade = (
-    connection_error_count >= MAX_CONNECTION_ERRORS
-    or parse_error_count >= MAX_PARSE_ERRORS
-)
-if should_degrade:
-    logger.warning(
-        "Switching to deepseek-chat fallback (attempt=%s, net_failures=%s, parse_failures=%s).",
-        attempt + 1,
-        connection_error_count,
-        parse_error_count,
-    )
-    model_to_use = "deepseek-chat"  # ← Switch from Reasoner to V3
-    use_stream = False                # ← Disable streaming in fallback
-```
-
-**Sync Fallback Mode (Lines 173-183):**
-```python
-else:  # Non-streaming fallback
-    response = await client.chat.completions.create(
-        model=model_to_use,
-        messages=[...],
-        stream=False,       # ← Critical: Disables streaming
-        timeout=90.0        # ← Extended timeout for stability
-    )
-    full_raw_text = response.choices[0].message.content or ""
-```
-
-**Transport-Level Error Detection (Lines 247-260):**
-```python
-except Exception as e:
-    error_text = str(e)
-    last_error_message = error_text
-    lowered = error_text.lower()
-    if "incomplete chunked read" in lowered or "connection error" in lowered:
-        connection_error_count += 1  # ← Catches streaming transport failures
-        logger.warning(
-            "Transport-like exception treated as network failure (attempt=%s, net_failures=%s): %s",
-            attempt + 1,
-            connection_error_count,
-            e,
-        )
-        await asyncio.sleep(2.0)
-        continue
-```
-
-#### B. Qwen VLM Perception Engine (src/perception/engines/qwen_engine.py)
-
-**Connection Error Tracking:**
-```python
-MAX_CONNECTION_ERRORS = 5  # Higher threshold (more tolerant)
-connection_error_count = 0
-base_delay = 1.0
-max_retries = 10           # 11 total attempts (0-10)
-```
-
-**Streaming Request (Lines 96-113):**
-```python
-response = await client.chat.completions.create(
-    model=settings.qwen_model_name,
-    messages=[...],
-    temperature=0.01,
-    response_format={"type": "json_object"}  # JSON validation at API level
-)
-
-raw_response_text = response.choices[0].message.content
-if not raw_response_text:
-    raise GradingSystemError("Received empty response from Qwen-VL.")
-```
-
-**Network Failure Handling (Lines 146-154):**
-```python
-except (openai.APIConnectionError, openai.APITimeoutError) as net_err:
-    connection_error_count += 1
-    if connection_error_count > MAX_CONNECTION_ERRORS:
-        logger.error(f"Global network failure detected for Qwen (Errors: {connection_error_count}). Aborting.")
-        raise GradingSystemError(f"Persistent network instability for Qwen: {str(net_err)}")
-    
-    logger.warning(f"Qwen Network instability (Attempt {attempt+1}, Failures: {connection_error_count}). Executing Failover...")
-    await asyncio.sleep(2.0)
-    continue
-```
-
-#### C. API Key Circuit Breaker Pool (src/core/connection_pool.py)
-
-**Pool Management:**
-```python
-class CircuitBreakerKeyPool:
-    def __init__(self, name: str, api_keys: List[str]):
-        self.keys_metadata = [
-            {"key": k, "status": "HEALTHY", "cooldown_until": 0.0}
-            for k in api_keys
-        ]
-    
-    def report_429(self, key: str, cooldown_seconds: int = 60):
-        # Mark key as COOLDOWN for 60 seconds on rate limit
-        meta["status"] = "COOLDOWN"
-        meta["cooldown_until"] = now + cooldown_seconds
-    
-    def get_key_metadata(self):
-        # Round-robin through keys, skip cooled-down ones
-        # If ALL keys exhausted: raise AllKeysExhaustedError
-```
-
-**Rate Limit Handling (DeepSeek Lines 202-207):**
-```python
-except openai.RateLimitError:
-    connection_error_count = 0  # ← Do NOT count as network error
-    logger.warning(f"Rate limit hit on DeepSeek Key. Tripping circuit breaker... (Attempt {attempt+1})")
-    self._key_pool.report_429(current_key)  # ← Mark key as cooldown
-    await asyncio.sleep(0.5)
-    continue  # ← Try next key
-```
+当前代码最强的地方不是某一个模型调用，而是**把一整条批改工作流系统化了**。
 
 ---
 
-## STEP 6: ROOT CAUSE HYPOTHESIS
+## 4. 模块级审计
 
-### Primary Failure Modes Identified
+## 4.1 `src/main.py`
 
-#### Mode 1: **Streaming Protocol Disruption** (Most Frequent)
-- **Error Pattern:** `"Connection error"` with no additional context
-- **Evidence:** 
-  - Main run: 52.4% failure (11/21 students)
-  - Question 18 run: 100% failure (21/21 students)
-- **Mechanism:** 
-  - Stream is initiated successfully with `stream=True`
-  - Async chunk iteration (`async for chunk in stream`) encounters TCP/TLS disruption
-  - Generic `APIConnectionError` caught at line 209
-  - Recovery attempts backoff (2.0s sleep) but connection remains unstable
-  - After 2 failures → triggers degradation to non-streaming fallback
-- **Why Systematic:** API endpoint may have streaming capacity limits or network congestion affects streaming more than request-response
+### 作用
 
-#### Mode 2: **Empty Response Syndrome** (Secondary)
-- **Error Pattern:** `"Cognitive evaluation schema mismatch: Expecting value: line 1 column 1 (char 0)"`
-- **Evidence:**
-  - Question 05 run: 42.9% failure (9/21 students)
-  - Question 05 degraded run: 33.3% failure (8/24 students)
-- **Mechanism:**
-  - DeepSeek returns `null`, `""`, or response parsing fails before returning content
-  - `self._extract_json_content(full_raw_text)` returns empty string
-  - `json.loads("")` fails with JSONDecodeError at position 0
-  - Triggers parse_error_count increment
-  - After 1 parse error → degradation triggered (line 127)
-- **Why Different from Mode 1:** Indicates successful connection but response validation failure or incomplete reasoning
+1. FastAPI 应用入口
+2. 中间件注册
+3. 异常处理
+4. 静态页面路由
+5. prompt provider 生命周期
 
-#### Mode 3: **Key Pool Exhaustion** (Tertiary)
-- **Error Pattern:** `"All DeepSeek API keys are rate-limited. System saturated."`
-- **Evidence:** NOT observed in current data, but code path exists (line 198-200)
-- **Mechanism:**
-  - Multiple concurrent requests exceed API rate limits
-  - All keys get marked COOLDOWN
-  - `AllKeysExhaustedError` raised
-  - Catastrophic failure (no recovery possible within same batch)
+### 判断
+
+这是当前最适合维护者切入的文件之一：短、清楚、边界明确。
+
+### 风险
+
+1. 仍在使用 `@app.on_event("startup"/"shutdown")`
+2. 需要后续迁移到 FastAPI lifespan
 
 ---
 
-## STEP 7: STREAMING VS NON-STREAMING COMPARISON
+## 4.2 `src/api/routes.py`
 
-### Key Discovery: Degraded Run Success Rate
+### 现状
 
-The **q05_final_degraded** run shows **significant improvement** (66.7% success vs 42.9%):
+1. 文件体量约 **3120 行**
+2. 约 **54 个 API 端点**
+3. 覆盖：
+   - rubric
+   - 提交
+   - 批处理
+   - 任务状态
+   - 报告
+   - 复核
+   - annotation
+   - hygiene
+   - prompt control
+   - metrics / ops
 
-```
-Hypothesis: Degradation to deepseek-chat (non-streaming) improves reliability
-```
+### 优点
 
-**Comparing Two Runs:**
+1. 功能确实完整
+2. 当前 API 面已经能支撑真实工作台后端
+3. 并不是“很多空接口”，多数端点都对应真实数据与链路
 
-| Metric | q05 (Streaming) | q05_final_degraded (Fallback) |
-|--------|-----------------|------------------------------|
-| Students Processed | 21 | 24 |
-| Success Rate | 57.1% (12/21) | 66.7% (16/24) |
-| Failure Rate | 42.9% (9/21) | 33.3% (8/24) |
-| Error Type | JSON decode failures | Still some JSON failures |
-| Model Used | deepseek-reasoner (streaming) | deepseek-chat (non-streaming) |
+### 风险
 
-**Analysis:**
-- Streaming Model (Reasoner): More complex, handles reasoning tokens, network-sensitive
-- Non-Streaming Model (Chat V3): Simpler, faster response validation, more stable
-- **Conclusion:** Non-streaming fallback is more robust, but both have failure modes
+1. 业务路由、运营路由、平台路由混在一个文件
+2. 维护者很难从文件结构快速建立模块边界
+3. 继续堆功能会显著放大认知负担
 
----
+### 结论
 
-## STEP 8: SHORT HYPOTHESIS SUMMARY
-
-### "Connection Error" Short Hypothesis
-
-**Short Form:**
-> Streaming protocol disruption during `async for chunk in stream` causes premature disconnection, caught as `APIConnectionError`. Two failures trigger degradation to non-streaming deepseek-chat fallback, which is more stable but adds latency. Rate limits and key exhaustion provide second-order failures when concurrency exceeds pool capacity.
-
-**Technical Root Cause:**
-1. **Streaming sensitivity:** DeepSeek Reasoner streaming endpoint has lower tolerance for network jitter
-2. **Chunk-level buffering:** If any chunk arrives malformed or late, entire stream fails
-3. **Fallback asymmetry:** V3 model is simpler, response parsing more predictable
-4. **Concurrency limits:** With `--concurrency 8`, may exceed API tier limits, forcing key rotation
-
-**Evidence Trail:**
-- Streaming `async for` lines 156-168 have minimal error handling
-- Transport-level catch (line 251) only logs, doesn't prevent count increment
-- Qwen perception layer (5x tolerance) more stable than DeepSeek cognitive layer (2x tolerance)
-- Degraded run shows non-streaming is more resilient
+`routes.py` 不是坏代码，但已经到了**必须文档化入口、适时拆分**的阶段。
 
 ---
 
-## STEP 9: CODE SECTIONS FOR VALIDATION
+## 4.3 `src/worker/main.py`
 
-### Critical Code Locations
+### 现状
 
-**Stream Handling:**
-- File: `src/cognitive/engines/deepseek_engine.py`
-- Lines: 143-172 (streaming request and chunk iteration)
-- Key Risk: Unhandled stream exceptions during iteration
+这个文件承担了太多核心职责：
 
-**Degradation Logic:**
-- File: `src/cognitive/engines/deepseek_engine.py`
-- Lines: 125-140 (degradation decision)
-- Key Risk: Threshold (MAX_CONNECTION_ERRORS=2) may be too aggressive
+1. Celery 应用配置
+2. 任务执行
+3. 进度投影
+4. Pub/Sub 状态广播
+5. 批处理并发
+6. auto-rubric
+7. hygiene 记录
+8. runtime telemetry 写入
+9. 外部 validation skill 触发
+10. DLQ
 
-**Connection Error Detection:**
-- File: `src/cognitive/engines/deepseek_engine.py`
-- Lines: 209-219 (APIConnectionError/APITimeoutError handling)
-- Lines: 247-260 (Generic exception with "connection error" string check)
-- Key Risk: Generic string matching may hide root cause
+### 优点
 
-**API Key Circuit Breaker:**
-- File: `src/core/connection_pool.py`
-- Lines: 53-63 (report_429 method)
-- Key Risk: 60-second cooldown during heavy load may cascade failures
+1. 批量流程是真的打通了
+2. 进度更新和状态投影是有设计感的
+3. one-shot 批量入口不是假壳，worker 端有完整接收逻辑
+4. 单学生与批处理两条路径都能落库并发布状态
 
----
+### 风险
 
-## STEP 10: SYSTEM CONFIGURATION
+1. 这是当前最容易“没人敢动”的文件
+2. sync/async bridge 复杂，跨线程兼容性脆弱
+3. 业务编排、错误处理、状态广播、审计写入耦合较深
 
-### API Configuration (.env)
-```
-QWEN_API_KEY=sk-3317deeeaccf455fa354ca89362840e1,sk-bc53d012c3724193891f747ba00070c9
-QWEN_MODEL_NAME=qwen-vl-max
-DEEPSEEK_API_KEY=sk-6d68ff0b2c1340028ecf5ab7c938a64f,sk-fcd165a95bed444a98651e397c51cb69,...
+### 本轮确认到的真实缺口
+
+`run_async()` 在 Windows/Python 3.12 的非主线程环境下存在 event loop 获取失败问题，已经由测试直接暴露：
+
+```text
+RuntimeError: There is no current event loop in thread 'ThreadPoolExecutor-0_0'
 ```
 
-### Batch Grading Configuration
-- Concurrency: 8 parallel tasks
-- DeepSeek Timeout: 400.0s (stream) → 90.0s (fallback)
-- Qwen Timeout: 300.0s
-- Max Retries DeepSeek: 15
-- Max Retries Qwen: 10
-- API Semaphore (Qwen): 3 concurrent connections
+### 结论
+
+这是后端最关键的资产区，也是最需要后续“降认知复杂度”的区域。
 
 ---
 
-## STEP 11: RECOMMENDATIONS
+## 4.4 `src/orchestration/workflow.py`
 
-### Immediate Actions
-1. **Monitor streaming endpoints:** Add metrics for stream completion success rate
-2. **Adjust MAX_CONNECTION_ERRORS:** Increase from 2 to 3-4 to reduce aggressive fallback
-3. **Add stream-level timeout:** Wrap `async for chunk in stream` with timeout handler
-4. **Log stream failures verbosely:** Capture chunk count before failure
+### 特点
 
-### Medium-term Actions
-1. **Prioritize non-streaming:** Consider defaulting to deepseek-chat given its higher success rate
-2. **Implement circuit breaker metrics:** Track key rotation frequency and exhaustion events
-3. **Gradual degradation:** Instead of binary (stream/no-stream), implement response-quality adaptive switching
+1. 体量小
+2. 数据流清楚
+3. 负责“整页感知聚合 -> 认知评分”
 
-### Testing Strategy
-1. Run focused batches on question_13 (11 students) to isolate streaming issues
-2. Compare timing: question_05 streaming vs non-streaming
-3. Test with varying concurrency levels (4, 8, 12) to find API saturation point
+### 判断
+
+这是当前**最健康、最适合成为业务主线说明书**的代码文件之一。
+
+### 设计取向
+
+它没有把复杂度过早放在切片、空间重建、版面图谱上，而是优先稳定完成“多页聚合 -> 评分”。
+
+这个选择是合理的。
 
 ---
 
-## APPENDIX: ERROR MESSAGES CAPTURED
+## 4.5 感知层：`src/perception/engines/qwen_engine.py`
 
-### Error Type Distribution
+### 已实现能力
+
+1. key pool
+2. circuit breaker
+3. physical API semaphore
+4. prompt provider 接入
+5. JSON 提取与解码
+6. 坐标 sanitize
+7. layout extract 与 perception extract 双路径
+
+### 关键价值
+
+感知层已经不是简单 OCR，而是在输出统一结构化 IR：
+
+- `PerceptionNode`
+- `PerceptionOutput`
+- `LayoutIR`
+
+这会直接决定未来能否做：
+
+1. 证据片段展示
+2. 图像高亮定位
+3. 空间化复核
+4. 班级高频错误证据抽取
+
+### 风险
+
+1. 当前仍高度依赖上游模型返回 JSON 的稳定性
+2. host 端做了不少“补偿式纠偏”，后续要持续维护
+
+---
+
+## 4.6 认知层：`src/cognitive/engines/deepseek_engine.py`
+
+### 已实现能力
+
+1. runtime router 决策
+2. prompt provider 接入
+3. stream / non-stream 切换
+4. degrade 到 `deepseek-chat`
+5. JSON 修复
+6. runtime telemetry 采集
+
+### 强项
+
+它已经解决了很多真实线上问题：
+
+1. 网络波动
+2. 模型流式不稳定
+3. 非法 JSON
+4. token 预算
+5. 自动降级
+
+### 风险
+
+复杂度已经明显高于普通模型调用模块。  
+如果没有外围文档和测试保护，它会逐步变成“谁都不想碰”的文件。
+
+### 额外观察
+
+当前 prompt 已经显式加入：
+
+1. 数值容差
+2. 舍入规则
+3. OCR 容忍
+4. 跳步接受
+
+这说明项目已经从“流程能跑”迈进了“判分规则可控”阶段。
+
+---
+
+## 4.7 Prompt 控制面：`src/prompts/provider.py`
+
+### 能力清单
+
+1. L1 内存缓存
+2. L2 Redis 缓存
+3. singleflight
+4. forced variant
+5. LKG fallback
+6. A/B config
+7. invalidate / refresh
+8. token budget guard
+
+### 判断
+
+这是仓库平台化程度最高的模块之一。  
+如果未来继续做“教师阅卷工作台 + 模型策略运营”，它会是长期资产。
+
+### 风险
+
+1. 对只想“快速做个阅卷器”的人来说会显得偏重
+2. 需要明确说明它是平台层，而不是业务层
+
+---
+
+## 4.8 数据层：`src/db/schema.sql` / `src/db/client.py`
+
+### 优点
+
+数据库设计覆盖面明显超出最小 demo：
+
+1. 任务
+2. 批改结果
+3. runtime telemetry
+4. prompt control state
+5. prompt audit
+6. skill validation
+7. rubric
+8. rubric generate audit
+9. hygiene interception
+10. golden annotation assets
+
+### 风险
+
+1. SQLite 仍是单文件数据库
+2. 并发写和运维能力有上限
+3. `client.py` 体量过大，维护成本持续上升
+
+### 结论
+
+开发期与单机部署阶段，SQLite 是合理选择；  
+如果进入多教师、多班级、长期在线场景，**PostgreSQL 迁移是迟早要做的。**
+
+---
+
+## 4.9 前端：`src/api/static/`
+
+### 现状
+
+已有页面 8 个左右，主要包括：
+
+1. 学生提交台
+2. 批处理台
+3. 任务列表
+4. 历史结果页
+5. 报告展示页
+6. 复核工作台
+7. 运营控制台
+
+### 优点
+
+1. 不只是空壳页面，是真的能串接口
+2. 适合联调、演示、验链路
+3. 报告页已经有教师模式等雏形
+
+### 不足
+
+1. UI 仍是静态 HTML 工具台
+2. 缺少统一设计语言与状态管理
+3. 缺少班级汇总、题目统计、复核优先队列
+4. 缺少更产品化的报告信息架构
+
+### 结论
+
+前端目前完成的是“系统能被使用”，还没有完成“教师会愿意长期使用”。
+
+---
+
+## 4.10 DevOps：Docker / Compose
+
+### 已完成
+
+1. `Dockerfile`
+2. `docker-compose.yml`
+3. API、worker、redis 三服务
+4. healthcheck
+
+### 未完成
+
+1. Nginx 反向代理
+2. HTTPS
+3. 域名接入
+4. 云部署模板
+5. 生产级备份/恢复说明
+
+### 结论
+
+它已经达到“开发/演示可部署”，但还没达到“标准对外交付”。
+
+---
+
+## 5. 测试面审计
+
+### 5.1 当前实际基线
+
+使用：
+
+```bash
+set PYTHONPATH=.
+pytest -q tests
 ```
-Error Category                          | Count | Percentage
----------------------------------------------------
-Connection error (streaming failures)   | 32    | 57%
-JSON schema mismatch (parse failures)   | 17    | 30%
-Unrecoverable errors                    | 8     | 14%
-```
 
-### Specific Error Strings
-1. `"Cognitive evaluation error: Connection error."`
-2. `"Cognitive evaluation error: Cognitive evaluation schema mismatch: Expecting value: line 1 column 1 (char 0)"`
-3. `"GradingSystemError: Persistent network instability for Qwen: ..."`
-4. `"GradingSystemError: All DeepSeek API keys are rate-limited. System saturated."`
+得到结果：
+
+- **166 passed**
+- **1 failed**
+- **3 skipped**
+
+### 5.2 失败点
+
+失败用例：
+
+- `tests/test_phase30_serialization.py::test_worker_receives_dict_not_string`
+
+根因：
+
+- `src/worker/main.py` 的 `run_async()` 在非主线程下调用 `get_event_loop()` 失败。
+
+### 5.3 额外观察
+
+1. 测试覆盖面其实不差，包含 API、边界、序列化、Prompt、SSE、DLQ、runtime router、storage、skills 等。
+2. 但直接裸跑 `pytest -q` 还会因为 `src` 导入路径问题在收集阶段报错，这说明测试入口说明仍不够稳妥。
 
 ---
 
-## CONCLUSION
+## 6. 当前完成情况总表
 
-The batch grading system exhibits **dual failure modes**: streaming disruption (primary, 57% of failures) and response validation (secondary, 30% of failures). The non-streaming fallback significantly improves reliability (66.7% success), suggesting the issue is fundamentally tied to streaming protocol stability rather than API availability. The system is **production-functional** but operates at ~60-70% efficiency when streaming is enabled. Switching to non-streaming or implementing adaptive degradation thresholds would likely improve overall system reliability to >80%.
+| 方向 | 完成情况 |
+| --- | --- |
+| AI 批改主链路 | **已完成** |
+| 异步执行与状态流 | **已完成** |
+| rubric 生成与复用 | **已完成** |
+| one-shot 批量编排 | **已完成** |
+| 报告 DTO / 报告 API | **已完成** |
+| 任务页 / 历史页 / 报告页 | **首版完成** |
+| 复核后端与标注资产 | **已完成** |
+| 复核前端体验 | **MVP** |
+| 运营观测后端 | **已完成** |
+| 运营前端 | **MVP** |
+| 上线治理 | **未完成** |
 
-**Audit Status:** Inconclusive for missing audit questions due to execution environment constraints, but comprehensive analysis of existing batch results provides strong evidence for connection error root cause.
+---
+
+## 7. 对维护者最重要的判断
+
+### 7.1 这套代码的问题不是“没结构”
+
+真实问题是：
+
+> **结构存在，但结构被 phase 增量开发不断覆盖，导致总览入口不足。**
+
+### 7.2 你现在最需要补的不是更多功能，而是“系统解释层”
+
+包括：
+
+1. 当前主线说明
+2. 模块职责边界
+3. 维护入口顺序
+4. 产品边界口径
+
+### 7.3 这套系统最可能成功的方向，不是“大而全”
+
+最符合当前代码现实的方向是：
+
+> **教师批量阅卷、争议样本复核、讲评依据生成**
+
+这条线既利用了你已经做好的后端深度，也能避免产品边界继续失控。
+
+---
+
+## 8. 建议优先级
+
+### P1：降认知负担
+
+1. 为 routes / worker / db 明确子域边界
+2. 把“主工程”和“历史原型”文档上切开
+3. 固化维护阅读路径
+
+### P2：前端产品化收口
+
+1. 任务创建向导
+2. 班级汇总看板
+3. 学生报告升级
+4. 复核优先队列
+
+### P3：部署与交付收口
+
+1. 生产部署模板
+2. HTTPS / Nginx
+3. 数据库迁移规划
+4. 备份与恢复
+
+---
+
+## 9. 最终结论
+
+这不是一个“思路不错但还没开始做系统”的项目。  
+恰恰相反，它已经是一个**后端能力较强、平台意识明显、数据面完整度较高**的系统。
+
+它当前真正缺的不是“再做更多”，而是：
+
+1. **让维护者重新看懂它**
+2. **让老师真正感受到它的产品价值**
+3. **让市场能用一句话定义它**
+
+这三件事做完，项目就会从“长周期 vibe coding 产物”变成“可重新掌控的系统工程”。

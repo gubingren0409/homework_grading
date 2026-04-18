@@ -1,0 +1,505 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>独立任务进度页（开发/调试）</title>
+  <style>
+    :root {
+      --bg: #f4f7fb;
+      --card: #fff;
+      --line: #e4e9f4;
+      --text: #1f2937;
+      --muted: #667085;
+      --primary: #3563e9;
+      --ok: #0f9d58;
+      --warn: #b54708;
+      --err: #d92d20;
+    }
+
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); font-family: Arial, sans-serif; }
+    a { color: var(--primary); text-decoration: none; }
+    .wrap { max-width: 1180px; margin: 0 auto; padding: 28px 18px 40px; }
+    .hero, .card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 4px 18px rgba(15, 23, 42, 0.04); }
+    .hero { padding: 22px; margin-bottom: 16px; }
+    .hero h1 { margin: 0 0 10px; }
+    .lead { margin: 0; color: #475467; line-height: 1.65; }
+    .hero-links { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
+    .link-chip { display: inline-flex; align-items: center; padding: 8px 12px; border: 1px solid #d7def0; border-radius: 999px; background: #f8fbff; font-size: 13px; }
+    .layout { display: grid; gap: 16px; grid-template-columns: minmax(0, 1.5fr) minmax(320px, 1fr); align-items: start; }
+    .layout > *, .card { min-width: 0; }
+    .stack { display: grid; gap: 16px; }
+    .card { padding: 18px; }
+    .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin: 10px 0; }
+    .row > label { min-width: 82px; color: #475467; font-size: 14px; }
+    input[type="text"] { width: 100%; max-width: 520px; min-width: 0; padding: 10px 12px; border: 1px solid #cfd7e6; border-radius: 10px; background: #fff; font: inherit; }
+    button { padding: 10px 14px; border: 0; border-radius: 10px; cursor: pointer; background: var(--primary); color: #fff; font-weight: 700; }
+    button.secondary { background: #667085; }
+    button.ghost { background: #eef3ff; color: var(--primary); }
+    .desc { margin: 0 0 10px; color: var(--muted); font-size: 14px; line-height: 1.65; }
+    .summary-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+    .summary-item { border: 1px solid #e8edf7; border-radius: 14px; background: #fbfdff; padding: 14px; }
+    .summary-item .k { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+    .summary-item .v { font-size: 24px; font-weight: 700; line-height: 1.2; }
+    .summary-item .sub { margin-top: 6px; font-size: 12px; color: var(--muted); }
+    .tag { display: inline-block; padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; }
+    .tag.pending { background: #eef2ff; color: #2d4de0; }
+    .tag.processing { background: #e0f2fe; color: #0369a1; }
+    .tag.completed { background: #e8f7ee; color: var(--ok); }
+    .tag.failed { background: #fee4e2; color: var(--err); }
+    .progress-wrap { margin-top: 10px; }
+    .progress { height: 12px; width: 100%; background: #e8ecf6; border-radius: 999px; overflow: hidden; }
+    .progress > div { height: 100%; width: 0%; background: linear-gradient(90deg, #4e7cf6, #3563e9); transition: width .25s ease; }
+    .timeline { display: grid; gap: 10px; margin-top: 10px; }
+    .timeline-step { display: grid; grid-template-columns: 28px 1fr; gap: 10px; align-items: start; }
+    .timeline-dot { width: 28px; height: 28px; border-radius: 999px; border: 2px solid #cfd7e6; display: inline-flex; align-items: center; justify-content: center; background: #fff; color: #98a2b3; font-weight: 700; }
+    .timeline-step.active .timeline-dot,
+    .timeline-step.done .timeline-dot { border-color: var(--primary); background: var(--primary); color: #fff; }
+    .timeline-step.done .timeline-dot { background: var(--ok); border-color: var(--ok); }
+    .timeline-body strong { display: block; margin-bottom: 4px; }
+    .timeline-body p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.6; }
+    .kv { display: grid; grid-template-columns: 110px 1fr; gap: 6px 10px; font-size: 13px; }
+    .notice { border-radius: 12px; padding: 12px 14px; font-size: 13px; line-height: 1.6; }
+    .notice.info { background: #eff6ff; border: 1px solid #dbeafe; color: #1d4ed8; }
+    .notice.warn { background: #fffaeb; border: 1px solid #f5e6ae; color: var(--warn); }
+    .notice.err { background: #fff6f5; border: 1px solid #f3c2be; color: var(--err); }
+    .mono { white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; font-size: 13px; background: #f8fafc; border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
+    .logbox { max-height: 280px; overflow: auto; background: #0f172a; color: #dbeafe; border: 1px solid #1e293b; border-radius: 10px; padding: 10px; font-family: Consolas, monospace; font-size: 12px; }
+    .logline { margin: 0; padding: 3px 0; border-bottom: 1px dashed #1e293b; }
+    .logline:last-child { border-bottom: 0; }
+    .chip { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; margin-right: 8px; }
+    .chip.info { background: #1d4ed8; color: #e0ecff; }
+    .chip.ok { background: #0f9d58; color: #e9fff3; }
+    .chip.err { background: #b42318; color: #ffe8e5; }
+
+    @media (max-width: 960px) {
+      .layout { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <section class="hero">
+      <h1>独立任务进度页（开发/调试）</h1>
+      <p class="lead">教师主界面已经集成了任务进度与结果入口。这个页面继续保留，用于开发阶段单独排查状态轮询、SSE 监听和原始响应。</p>
+      <div class="hero-links">
+        <a class="link-chip" href="/student-console">任务创建向导</a>
+        <a class="link-chip" href="/class-dashboard">班级结果看板</a>
+        <a class="link-chip" href="/tasks-list">任务列表</a>
+        <a class="link-chip" href="/report-view">报告展示页</a>
+        <a class="link-chip" href="/history-results">历史结果页</a>
+      </div>
+    </section>
+
+    <div class="layout">
+      <div class="stack">
+        <section class="card">
+          <h2 style="margin:0 0 10px;">定位任务</h2>
+          <p class="desc">输入 task_id 后可以单独轮询状态，也可以直接建立 SSE 监听。若从其它页面跳转并带了 `task_id`，这里会自动加载。</p>
+          <div class="row">
+            <label>task_id</label>
+            <input id="taskId" type="text" placeholder="输入 task_id" />
+            <button id="loadBtn">查询状态</button>
+            <button id="watchBtn">实时监听</button>
+            <button id="stopBtn" class="secondary">停止监听</button>
+          </div>
+          <div class="row">
+            <button id="reportBtn" class="ghost">查看报告</button>
+            <button id="resultsBtn" class="ghost">查看原始结果</button>
+          </div>
+          <div id="debug" class="mono">等待加载任务状态。</div>
+        </section>
+
+        <section class="card">
+          <h2 style="margin:0 0 10px;">任务概览</h2>
+          <div class="summary-grid">
+            <div class="summary-item">
+              <div class="k">任务状态</div>
+              <div class="v" id="statusValue">-</div>
+              <div class="sub" id="nextActionValue">等待查询</div>
+            </div>
+            <div class="summary-item">
+              <div class="k">进度</div>
+              <div class="v" id="progressValue">0%</div>
+              <div class="sub" id="stageValue">当前阶段：未开始</div>
+            </div>
+            <div class="summary-item">
+              <div class="k">预计剩余</div>
+              <div class="v" id="etaValue">-</div>
+              <div class="sub" id="pollHintValue">建议轮询间隔：-</div>
+            </div>
+            <div class="summary-item">
+              <div class="k">已上传 / 已处理 / 成功</div>
+              <div class="v" id="countValue">0 / 0 / 0</div>
+              <div class="sub" id="countSubValue">三段计数：上传份数 / 已落库结果数（含拒判）/ 成功批改份数。</div>
+            </div>
+            <div class="summary-item">
+              <div class="k">异常样本数</div>
+              <div class="v" id="riskValue">0</div>
+              <div class="sub" id="riskSubValue">完成后会统计拒判与人工复核样本。</div>
+            </div>
+          </div>
+          <div class="progress-wrap">
+            <div class="progress"><div id="bar"></div></div>
+          </div>
+        </section>
+
+        <section class="card">
+          <h2 style="margin:0 0 10px;">当前阶段</h2>
+          <div class="timeline" id="timeline">
+            <div class="timeline-step" data-step="queued">
+              <div class="timeline-dot">1</div>
+              <div class="timeline-body">
+                <strong>任务已创建</strong>
+                <p>任务已接受提交，等待排队或进入执行。</p>
+              </div>
+            </div>
+            <div class="timeline-step" data-step="processing">
+              <div class="timeline-dot">2</div>
+              <div class="timeline-body">
+                <strong>批改执行中</strong>
+                <p>系统正在解析输入、调用模型、生成评分结论并写入结果。</p>
+              </div>
+            </div>
+            <div class="timeline-step" data-step="completed">
+              <div class="timeline-dot">3</div>
+              <div class="timeline-body">
+                <strong>结果已完成</strong>
+                <p>任务主链路结束，可查看报告、风险样本与后续复核入口。</p>
+              </div>
+            </div>
+            <div class="timeline-step" data-step="review">
+              <div class="timeline-dot">4</div>
+              <div class="timeline-body">
+                <strong>查看报告或复核</strong>
+                <p>根据结果跳到报告页，若有高风险样本则继续进入复核工作台。</p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="card">
+          <h2 style="margin:0 0 10px;">运行监听窗口</h2>
+          <div class="kv">
+            <div>监听状态</div><div id="monitorStatus">空闲</div>
+            <div>当前状态</div><div id="monitorTaskStatus">-</div>
+            <div>最近事件</div><div id="monitorEvent">-</div>
+            <div>状态接口</div><div id="monitorStatusEndpoint">-</div>
+            <div>SSE 接口</div><div id="monitorStreamEndpoint">-</div>
+          </div>
+          <div class="row" style="margin-top:12px;">
+            <button id="clearLogBtn" class="secondary">清空日志</button>
+          </div>
+          <div id="monitorLog" class="logbox"></div>
+        </section>
+      </div>
+
+      <aside class="stack">
+        <section class="card">
+          <h3 style="margin:0 0 10px;">风险与提示</h3>
+          <div id="statusTag" class="tag pending">未查询</div>
+          <div id="hintBox" class="notice info" style="margin-top:12px;">输入 task_id 后即可查看当前任务进度。</div>
+        </section>
+
+        <section class="card">
+          <h3 style="margin:0 0 10px;">状态细节</h3>
+          <div class="kv">
+            <div>grading_status</div><div id="gradingStatusValue">-</div>
+            <div>review_status</div><div id="reviewStatusValue">-</div>
+            <div>fallback_reason</div><div id="fallbackValue">-</div>
+            <div>retry_hint</div><div id="retryHintValue">-</div>
+          </div>
+        </section>
+
+        <section class="card">
+          <h3 style="margin:0 0 10px;">原始响应快照</h3>
+          <div id="rawBox" class="mono">尚无数据。</div>
+        </section>
+      </aside>
+    </div>
+  </div>
+
+  <script>
+    let es = null;
+    let lastState = {};
+    const maxLogLines = 140;
+    const $ = (id) => document.getElementById(id);
+
+    function parseResponseSafe(resp) {
+      return resp.text().then((text) => {
+        try {
+          return JSON.parse(text);
+        } catch {
+          return { error_code: "NON_JSON_RESPONSE", message: text || "Empty response body" };
+        }
+      });
+    }
+
+    function nowTime() {
+      const d = new Date();
+      return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}:${String(d.getSeconds()).padStart(2, "0")}`;
+    }
+
+    function appendLog(level, label, content) {
+      const box = $("monitorLog");
+      const line = document.createElement("div");
+      line.className = "logline";
+      const chip = document.createElement("span");
+      chip.className = `chip ${level}`;
+      chip.textContent = label;
+      const text = document.createElement("span");
+      const payload = typeof content === "string" ? content : JSON.stringify(content);
+      text.textContent = `[${nowTime()}] ${payload}`;
+      line.appendChild(chip);
+      line.appendChild(text);
+      box.appendChild(line);
+      while (box.childElementCount > maxLogLines) {
+        box.removeChild(box.firstChild);
+      }
+      box.scrollTop = box.scrollHeight;
+    }
+
+    function ratioText(value) {
+      const n = Number(value);
+      if (!Number.isFinite(n)) return "0%";
+      return `${Math.round(Math.max(0, Math.min(1, n)) * 100)}%`;
+    }
+
+    function etaText(value) {
+      const n = Number(value);
+      return Number.isFinite(n) ? `${Math.max(0, Math.round(n))}s` : "-";
+    }
+
+    function statusClass(status) {
+      if (status === "COMPLETED") return "completed";
+      if (status === "FAILED") return "failed";
+      if (status === "PROCESSING") return "processing";
+      return "pending";
+    }
+
+    function currentStage(status, nextAction) {
+      if (status === "FAILED") return "processing";
+      if (status === "COMPLETED" && nextAction === "view_results") return "review";
+      if (status === "COMPLETED") return "completed";
+      if (status === "PROCESSING") return "processing";
+      return "queued";
+    }
+
+    function countRiskSamples(results) {
+      if (!Array.isArray(results)) return 0;
+      return results.reduce((count, item) => {
+        const report = item && item.report_json && typeof item.report_json === "object" ? item.report_json : {};
+        const rejected = report.status === "REJECTED_UNREADABLE";
+        const review = report.requires_human_review === true;
+        return count + (rejected || review ? 1 : 0);
+      }, 0);
+    }
+
+    function mergedCount(state) {
+      const uploaded = Math.max(0, Number(state.uploaded_count != null ? state.uploaded_count : (state.submitted_count || 0)));
+      const processed = Math.max(0, Number(state.processed_count != null ? state.processed_count : (state.result_count || 0)));
+      const succeeded = Math.max(0, Number(state.succeeded_count != null ? state.succeeded_count : processed));
+      const rejected = Math.max(0, Number(state.rejected_count != null ? state.rejected_count : Math.max(0, processed - succeeded)));
+      return { uploaded, processed, succeeded, rejected, total: uploaded };
+    }
+
+    function renderTimeline(state) {
+      const stage = currentStage(state.status, state.next_action);
+      const order = ["queued", "processing", "completed", "review"];
+      const index = order.indexOf(stage);
+      document.querySelectorAll("[data-step]").forEach((node) => {
+        const step = node.getAttribute("data-step");
+        const stepIndex = order.indexOf(step);
+        node.classList.remove("active", "done");
+        if (stepIndex < index) {
+          node.classList.add("done");
+        } else if (stepIndex === index) {
+          node.classList.add("active");
+        }
+      });
+    }
+
+    function render(state) {
+      const status = state.status || "-";
+      const progress = Number(state.progress || 0);
+      const counts = mergedCount(state);
+      const riskCount = Array.isArray(state.results) ? countRiskSamples(state.results) : 0;
+      const isFailed = status === "FAILED";
+      const isCompleted = status === "COMPLETED";
+      const stageMap = {
+        queued: "当前阶段：排队中",
+        processing: isFailed ? "当前阶段：执行失败" : "当前阶段：批改执行中",
+        completed: "当前阶段：已完成，可查看结果",
+        review: "当前阶段：进入报告/复核",
+      };
+      const stage = currentStage(status, state.next_action);
+
+      $("statusValue").textContent = status;
+      $("nextActionValue").textContent = `建议动作：${state.next_action || "-"}`;
+      $("progressValue").textContent = ratioText(progress);
+      $("stageValue").textContent = stageMap[stage] || "当前阶段：未开始";
+      $("etaValue").textContent = etaText(state.eta_seconds);
+      $("pollHintValue").textContent = `建议轮询间隔：${state.suggested_poll_interval_seconds || "-"}s`;
+      $("countValue").textContent = `${counts.uploaded} / ${counts.processed} / ${counts.succeeded}`;
+      $("countSubValue").textContent = counts.uploaded > 0
+        ? (counts.rejected > 0
+            ? `已上传 ${counts.uploaded} 份，已处理 ${counts.processed} 份（其中 ${counts.rejected} 份被拒判，${counts.succeeded} 份成功批改）。`
+            : `已上传 ${counts.uploaded} 份，已处理 ${counts.processed} 份，成功批改 ${counts.succeeded} 份。`)
+        : "当前任务尚未记录上传份数。";
+      $("riskValue").textContent = String(riskCount);
+      $("riskSubValue").textContent = isCompleted ? "异常样本数 = REJECTED_UNREADABLE 或 requires_human_review。" : "任务完成后可统计异常样本。";
+      $("bar").style.width = `${Math.max(0, Math.min(1, progress)) * 100}%`;
+      $("gradingStatusValue").textContent = state.grading_status || "-";
+      $("reviewStatusValue").textContent = state.review_status || "-";
+      $("fallbackValue").textContent = state.fallback_reason || "-";
+      $("retryHintValue").textContent = state.retry_hint || "-";
+      $("monitorTaskStatus").textContent = status;
+      $("monitorEvent").textContent = state.__event || "-";
+      $("monitorStatusEndpoint").textContent = state.status_endpoint || "-";
+      $("monitorStreamEndpoint").textContent = state.stream_endpoint || "-";
+      $("rawBox").textContent = JSON.stringify(state, null, 2);
+      $("debug").textContent = JSON.stringify({
+        task_id: state.task_id || "-",
+        status,
+        progress: progress,
+        uploaded_count: counts.uploaded,
+        processed_count: counts.processed,
+        succeeded_count: counts.succeeded,
+        rejected_count: counts.rejected,
+        next_action: state.next_action || "-",
+      }, null, 2);
+
+      const tag = $("statusTag");
+      tag.className = `tag ${statusClass(status)}`;
+      tag.textContent = status;
+
+      const hintBox = $("hintBox");
+      if (isFailed) {
+        hintBox.className = "notice err";
+        hintBox.textContent = state.error_message || "任务失败，请根据 retry_hint 决定是否重新提交。";
+      } else if (isCompleted) {
+        hintBox.className = riskCount > 0 ? "notice warn" : "notice info";
+        hintBox.textContent = riskCount > 0
+          ? `任务已完成，其中 ${riskCount} 份结果建议重点关注，可继续进入报告页或复核台。`
+          : "任务已完成，当前未发现高风险样本，可直接查看报告。";
+      } else if (status === "PROCESSING") {
+        hintBox.className = "notice info";
+        hintBox.textContent = "任务正在执行中。若 SSE 稳定，可优先保持监听；若网络中断，再回退到轮询。";
+      } else {
+        hintBox.className = "notice info";
+        hintBox.textContent = "任务已提交，等待进入执行阶段。";
+      }
+
+      renderTimeline(state);
+    }
+
+    function mergeState(partial, eventName) {
+      lastState = { ...lastState, ...partial, __event: eventName || lastState.__event || "-" };
+      render(lastState);
+    }
+
+    async function loadStatus() {
+      const taskId = $("taskId").value.trim();
+      if (!taskId) {
+        $("debug").textContent = "请先输入 task_id";
+        return;
+      }
+      const resp = await fetch(`/api/v1/grade/${encodeURIComponent(taskId)}`);
+      appendLog("info", "HTTP", `GET /api/v1/grade/${taskId}`);
+      const data = await parseResponseSafe(resp);
+      if (!resp.ok) {
+        appendLog("err", "STATUS", data);
+        $("debug").textContent = JSON.stringify(data, null, 2);
+        return;
+      }
+      appendLog("ok", "STATUS", data);
+      mergeState(data, "poll");
+    }
+
+    function stopWatch() {
+      if (es) {
+        es.close();
+        es = null;
+        $("monitorStatus").textContent = "监听已停止";
+        appendLog("info", "SSE", "stopped");
+      }
+    }
+
+    function watch() {
+      const taskId = $("taskId").value.trim();
+      if (!taskId) {
+        $("debug").textContent = "请先输入 task_id";
+        return;
+      }
+      stopWatch();
+      $("monitorStatus").textContent = "SSE 连接中";
+      es = new EventSource(`/api/v1/tasks/${encodeURIComponent(taskId)}/stream`);
+      appendLog("info", "SSE", `connect /api/v1/tasks/${taskId}/stream`);
+
+      es.addEventListener("status_update", (ev) => {
+        try {
+          const data = JSON.parse(ev.data);
+          appendLog("info", "SSE", data);
+          mergeState(data, "status_update");
+        } catch {
+          appendLog("info", "SSE", ev.data);
+        }
+      });
+
+      es.addEventListener("complete", async (ev) => {
+        try {
+          const data = JSON.parse(ev.data);
+          appendLog("ok", "SSE", { complete: true, ...data });
+          mergeState({ ...data, progress: 1 }, "complete");
+        } catch {
+          appendLog("ok", "SSE", ev.data);
+        }
+        $("monitorStatus").textContent = "任务完成";
+        stopWatch();
+        await loadStatus();
+      });
+
+      es.addEventListener("error", () => {
+        $("monitorStatus").textContent = "SSE 异常";
+        appendLog("err", "SSE", "connection interrupted");
+      });
+    }
+
+    function openReport() {
+      const taskId = $("taskId").value.trim();
+      if (!taskId) return;
+      window.location.href = `/report-view?task_id=${encodeURIComponent(taskId)}`;
+    }
+
+    async function loadResults() {
+      const taskId = $("taskId").value.trim();
+      if (!taskId) {
+        $("debug").textContent = "请先输入 task_id";
+        return;
+      }
+      const resp = await fetch(`/api/v1/results?task_id=${encodeURIComponent(taskId)}&page=1&limit=50`);
+      appendLog("info", "HTTP", `GET /api/v1/results?task_id=${taskId}`);
+      const data = await parseResponseSafe(resp);
+      appendLog(resp.ok ? "ok" : "err", "RESULT", data);
+      $("debug").textContent = JSON.stringify(data, null, 2);
+    }
+
+    $("loadBtn").addEventListener("click", loadStatus);
+    $("watchBtn").addEventListener("click", watch);
+    $("stopBtn").addEventListener("click", stopWatch);
+    $("reportBtn").addEventListener("click", openReport);
+    $("resultsBtn").addEventListener("click", loadResults);
+    $("clearLogBtn").addEventListener("click", () => { $("monitorLog").innerHTML = ""; });
+
+    const q = new URLSearchParams(window.location.search);
+    const qTaskId = q.get("task_id");
+    if (qTaskId) {
+      $("taskId").value = qTaskId;
+      loadStatus();
+    } else {
+      render(lastState);
+    }
+  </script>
+</body>
+</html>

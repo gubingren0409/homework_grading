@@ -20,6 +20,36 @@ class _SlowReceive:
         return {"type": "http.request", "body": b"a", "more_body": True}
 
 
+@pytest.mark.asyncio
+async def test_e05_middleware_does_not_timeout_after_body_complete():
+    sent = []
+    receive_calls = {"count": 0}
+
+    async def fake_receive():
+        receive_calls["count"] += 1
+        if receive_calls["count"] == 1:
+            return {"type": "http.request", "body": b"", "more_body": False}
+        await asyncio.sleep(0.05)
+        return {"type": "http.disconnect"}
+
+    async def fake_send(message):
+        sent.append(message)
+
+    async def app(scope, receive, send):
+        first = await receive()
+        assert first["type"] == "http.request"
+        second = await receive()
+        assert second["type"] == "http.disconnect"
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok", "more_body": False})
+
+    middleware = HardBodyLimitMiddleware(app, max_body_bytes=1024, read_timeout_seconds=0.01)
+    scope = {"type": "http", "method": "GET", "path": "/stream", "headers": []}
+    await middleware(scope, fake_receive, fake_send)
+
+    assert any(msg.get("type") == "http.response.start" and msg.get("status") == 200 for msg in sent)
+
+
 def test_e05_hard_limit_middleware_returns_413_by_content_length():
     app = FastAPI()
     app.add_middleware(HardBodyLimitMiddleware, max_body_bytes=10, read_timeout_seconds=0.1)

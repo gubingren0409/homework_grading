@@ -7,6 +7,7 @@ Validates that downstream failures are properly isolated and recovered.
 import pytest
 import asyncio
 import fakeredis.aioredis as fakeredis_aioredis
+from redis.exceptions import ConnectionError as RedisConnectionError
 
 from src.core.circuit_breaker import (
     CircuitBreaker,
@@ -235,6 +236,42 @@ def test_get_state_returns_metrics(breaker):
     assert state["failure_threshold"] == 3
     assert state["recovery_timeout"] == 2.0
     assert "state_uptime_seconds" in state
+
+
+@pytest.mark.asyncio
+async def test_degrades_to_local_mode_when_redis_unavailable(monkeypatch):
+    breaker = CircuitBreaker(
+        name="test_local_fallback",
+        failure_threshold=2,
+        recovery_timeout=1.0,
+        success_threshold=1,
+        expected_exceptions=(ValueError,),
+        redis_client=None,
+    )
+
+    async def _broken_get_redis():
+        raise RedisConnectionError("redis offline")
+
+    monkeypatch.setattr(breaker, "_get_redis", _broken_get_redis)
+
+    @breaker
+    async def unstable():
+        raise ValueError("downstream failed")
+
+    with pytest.raises(ValueError):
+        await unstable()
+    assert breaker.state == CircuitState.CLOSED
+    assert breaker.failure_count == 1
+
+    with pytest.raises(ValueError):
+        await unstable()
+    assert breaker.state == CircuitState.OPEN
+
+    with pytest.raises(CircuitBreakerOpenError):
+        await unstable()
+
+    state = await breaker._get_state_dict()
+    assert state["backend"] == "local_fallback"
 
 
 @pytest.mark.asyncio

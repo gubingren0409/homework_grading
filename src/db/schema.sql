@@ -10,6 +10,12 @@ CREATE TABLE IF NOT EXISTS tasks (
     review_status TEXT NOT NULL DEFAULT 'NOT_REQUIRED'
         CHECK (review_status IN ('NOT_REQUIRED', 'PENDING_REVIEW', 'REVIEWED')),
     fallback_reason TEXT, -- Why machine path was rejected/degraded to human
+    submitted_count INTEGER NOT NULL DEFAULT 0
+        CHECK (submitted_count >= 0),
+    progress REAL NOT NULL DEFAULT 0
+        CHECK (progress >= 0.0 AND progress <= 1.0),
+    eta_seconds INTEGER
+        CHECK (eta_seconds IS NULL OR eta_seconds >= 0),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -45,6 +51,21 @@ CREATE TABLE IF NOT EXISTS golden_annotation_assets (
     is_integrated_to_dataset INTEGER NOT NULL DEFAULT 0 CHECK (is_integrated_to_dataset IN (0, 1)),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS teacher_review_decisions (
+    task_id TEXT NOT NULL,
+    sample_id TEXT NOT NULL,
+    student_id TEXT,
+    decision TEXT NOT NULL
+        CHECK (decision IN ('CONFIRM_MACHINE', 'ADJUST_SCORE', 'MARK_UNREADABLE', 'ESCALATE')),
+    final_score REAL,
+    teacher_comment TEXT NOT NULL,
+    include_in_dataset INTEGER NOT NULL DEFAULT 0 CHECK (include_in_dataset IN (0, 1)),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (task_id, sample_id),
+    FOREIGN KEY(task_id) REFERENCES tasks(task_id)
 );
 
 CREATE TABLE IF NOT EXISTS grading_results (
@@ -127,6 +148,21 @@ CREATE TABLE IF NOT EXISTS rubrics (
     rubric_id TEXT PRIMARY KEY,
     question_id TEXT,
     rubric_json TEXT NOT NULL,
+    source_fingerprint TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS rubric_generate_audit (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    trace_id TEXT NOT NULL,
+    rubric_id TEXT,
+    source_fingerprint TEXT NOT NULL,
+    reused_from_cache INTEGER NOT NULL CHECK (reused_from_cache IN (0, 1)),
+    force_regenerate INTEGER NOT NULL CHECK (force_regenerate IN (0, 1)),
+    source_file_count INTEGER NOT NULL CHECK (source_file_count >= 1),
+    client_ip TEXT,
+    user_agent TEXT,
+    referer TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -141,6 +177,9 @@ CREATE INDEX IF NOT EXISTS idx_prompt_ops_prompt_key ON prompt_ops_audit_log(pro
 CREATE INDEX IF NOT EXISTS idx_skill_validation_task_id ON skill_validation_records(task_id);
 CREATE INDEX IF NOT EXISTS idx_skill_validation_checker ON skill_validation_records(checker);
 CREATE INDEX IF NOT EXISTS idx_rubrics_created_at ON rubrics(created_at);
+CREATE INDEX IF NOT EXISTS idx_rubrics_source_fingerprint ON rubrics(source_fingerprint);
+CREATE INDEX IF NOT EXISTS idx_rubric_generate_audit_created_at ON rubric_generate_audit(created_at);
+CREATE INDEX IF NOT EXISTS idx_rubric_generate_audit_fingerprint ON rubric_generate_audit(source_fingerprint);
 CREATE INDEX IF NOT EXISTS idx_hygiene_trace_id ON hygiene_interception_log(trace_id);
 CREATE INDEX IF NOT EXISTS idx_hygiene_created_at ON hygiene_interception_log(created_at);
 CREATE INDEX IF NOT EXISTS idx_golden_trace_id ON golden_annotation_assets(trace_id);

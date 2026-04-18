@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>班级结果看板</title>
+  <style>
+    :root {
+      --bg: #f4f7fb;
+      --card: #fff;
+      --line: #e4e9f4;
+      --text: #1f2937;
+      --muted: #667085;
+      --primary: #3563e9;
+      --ok: #0f9d58;
+      --warn: #b54708;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); font-family: Arial, sans-serif; }
+    a { color: var(--primary); text-decoration: none; }
+    .wrap { max-width: 1220px; margin: 0 auto; padding: 28px 18px 40px; }
+    .hero, .card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 4px 18px rgba(15, 23, 42, 0.04); }
+    .hero { padding: 22px; margin-bottom: 16px; }
+    .hero h1 { margin: 0 0 10px; }
+    .lead { margin: 0; color: #475467; line-height: 1.65; }
+    .hero-links { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
+    .link-chip { display: inline-flex; align-items: center; padding: 8px 12px; border: 1px solid #d7def0; border-radius: 999px; background: #f8fbff; font-size: 13px; }
+    .card { padding: 18px; margin-bottom: 16px; }
+    .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin: 10px 0; }
+    .row > label { min-width: 80px; color: #475467; font-size: 14px; }
+    input[type="text"] { width: min(100%, 520px); padding: 10px 12px; border: 1px solid #cfd7e6; border-radius: 10px; background: #fff; font: inherit; }
+    button { padding: 10px 14px; border: 0; border-radius: 10px; cursor: pointer; background: var(--primary); color: #fff; font-weight: 700; }
+    button.secondary { background: #667085; }
+    .summary-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+    .summary-item { border: 1px solid #e8edf7; border-radius: 14px; background: #fbfdff; padding: 14px; }
+    .summary-item .k { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+    .summary-item .v { font-size: 24px; font-weight: 700; line-height: 1.2; }
+    .summary-item .sub { margin-top: 6px; font-size: 12px; color: var(--muted); }
+    .cols { display: grid; gap: 16px; grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr); }
+    .table-wrap { overflow-x: auto; border: 1px solid #e8edf7; border-radius: 12px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { padding: 10px; border-bottom: 1px solid #eef2f7; text-align: left; vertical-align: top; }
+    th { background: #f8fafc; color: #475467; }
+    tr:last-child td { border-bottom: 0; }
+    .tag { display: inline-block; padding: 3px 8px; border-radius: 999px; font-size: 12px; font-weight: 700; }
+    .tag.ok { background: #e8f7ee; color: var(--ok); }
+    .tag.warn { background: #fffaeb; color: var(--warn); }
+    .tag.info { background: #eef2ff; color: var(--primary); }
+    .list { display: grid; gap: 10px; }
+    .risk-item, .stat-item { border: 1px solid #e8edf7; border-radius: 12px; padding: 12px; background: #fbfdff; }
+    .risk-item strong, .stat-item strong { display: block; margin-bottom: 6px; }
+    .muted { color: var(--muted); font-size: 12px; }
+    .mono { white-space: pre-wrap; font-size: 13px; background: #f8fafc; border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
+    @media (max-width: 960px) { .cols { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <section class="hero">
+      <h1>班级结果看板</h1>
+      <p class="lead">面向老师的一次批改总览：先看整体通过率、平均扣分、待复核人数，再快速定位高风险样本并下钻到单份报告。</p>
+      <div class="hero-links">
+        <a class="link-chip" href="/student-console">任务创建向导</a>
+        <a class="link-chip" href="/task-progress">任务进度页</a>
+        <a class="link-chip" href="/report-view">报告展示页</a>
+        <a class="link-chip" href="/review-console">复核工作台</a>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="row">
+        <label>task_id</label>
+        <input id="taskId" type="text" placeholder="输入 task_id" />
+        <button id="loadBtn">加载看板</button>
+      </div>
+      <div id="debug" class="mono">等待加载班级结果。</div>
+    </section>
+
+    <section class="card">
+      <div class="summary-grid" id="summaryGrid"></div>
+    </section>
+
+    <section class="cols">
+      <div class="card">
+        <h2 style="margin:0 0 10px;">学生结果总表</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>学生</th>
+                <th>状态</th>
+                <th>总扣分</th>
+                <th>风险标记</th>
+                <th>主要错因</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="studentRows">
+              <tr><td colspan="6" class="muted">暂无数据</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="stack">
+        <section class="card">
+          <h2 style="margin:0 0 10px;">风险样本</h2>
+          <div id="riskList" class="list">
+            <div class="muted">暂无数据</div>
+          </div>
+        </section>
+
+        <section class="card">
+          <h2 style="margin:0 0 10px;">基础错因统计</h2>
+          <div id="errorStats" class="list">
+            <div class="muted">暂无数据</div>
+          </div>
+        </section>
+
+        <section class="card">
+          <h2 style="margin:0 0 10px;">讲评建议</h2>
+          <div id="lectureSuggestions" class="list">
+            <div class="muted">暂无数据</div>
+          </div>
+        </section>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+
+    function esc(v) {
+      return String(v ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    }
+
+    function ratio(numerator, denominator) {
+      if (!denominator) return "0%";
+      return `${Math.round((numerator / denominator) * 100)}%`;
+    }
+
+    function average(cards, key) {
+      if (!cards.length) return 0;
+      return cards.reduce((sum, item) => sum + Number(item[key] || 0), 0) / cards.length;
+    }
+
+    function topErrorType(card) {
+      const first = Array.isArray(card.deductions) && card.deductions.length ? card.deductions[0] : null;
+      return first ? String(first.error_type || "UNKNOWN") : "NONE";
+    }
+
+    function riskLevel(card) {
+      if (card.requires_human_review) return "建议复核";
+      if (card.status === "REJECTED_UNREADABLE") return "拒判";
+      if (Number(card.total_deduction || 0) > 0) return "有扣分";
+      return "低风险";
+    }
+
+    function riskClass(card) {
+      return (card.requires_human_review || card.status === "REJECTED_UNREADABLE" || Number(card.total_deduction || 0) > 0) ? "warn" : "ok";
+    }
+
+    function renderSummary(taskId, cards) {
+      const total = cards.length;
+      const passed = cards.filter((item) => item.is_pass).length;
+      const review = cards.filter((item) => item.requires_human_review).length;
+      const rejected = cards.filter((item) => item.status === "REJECTED_UNREADABLE").length;
+      const avgDeduction = average(cards, "total_deduction");
+      const avgConfidence = average(cards, "system_confidence");
+      $("summaryGrid").innerHTML = `
+        <div class="summary-item"><div class="k">task_id</div><div class="v">${esc(taskId || "-")}</div><div class="sub">当前班级批改任务</div></div>
+        <div class="summary-item"><div class="k">样本数</div><div class="v">${total}</div><div class="sub">已落库学生结果总数</div></div>
+        <div class="summary-item"><div class="k">通过率</div><div class="v">${ratio(passed, total)}</div><div class="sub">${passed} / ${total} 通过</div></div>
+        <div class="summary-item"><div class="k">平均扣分</div><div class="v">${avgDeduction.toFixed(2)}</div><div class="sub">按任务内所有样本平均</div></div>
+        <div class="summary-item"><div class="k">平均置信度</div><div class="v">${Math.round(avgConfidence * 100)}%</div><div class="sub">越低越值得优先复核</div></div>
+        <div class="summary-item"><div class="k">风险样本</div><div class="v">${review + rejected}</div><div class="sub">建议复核 ${review}，拒判 ${rejected}</div></div>
+      `;
+    }
+
+    function renderStudentRows(taskId, cards) {
+      const tbody = $("studentRows");
+      tbody.innerHTML = "";
+      if (!cards.length) {
+        tbody.innerHTML = '<tr><td colspan="6" class="muted">暂无数据</td></tr>';
+        return;
+      }
+      for (const card of cards) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td>${esc(card.student_id || "-")}</td>
+          <td><span class="tag info">${esc(card.status || "SCORED")}</span></td>
+          <td>${Number(card.total_deduction || 0).toFixed(2)}</td>
+          <td><span class="tag ${riskClass(card)}">${esc(riskLevel(card))}</span></td>
+          <td>${esc(topErrorType(card))}</td>
+          <td><a href="/report-view?task_id=${encodeURIComponent(taskId)}&student_id=${encodeURIComponent(card.student_id || "")}">查看报告</a></td>
+        `;
+        tbody.appendChild(tr);
+      }
+    }
+
+    function renderRiskList(taskId, cards) {
+      const riskCards = cards
+        .filter((item) => item.requires_human_review || item.status === "REJECTED_UNREADABLE" || Number(item.total_deduction || 0) > 0)
+        .sort((a, b) => Number(b.total_deduction || 0) - Number(a.total_deduction || 0))
+        .slice(0, 6);
+      const box = $("riskList");
+      box.innerHTML = "";
+      if (!riskCards.length) {
+        box.innerHTML = '<div class="muted">暂无高风险样本</div>';
+        return;
+      }
+      for (const card of riskCards) {
+        const item = document.createElement("div");
+        item.className = "risk-item";
+        item.innerHTML = `
+          <strong>${esc(card.student_id || "-")} · ${esc(riskLevel(card))}</strong>
+          <div class="muted">状态：${esc(card.status || "SCORED")}｜总扣分：${Number(card.total_deduction || 0).toFixed(2)}</div>
+          <div style="margin-top:8px;">${esc(card.overall_feedback || "")}</div>
+          <div style="margin-top:8px;"><a href="/report-view?task_id=${encodeURIComponent(taskId)}&student_id=${encodeURIComponent(card.student_id || "")}">进入单份报告</a></div>
+        `;
+        box.appendChild(item);
+      }
+    }
+
+    function renderErrorStats(cards) {
+      const counts = (window.__lastInsights && window.__lastInsights.error_type_counts) || {};
+      const entries = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+      const box = $("errorStats");
+      box.innerHTML = "";
+      if (!entries.length) {
+        box.innerHTML = '<div class="muted">当前任务没有可统计的扣分项。</div>';
+        return;
+      }
+      for (const [errorType, count] of entries) {
+        const item = document.createElement("div");
+        item.className = "stat-item";
+        item.innerHTML = `
+          <strong>${esc(errorType)}</strong>
+          <div class="muted">出现次数：${count}</div>
+        `;
+        box.appendChild(item);
+      }
+    }
+
+    function renderLectureSuggestions() {
+      const suggestions = (window.__lastInsights && window.__lastInsights.lecture_suggestions) || [];
+      const box = $("lectureSuggestions");
+      box.innerHTML = "";
+      if (!suggestions.length) {
+        box.innerHTML = '<div class="muted">暂无讲评建议。</div>';
+        return;
+      }
+      for (const item of suggestions) {
+        const node = document.createElement("div");
+        node.className = "stat-item";
+        node.innerHTML = `
+          <strong>${esc(item.title || "-")}</strong>
+          <div class="muted">${esc(item.reason || "")}</div>
+          <div style="margin-top:8px;">${esc(item.action || "")}</div>
+        `;
+        box.appendChild(node);
+      }
+    }
+
+    async function load() {
+      const taskId = $("taskId").value.trim();
+      if (!taskId) {
+        $("debug").textContent = "请先输入 task_id";
+        return;
+      }
+      const [reportResp, insightsResp] = await Promise.all([
+        fetch(`/api/v1/grade/${encodeURIComponent(taskId)}/report`),
+        fetch(`/api/v1/grade/${encodeURIComponent(taskId)}/insights`),
+      ]);
+      const data = await reportResp.json();
+      const insights = await insightsResp.json();
+      if (!reportResp.ok) {
+        $("debug").textContent = JSON.stringify(data, null, 2);
+        return;
+      }
+      const cards = data.cards || [];
+      window.__lastInsights = insightsResp.ok ? insights : { error_type_counts: {}, lecture_suggestions: [] };
+      $("debug").textContent = JSON.stringify({
+        task_id: data.task_id,
+        task_status: data.task_status,
+        cards: cards.length,
+        insights_loaded: insightsResp.ok,
+      }, null, 2);
+      renderSummary(data.task_id, cards);
+      renderStudentRows(data.task_id, cards);
+      renderRiskList(data.task_id, cards);
+      renderErrorStats(cards);
+      renderLectureSuggestions();
+    }
+
+    $("loadBtn").addEventListener("click", load);
+
+    const q = new URLSearchParams(window.location.search);
+    const qTask = q.get("task_id");
+    if (qTask) {
+      $("taskId").value = qTask;
+      load();
+    }
+  </script>
+</body>
+</html>

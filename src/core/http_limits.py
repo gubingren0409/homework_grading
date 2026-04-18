@@ -51,6 +51,7 @@ class HardBodyLimitMiddleware:
             "seen": 0,
             "aborted": False,
             "response_started": False,
+            "body_complete": False,
         }
 
         async def wrapped_send(message: Message) -> None:
@@ -64,13 +65,19 @@ class HardBodyLimitMiddleware:
             if state["aborted"]:
                 return {"type": "http.disconnect"}
 
-            try:
-                msg = await asyncio.wait_for(receive(), timeout=self.read_timeout_seconds)
-            except asyncio.TimeoutError as exc:
-                state["aborted"] = True
-                if not state["response_started"]:
-                    await self._send_error(send, 408, "request body read timeout")
-                raise RequestBodyReadTimeout("request body read timeout") from exc
+            # Only enforce read timeout while request body is still being read.
+            # After body completion, downstream may keep calling receive() only to
+            # observe disconnect events (e.g., SSE long-lived streams).
+            if state["body_complete"]:
+                msg = await receive()
+            else:
+                try:
+                    msg = await asyncio.wait_for(receive(), timeout=self.read_timeout_seconds)
+                except asyncio.TimeoutError as exc:
+                    state["aborted"] = True
+                    if not state["response_started"]:
+                        await self._send_error(send, 408, "request body read timeout")
+                    raise RequestBodyReadTimeout("request body read timeout") from exc
 
             if msg.get("type") == "http.request":
                 body = msg.get("body", b"")
@@ -80,6 +87,10 @@ class HardBodyLimitMiddleware:
                     if not state["response_started"]:
                         await self._send_error(send, 413, "payload too large")
                     return {"type": "http.disconnect"}
+                if not msg.get("more_body", False):
+                    state["body_complete"] = True
+            elif msg.get("type") == "http.disconnect":
+                state["body_complete"] = True
             return msg
 
         try:

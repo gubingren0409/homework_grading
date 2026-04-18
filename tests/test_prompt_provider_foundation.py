@@ -28,6 +28,16 @@ class FakeL2Cache:
         return len(keys)
 
 
+class BrokenL2Cache(FakeL2Cache):
+    async def get(self, key: str):
+        del key
+        raise ConnectionError("redis unavailable")
+
+    async def set(self, key: str, value, ttl_seconds: int):
+        del key, value, ttl_seconds
+        raise ConnectionError("redis unavailable")
+
+
 class FakeBus:
     def __init__(self):
         self.queue: asyncio.Queue = asyncio.Queue()
@@ -57,6 +67,18 @@ def _make_provider(prompts_dir: Path) -> PromptProviderService:
     )
 
 
+def _make_provider_with_l2(prompts_dir: Path, l2_cache) -> PromptProviderService:
+    return PromptProviderService(
+        source=FilePromptSource(prompts_dir),
+        l1_cache=InMemoryPromptCache(ttl_seconds=2, swr_seconds=1),
+        l2_cache=l2_cache,
+        invalidation_bus=FakeBus(),
+        pull_interval_seconds=1,
+        l1_ttl_seconds=2,
+        l2_ttl_seconds=10,
+    )
+
+
 def _base_req(prompt_key: str, *, vars_):
     return PromptResolveRequest(
         prompt_key=prompt_key,
@@ -65,8 +87,8 @@ def _base_req(prompt_key: str, *, vars_):
         bucket_key="bucket-1",
         locale="zh-CN",
         variables=vars_,
-        max_input_tokens=4096,
-        reserve_output_tokens=512,
+        max_input_tokens=32768,
+        reserve_output_tokens=1024,
     )
 
 
@@ -86,6 +108,32 @@ async def test_multimodal_render_builds_openai_content():
     user_content = result.messages[1]["content"]
     assert isinstance(user_content, list)
     assert any(isinstance(x, dict) and x.get("type") == "image_url" for x in user_content)
+    await provider.stop()
+
+
+@pytest.mark.asyncio
+async def test_prompt_cache_key_is_bound_to_variables():
+    provider = _make_provider(Path("configs/prompts"))
+    await provider.start()
+    req1 = _base_req(
+        "qwen.perception.extract",
+        vars_=[
+            PromptVariable(name="context_type", kind="text", value="student_homework"),
+            PromptVariable(name="image_1", kind="image_base64", value="ZmFrZV9pbWFnZV8x"),
+        ],
+    )
+    req2 = _base_req(
+        "qwen.perception.extract",
+        vars_=[
+            PromptVariable(name="context_type", kind="text", value="student_homework"),
+            PromptVariable(name="image_1", kind="image_base64", value="ZmFrZV9pbWFnZV8y"),
+        ],
+    )
+    await provider.resolve(req1)
+    await provider.resolve(req2)
+    l2_keys = list(provider._l2.data.keys())  # type: ignore[attr-defined]
+    assert len(l2_keys) >= 2
+    assert len(set(l2_keys)) == len(l2_keys)
     await provider.stop()
 
 
@@ -127,8 +175,8 @@ async def test_ab_bucket_uses_bucket_key_not_trace_id():
         bucket_key="fixed-user-1",
         locale="zh-CN",
         variables=vars_,
-        max_input_tokens=4096,
-        reserve_output_tokens=512,
+        max_input_tokens=32768,
+        reserve_output_tokens=1024,
     )
     req2 = PromptResolveRequest(
         prompt_key="deepseek.cognitive.evaluate",
@@ -137,8 +185,8 @@ async def test_ab_bucket_uses_bucket_key_not_trace_id():
         bucket_key="fixed-user-1",
         locale="zh-CN",
         variables=vars_,
-        max_input_tokens=4096,
-        reserve_output_tokens=512,
+        max_input_tokens=32768,
+        reserve_output_tokens=1024,
     )
     r1 = await provider.resolve(req1)
     r2 = await provider.resolve(req2)
@@ -188,8 +236,8 @@ async def test_forced_variant_and_lkg_mode_controls():
         bucket_key="bucket-force",
         locale="zh-CN",
         variables=vars_,
-        max_input_tokens=4096,
-        reserve_output_tokens=512,
+        max_input_tokens=32768,
+        reserve_output_tokens=1024,
     )
     result_a = await provider.resolve(req)
     provider.set_forced_variant(prompt_key="deepseek.cognitive.evaluate", variant_id="A")
@@ -199,4 +247,23 @@ async def test_forced_variant_and_lkg_mode_controls():
     result_lkg = await provider.resolve(req)
     assert result_lkg.cache_level == "LKG"
     assert result_lkg.asset_version == result_a.asset_version
+    await provider.stop()
+
+
+@pytest.mark.asyncio
+async def test_resolve_degrades_when_l2_cache_unavailable():
+    provider = _make_provider_with_l2(Path("configs/prompts"), BrokenL2Cache())
+    await provider.start()
+    req = _base_req(
+        "qwen.layout.extract",
+        vars_=[
+            PromptVariable(name="context_type", kind="text", value="STUDENT_ANSWER"),
+            PromptVariable(name="target_question_no", kind="text", value="13"),
+            PromptVariable(name="image_1", kind="image_base64", value="ZmFrZQ=="),
+        ],
+    )
+    result = await provider.resolve(req)
+    assert result.asset_version
+    assert result.variant_id
+    assert result.cache_level in {"SOURCE", "L1"}
     await provider.stop()

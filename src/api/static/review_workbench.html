@@ -1,0 +1,494 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>复核工作台</title>
+  <style>
+    :root {
+      --bg: #f4f7fb;
+      --card: #fff;
+      --line: #e4e9f4;
+      --text: #1f2937;
+      --muted: #667085;
+      --primary: #3563e9;
+      --ok: #0f9d58;
+      --warn: #b54708;
+      --err: #d92d20;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); font-family: Arial, sans-serif; }
+    a { color: var(--primary); text-decoration: none; }
+    .wrap { max-width: 1380px; margin: 0 auto; padding: 28px 18px 40px; }
+    .hero, .card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 4px 18px rgba(15, 23, 42, 0.04); }
+    .hero { padding: 22px; margin-bottom: 16px; }
+    .hero h1 { margin: 0 0 10px; }
+    .lead { margin: 0; color: #475467; line-height: 1.65; }
+    .hero-links { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
+    .link-chip { display: inline-flex; align-items: center; padding: 8px 12px; border: 1px solid #d7def0; border-radius: 999px; background: #f8fbff; font-size: 13px; }
+    .card { padding: 18px; margin-bottom: 16px; }
+    .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin: 10px 0; }
+    .row > label { min-width: 80px; color: #475467; font-size: 14px; }
+    input[type="text"], select, textarea, input[type="number"] {
+      width: min(100%, 320px);
+      padding: 10px 12px;
+      border: 1px solid #cfd7e6;
+      border-radius: 10px;
+      background: #fff;
+      font: inherit;
+    }
+    textarea { width: 100%; min-height: 110px; resize: vertical; }
+    button { padding: 10px 14px; border: 0; border-radius: 10px; cursor: pointer; background: var(--primary); color: #fff; font-weight: 700; }
+    button.secondary { background: #667085; }
+    button.ghost { background: #eef3ff; color: var(--primary); }
+    .summary-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+    .summary-item { border: 1px solid #e8edf7; border-radius: 14px; background: #fbfdff; padding: 14px; }
+    .summary-item .k { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+    .summary-item .v { font-size: 24px; font-weight: 700; line-height: 1.2; }
+    .summary-item .sub { margin-top: 6px; font-size: 12px; color: var(--muted); }
+    .layout { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr) minmax(460px, 1.25fr); }
+    .stack { display: grid; gap: 16px; }
+    .table-wrap { overflow-x: auto; border: 1px solid #e8edf7; border-radius: 12px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { padding: 10px; border-bottom: 1px solid #eef2f7; text-align: left; vertical-align: top; }
+    th { background: #f8fafc; color: #475467; }
+    tr:last-child td { border-bottom: 0; }
+    .tag { display: inline-block; padding: 3px 8px; border-radius: 999px; font-size: 12px; font-weight: 700; }
+    .tag.ok { background: #e8f7ee; color: var(--ok); }
+    .tag.warn { background: #fffaeb; color: var(--warn); }
+    .tag.err { background: #fff1f3; color: var(--err); }
+    .tag.info { background: #eef2ff; color: var(--primary); }
+    .task-item, .sample-item, .asset-item, .deduction-item, .evidence-item, .decision-item {
+      border: 1px solid #e8edf7; border-radius: 12px; padding: 12px; background: #fbfdff;
+    }
+    .task-item.active, .sample-item.active { border-color: var(--primary); background: #f8fbff; }
+    .task-list, .sample-list, .asset-list, .deduction-list, .evidence-list, .decision-list { display: grid; gap: 10px; }
+    .notice { border-radius: 12px; padding: 12px 14px; font-size: 13px; line-height: 1.6; }
+    .notice.info { background: #eff6ff; border: 1px solid #dbeafe; color: #1d4ed8; }
+    .notice.warn { background: #fffaeb; border: 1px solid #f5e6ae; color: var(--warn); }
+    .mono { white-space: pre-wrap; font-size: 13px; background: #f8fafc; border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
+    .muted { color: var(--muted); font-size: 12px; }
+    details { margin-top: 10px; }
+    summary { cursor: pointer; color: #344054; font-weight: 700; }
+    @media (max-width: 1080px) { .layout { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <section class="hero">
+      <h1>复核工作台</h1>
+      <p class="lead">优先把最值得老师看的样本提到前面：先看待复核队列，再进入单个任务的风险样本，最后提交教师判定并在确认后把任务标记为“已复核”。</p>
+      <div class="hero-links">
+        <a class="link-chip" href="/class-dashboard">班级结果看板</a>
+        <a class="link-chip" href="/report-view">报告展示页</a>
+        <a class="link-chip" href="/task-progress">任务进度页</a>
+        <a class="link-chip" href="/student-console">任务创建向导</a>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="row">
+        <label>grading_status</label>
+        <select id="statusFilter">
+          <option value="">全部</option>
+          <option value="REJECTED_UNREADABLE">REJECTED_UNREADABLE</option>
+          <option value="SCORED">SCORED</option>
+        </select>
+        <label>优先级</label>
+        <select id="bucketFilter">
+          <option value="">全部</option>
+          <option value="UNREADABLE">UNREADABLE</option>
+          <option value="HUMAN_REVIEW">HUMAN_REVIEW</option>
+          <option value="LOW_CONFIDENCE">LOW_CONFIDENCE</option>
+          <option value="WEAK_EVIDENCE">WEAK_EVIDENCE</option>
+          <option value="GENERAL">GENERAL</option>
+        </select>
+        <label>task_id</label>
+        <input id="taskIdFilter" type="text" placeholder="可选，定位单个任务" />
+        <button id="loadQueueBtn">刷新队列</button>
+      </div>
+      <div id="queueDebug" class="mono">等待加载待复核队列。</div>
+    </section>
+
+    <section class="card">
+      <div class="summary-grid" id="queueSummary"></div>
+    </section>
+
+    <section class="layout">
+      <div class="stack">
+        <section class="card">
+          <h2 style="margin:0 0 10px;">待复核优先队列</h2>
+          <div id="taskQueue" class="task-list">
+            <div class="muted">暂无队列数据</div>
+          </div>
+        </section>
+
+        <section class="card">
+          <h2 style="margin:0 0 10px;">任务内风险样本</h2>
+          <div id="sampleList" class="sample-list">
+            <div class="muted">请先从左侧选择一个任务。</div>
+          </div>
+        </section>
+
+        <section class="card">
+          <h2 style="margin:0 0 10px;">已有标注资产</h2>
+          <div class="notice warn">当前系统的黄金标注资产与教师复核决策是两条独立数据层：本页的“纳入数据资产”只是候选标记，不会自动替代已有 annotation asset 采集流程。</div>
+          <div id="assetList" class="asset-list" style="margin-top:12px;">
+            <div class="muted">选择任务后显示已有资产。</div>
+          </div>
+        </section>
+      </div>
+
+      <div class="stack">
+        <section class="card">
+          <h2 style="margin:0 0 10px;">单份复核详情</h2>
+          <div id="taskMeta" class="mono">请选择待复核任务。</div>
+          <div id="sampleDetail" style="margin-top:12px;">
+            <div class="muted">请选择风险样本查看机器结论和证据。</div>
+          </div>
+        </section>
+
+        <section class="card">
+          <h2 style="margin:0 0 10px;">教师复核操作</h2>
+          <div class="row">
+            <label>decision</label>
+            <select id="decision">
+              <option value="CONFIRM_MACHINE">CONFIRM_MACHINE</option>
+              <option value="ADJUST_SCORE">ADJUST_SCORE</option>
+              <option value="MARK_UNREADABLE">MARK_UNREADABLE</option>
+              <option value="ESCALATE">ESCALATE</option>
+            </select>
+            <label>final_score</label>
+            <input id="finalScore" type="number" step="0.1" placeholder="可选" />
+          </div>
+          <div class="row">
+            <label style="min-width: 0;"><input id="includeInDataset" type="checkbox" /> 标记为数据资产候选</label>
+          </div>
+          <div class="row"><label>teacher_comment</label></div>
+          <textarea id="teacherComment" placeholder="记录老师的最终判断、改判理由或后续处理意见"></textarea>
+          <div class="row">
+            <button id="saveDecisionBtn">保存复核结论</button>
+            <button id="markReviewedBtn" class="secondary">标记任务已复核</button>
+            <button id="reopenTaskBtn" class="ghost">重新打开为待复核</button>
+          </div>
+          <div id="decisionResult" class="mono">尚未提交教师复核结论。</div>
+          <div class="notice info" style="margin-top:12px;">如果当前任务包含多个风险样本，建议先逐个保存复核结论，再点击“标记任务已复核”。</div>
+        </section>
+
+        <section class="card">
+          <h2 style="margin:0 0 10px;">历史教师结论</h2>
+          <div id="decisionHistory" class="decision-list">
+            <div class="muted">选择任务后显示历史结论。</div>
+          </div>
+        </section>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    let currentTask = null;
+    let currentSample = null;
+    let queueItems = [];
+
+    function esc(v) {
+      return String(v ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    }
+
+    async function fetchJson(url, options) {
+      const resp = await fetch(url, options);
+      const text = await resp.text();
+      try {
+        return { ok: resp.ok, data: JSON.parse(text) };
+      } catch {
+        return { ok: resp.ok, data: text };
+      }
+    }
+
+    function ratioText(value) {
+      const n = Number(value);
+      if (!Number.isFinite(n)) return "-";
+      return `${Math.round(Math.max(0, Math.min(1, n)) * 100)}%`;
+    }
+
+    function formatQueueSummary(summary) {
+      const safe = summary || {};
+      $("queueSummary").innerHTML = `
+        <div class="summary-item"><div class="k">待复核任务</div><div class="v">${safe.pending_task_count || 0}</div><div class="sub">当前待老师处理的任务数</div></div>
+        <div class="summary-item"><div class="k">机器拒判</div><div class="v">${safe.unreadable_task_count || 0}</div><div class="sub">优先接管的不可读任务</div></div>
+        <div class="summary-item"><div class="k">模型主动请求复核</div><div class="v">${safe.human_review_task_count || 0}</div><div class="sub">` + `${safe.review_target_count || 0} 个风险样本待看` + `</div></div>
+        <div class="summary-item"><div class="k">低置信度</div><div class="v">${safe.low_confidence_task_count || 0}</div><div class="sub">建议优先抽检</div></div>
+        <div class="summary-item"><div class="k">证据偏弱</div><div class="v">${safe.weak_evidence_task_count || 0}</div><div class="sub">高扣分但证据不足</div></div>
+      `;
+    }
+
+    function renderTaskQueue(items) {
+      const box = $("taskQueue");
+      box.innerHTML = "";
+      if (!items.length) {
+        box.innerHTML = '<div class="muted">当前没有待复核任务。</div>';
+        return;
+      }
+      for (const item of items) {
+        const node = document.createElement("button");
+        node.type = "button";
+        node.className = `task-item${currentTask && currentTask.task_id === item.task_id ? " active" : ""}`;
+        node.innerHTML = `
+          <div style="display:flex;justify-content:space-between;gap:10px;align-items:center;">
+            <strong>${esc(item.task_id)}</strong>
+            <span class="tag ${item.priority_bucket === "UNREADABLE" ? "err" : "warn"}">${esc(item.priority_bucket)}</span>
+          </div>
+          <div class="muted" style="margin-top:8px;">${esc(item.risk_reason || "-")}</div>
+          <div class="muted" style="margin-top:8px;">提交 ${item.submitted_count || 0}｜结果 ${item.result_count || 0}｜风险样本 ${item.review_target_count || 0}｜已处理 ${item.reviewed_decision_count || 0}</div>
+          <div class="muted" style="margin-top:6px;">更新时间：${esc(item.updated_at || "-")}</div>
+        `;
+        node.addEventListener("click", () => loadTask(item.task_id));
+        box.appendChild(node);
+      }
+    }
+
+    function renderSamples(samples) {
+      const box = $("sampleList");
+      box.innerHTML = "";
+      if (!samples.length) {
+        box.innerHTML = '<div class="muted">该任务暂无可展示样本。</div>';
+        return;
+      }
+      for (const item of samples) {
+        const node = document.createElement("button");
+        node.type = "button";
+        node.className = `sample-item${currentSample && currentSample.sample_id === item.sample_id ? " active" : ""}`;
+        node.innerHTML = `
+          <div style="display:flex;justify-content:space-between;gap:10px;align-items:center;">
+            <strong>${esc(item.student_id || item.sample_id)}</strong>
+            <span class="tag ${item.priority_bucket === "UNREADABLE" ? "err" : "warn"}">${esc(item.priority_bucket)}</span>
+          </div>
+          <div class="muted" style="margin-top:8px;">${esc(item.review_reason || "-")}</div>
+          <div class="muted" style="margin-top:8px;">扣分 ${Number(item.total_deduction || 0).toFixed(2)}｜置信度 ${ratioText(item.system_confidence)}｜${item.requires_human_review ? "机器建议复核" : "未主动请求复核"}</div>
+        `;
+        node.addEventListener("click", () => selectSample(item.sample_id));
+        box.appendChild(node);
+      }
+    }
+
+    function renderAssets(items) {
+      const box = $("assetList");
+      box.innerHTML = "";
+      if (!items.length) {
+        box.innerHTML = '<div class="muted">该任务暂无已有 annotation asset。</div>';
+        return;
+      }
+      for (const item of items) {
+        const node = document.createElement("div");
+        node.className = "asset-item";
+        node.innerHTML = `
+          <strong>${esc(item.region_id)} · ${esc(item.region_type)}</strong>
+          <div class="muted">expected_score：${Number(item.expected_score || 0).toFixed(2)}｜integrated：${item.is_integrated_to_dataset ? "是" : "否"}</div>
+        `;
+        box.appendChild(node);
+      }
+    }
+
+    function renderDecisionHistory(samples) {
+      const box = $("decisionHistory");
+      box.innerHTML = "";
+      const decisions = samples.filter((item) => item.teacher_decision);
+      if (!decisions.length) {
+        box.innerHTML = '<div class="muted">当前任务还没有保存过教师复核结论。</div>';
+        return;
+      }
+      for (const item of decisions) {
+        const decision = item.teacher_decision;
+        const node = document.createElement("div");
+        node.className = "decision-item";
+        node.innerHTML = `
+          <strong>${esc(item.student_id || item.sample_id)} · ${esc(decision.decision)}</strong>
+          <div class="muted">final_score：${decision.final_score == null ? "-" : Number(decision.final_score).toFixed(2)}｜include_in_dataset：${decision.include_in_dataset ? "是" : "否"}</div>
+          <div style="margin-top:8px;">${esc(decision.teacher_comment || "")}</div>
+        `;
+        box.appendChild(node);
+      }
+    }
+
+    function renderSampleDetail(sample) {
+      const box = $("sampleDetail");
+      if (!sample) {
+        box.innerHTML = '<div class="muted">请选择风险样本查看详情。</div>';
+        return;
+      }
+      const deductions = Array.isArray(sample.deductions) ? sample.deductions : [];
+      const evidences = Array.isArray(sample.evidence_snippets) ? sample.evidence_snippets : [];
+      const suggestions = Array.isArray(sample.suggestions) ? sample.suggestions : [];
+      const deductionHtml = deductions.length
+        ? deductions.map((item, index) => `
+            <div class="deduction-item">
+              <strong>扣分点 ${index + 1} · ${esc(item.error_type || "UNKNOWN")}</strong>
+              <div class="muted">reference_element_id：${esc(item.reference_element_id || "-")}</div>
+              <div style="margin-top:8px;">${esc(item.suggestion || "暂无修正建议")}</div>
+              <div class="muted" style="margin-top:8px;">证据：${esc(item.evidence_snippet || "-")}</div>
+            </div>
+          `).join("")
+        : '<div class="deduction-item">当前样本没有结构化扣分点。</div>';
+      const evidenceHtml = evidences.length
+        ? evidences.map((item) => `<div class="evidence-item">${esc(item)}</div>`).join("")
+        : '<div class="evidence-item">当前没有额外证据片段。</div>';
+      const suggestionHtml = suggestions.length
+        ? suggestions.map((item) => `<div class="evidence-item">${esc(item)}</div>`).join("")
+        : '<div class="evidence-item">当前没有额外机器建议。</div>';
+      box.innerHTML = `
+        <div class="summary-grid">
+          <div class="summary-item"><div class="k">样本</div><div class="v">${esc(sample.student_id || sample.sample_id)}</div><div class="sub">sample_id：${esc(sample.sample_id)}</div></div>
+          <div class="summary-item"><div class="k">机器状态</div><div class="v">${esc(sample.status || "-")}</div><div class="sub">${esc(sample.review_reason || "")}</div></div>
+          <div class="summary-item"><div class="k">总扣分</div><div class="v">${Number(sample.total_deduction || 0).toFixed(2)}</div><div class="sub">置信度 ${ratioText(sample.system_confidence)}</div></div>
+        </div>
+        <div class="notice info" style="margin-top:12px;">${esc(sample.overall_feedback || "")}</div>
+        <div style="margin-top:12px;"><strong>扣分点列表</strong></div>
+        <div class="deduction-list" style="margin-top:8px;">${deductionHtml}</div>
+        <div style="margin-top:12px;"><strong>证据片段</strong></div>
+        <div class="evidence-list" style="margin-top:8px;">${evidenceHtml}</div>
+        <div style="margin-top:12px;"><strong>机器建议</strong></div>
+        <div class="evidence-list" style="margin-top:8px;">${suggestionHtml}</div>
+        <details>
+          <summary>查看感知快照</summary>
+          <div class="mono">${esc(JSON.stringify(sample.perception_snapshot || {}, null, 2))}</div>
+        </details>
+        <details>
+          <summary>查看认知快照</summary>
+          <div class="mono">${esc(JSON.stringify(sample.cognitive_snapshot || {}, null, 2))}</div>
+        </details>
+      `;
+
+      const decision = sample.teacher_decision;
+      $("decision").value = decision ? decision.decision : "CONFIRM_MACHINE";
+      $("finalScore").value = decision && decision.final_score != null ? String(decision.final_score) : "";
+      $("teacherComment").value = decision ? decision.teacher_comment : "";
+      $("includeInDataset").checked = Boolean(decision && decision.include_in_dataset);
+      $("decisionResult").textContent = decision
+        ? JSON.stringify(decision, null, 2)
+        : "当前样本尚未保存教师复核结论。";
+    }
+
+    function selectSample(sampleId) {
+      if (!currentTask) return;
+      currentSample = (currentTask.samples || []).find((item) => item.sample_id === sampleId) || null;
+      renderSamples(currentTask.samples || []);
+      renderSampleDetail(currentSample);
+    }
+
+    async function loadAssets(taskId) {
+      const { ok, data } = await fetchJson(`/api/v1/review/annotation-assets?task_id=${encodeURIComponent(taskId)}&page=1&limit=50`);
+      if (!ok) {
+        $("assetList").innerHTML = `<div class="muted">${esc(typeof data === "string" ? data : JSON.stringify(data))}</div>`;
+        return;
+      }
+      renderAssets((data && data.items) || []);
+    }
+
+    async function loadTask(taskId) {
+      const { ok, data } = await fetchJson(`/api/v1/review/workbench/${encodeURIComponent(taskId)}`);
+      if (!ok) {
+        $("taskMeta").textContent = typeof data === "string" ? data : JSON.stringify(data, null, 2);
+        return;
+      }
+      currentTask = data;
+      currentSample = null;
+      $("taskIdFilter").value = taskId;
+      $("taskMeta").textContent = JSON.stringify({
+        task_id: data.task_id,
+        task_status: data.task_status,
+        review_status: data.review_status,
+        risk_summary: data.risk_summary,
+      }, null, 2);
+      renderTaskQueue(queueItems);
+      renderSamples(data.samples || []);
+      renderDecisionHistory(data.samples || []);
+      const firstSample = (data.samples || [])[0];
+      if (firstSample) {
+        selectSample(firstSample.sample_id);
+      } else {
+        renderSampleDetail(null);
+      }
+      await loadAssets(taskId);
+    }
+
+    async function loadQueue() {
+      const params = new URLSearchParams({ page: "1", limit: "50", sort_by: "priority", sort_direction: "desc" });
+      if ($("statusFilter").value) params.set("status", $("statusFilter").value);
+      if ($("bucketFilter").value) params.set("priority_bucket", $("bucketFilter").value);
+      if ($("taskIdFilter").value.trim()) params.set("task_id", $("taskIdFilter").value.trim());
+      const { ok, data } = await fetchJson(`/api/v1/review/pending-workbench?${params.toString()}`);
+      if (!ok) {
+        $("queueDebug").textContent = typeof data === "string" ? data : JSON.stringify(data, null, 2);
+        return;
+      }
+      queueItems = data.items || [];
+      $("queueDebug").textContent = JSON.stringify({ count: queueItems.length, summary: data.summary || {} }, null, 2);
+      formatQueueSummary(data.summary || {});
+      renderTaskQueue(queueItems);
+      if (queueItems.length) {
+        await loadTask(queueItems[0].task_id);
+      } else {
+        currentTask = null;
+        currentSample = null;
+        renderSamples([]);
+        renderSampleDetail(null);
+        renderAssets([]);
+        renderDecisionHistory([]);
+      }
+    }
+
+    async function saveDecision() {
+      if (!currentTask || !currentSample) {
+        $("decisionResult").textContent = "请先选择待复核样本。";
+        return;
+      }
+      const payload = {
+        task_id: currentTask.task_id,
+        sample_id: currentSample.sample_id,
+        student_id: currentSample.student_id,
+        decision: $("decision").value,
+        final_score: $("finalScore").value === "" ? null : Number($("finalScore").value),
+        teacher_comment: $("teacherComment").value.trim(),
+        include_in_dataset: $("includeInDataset").checked,
+      };
+      const { ok, data } = await fetchJson("/api/v1/review/decisions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      $("decisionResult").textContent = typeof data === "string" ? data : JSON.stringify(data, null, 2);
+      if (ok) {
+        await loadTask(currentTask.task_id);
+      }
+    }
+
+    async function updateTaskReviewStatus(reviewStatus) {
+      if (!currentTask) {
+        $("decisionResult").textContent = "请先选择待复核任务。";
+        return;
+      }
+      const { ok, data } = await fetchJson(`/api/v1/review/tasks/${encodeURIComponent(currentTask.task_id)}/status`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ review_status: reviewStatus }),
+      });
+      $("decisionResult").textContent = typeof data === "string" ? data : JSON.stringify(data, null, 2);
+      if (ok) {
+        await loadQueue();
+      }
+    }
+
+    $("loadQueueBtn").addEventListener("click", loadQueue);
+    $("saveDecisionBtn").addEventListener("click", saveDecision);
+    $("markReviewedBtn").addEventListener("click", () => updateTaskReviewStatus("REVIEWED"));
+    $("reopenTaskBtn").addEventListener("click", () => updateTaskReviewStatus("PENDING_REVIEW"));
+
+    const q = new URLSearchParams(window.location.search);
+    const qTaskId = q.get("task_id");
+    if (qTaskId) {
+      $("taskIdFilter").value = qTaskId;
+    }
+    loadQueue();
+  </script>
+</body>
+</html>

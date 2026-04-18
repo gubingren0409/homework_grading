@@ -19,6 +19,16 @@ jobs:
   run-phasec-matrix:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    services:
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
     steps:
@@ -38,6 +48,10 @@ jobs:
       - name: Run phase C regression matrix
         run: |
           python scripts/run_phasec_regression_matrix.py --rounds 3 --port 18082
+
+      - name: Run Redis-dependent DLQ tests
+        run: |
+          python -m pytest tests/test_phase33_dlq_validation.py -q
 
       - name: Upload matrix report
         if: always()

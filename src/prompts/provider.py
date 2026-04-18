@@ -16,6 +16,7 @@ from src.prompts.schemas import (
     PromptLKGSnapshot,
     PromptResolveRequest,
     PromptResolveResult,
+    PromptVariable,
     RefreshReport,
 )
 from src.prompts.source_file import FilePromptSource
@@ -118,7 +119,11 @@ class PromptProviderService:
                 selected_variant = forced_variant
             else:
                 selected_variant = self._choose_variant_with_ab(req=req, variants=variant_ids)
-            cache_key = f"{req.prompt_key}:{asset.meta.version_hash}:{selected_variant}:{req.model}"
+            variables_fingerprint = self._variables_fingerprint(req.variables)
+            cache_key = (
+                f"{req.prompt_key}:{asset.meta.version_hash}:{selected_variant}:{req.model}:"
+                f"{variables_fingerprint}"
+            )
 
             cached, state = await self._l1.get_state(cache_key)
             if cached is not None and state == "fresh":
@@ -128,7 +133,11 @@ class PromptProviderService:
                 asyncio.create_task(self._refresh_cache_key(req, asset.meta.version_hash, selected_variant))
                 return self._with_cache_level(cached, "L1")
 
-            l2_value = await self._l2.get(cache_key)
+            try:
+                l2_value = await self._l2.get(cache_key)
+            except Exception as exc:
+                logger.warning(f"prompt l2 get failed, bypassing to source build: {exc}")
+                l2_value = None
             if l2_value is not None:
                 await self._l1.set(cache_key, self._with_cache_level(l2_value, "L1"), ttl_seconds=self._l1_ttl_seconds)
                 return self._with_cache_level(l2_value, "L2")
@@ -141,7 +150,10 @@ class PromptProviderService:
                     return self._with_cache_level(cached2, "L1")
 
                 resolved = await self._build_from_source(req, selected_variant)
-                await self._l2.set(cache_key, resolved, ttl_seconds=self._l2_ttl_seconds)
+                try:
+                    await self._l2.set(cache_key, resolved, ttl_seconds=self._l2_ttl_seconds)
+                except Exception as exc:
+                    logger.warning(f"prompt l2 set failed, keeping l1/source path only: {exc}")
                 await self._l1.set(cache_key, self._with_cache_level(resolved, "L1"), ttl_seconds=self._l1_ttl_seconds)
                 self._lkg[req.prompt_key] = PromptLKGSnapshot(
                     prompt_key=req.prompt_key,
@@ -274,11 +286,15 @@ class PromptProviderService:
         version_hash: str,
         variant_id: str,
     ) -> None:
-        cache_key = f"{req.prompt_key}:{version_hash}:{variant_id}:{req.model}"
+        variables_fingerprint = self._variables_fingerprint(req.variables)
+        cache_key = f"{req.prompt_key}:{version_hash}:{variant_id}:{req.model}:{variables_fingerprint}"
         lock = await self._get_key_lock(cache_key)
         async with lock:
             value = await self._build_from_source(req, variant_id)
-            await self._l2.set(cache_key, value, ttl_seconds=self._l2_ttl_seconds)
+            try:
+                await self._l2.set(cache_key, value, ttl_seconds=self._l2_ttl_seconds)
+            except Exception as exc:
+                logger.warning(f"prompt l2 set failed during background refresh: {exc}")
             await self._l1.set(cache_key, self._with_cache_level(value, "L1"), ttl_seconds=self._l1_ttl_seconds)
 
     async def _build_from_source(self, req: PromptResolveRequest, variant_id: str) -> PromptResolveResult:
@@ -331,6 +347,23 @@ class PromptProviderService:
                 lock = asyncio.Lock()
                 self._singleflight[cache_key] = lock
             return lock
+
+    @staticmethod
+    def _variables_fingerprint(variables: Sequence[PromptVariable]) -> str:
+        """
+        Build a stable digest for prompt variables so cache entries are bound to
+        the exact input payload (including image_base64 values).
+        """
+        hasher = hashlib.sha256()
+        for item in variables:
+            hasher.update(str(item.name).encode("utf-8"))
+            hasher.update(b"\x00")
+            hasher.update(str(item.kind).encode("utf-8"))
+            hasher.update(b"\x00")
+            value_hash = hashlib.sha256(str(item.value).encode("utf-8")).hexdigest()
+            hasher.update(value_hash.encode("ascii"))
+            hasher.update(b"\x00")
+        return hasher.hexdigest()
 
     def _choose_variant_with_ab(self, *, req: PromptResolveRequest, variants: Sequence[str]) -> str:
         cfg = self.get_ab_config(prompt_key=req.prompt_key)

@@ -94,6 +94,28 @@ class DeepSeekCognitiveEngine(BaseCognitiveAgent):
         cleaned = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
         return cleaned
 
+    def _repair_invalid_json_escapes(self, text: str) -> str:
+        """
+        Repair common LLM JSON issues where LaTeX-like backslashes are emitted
+        as invalid JSON escapes (e.g. "\\(" or "\\)").
+        """
+        # Match a single backslash that is not already escaped and does not
+        # start a valid JSON escape sequence.
+        return re.sub(r'(?<!\\)\\(?!["\\/bfnrtu\\\\])', r"\\\\", text)
+
+    def _parse_json_object(self, text: str) -> dict:
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError as exc:
+            repaired = self._repair_invalid_json_escapes(text)
+            if repaired == text:
+                raise
+            parsed = json.loads(repaired)
+            logger.warning("rubric_json_escape_repaired: %s", exc)
+        if not isinstance(parsed, dict):
+            raise ValueError("top-level JSON payload must be an object")
+        return parsed
+
     def get_last_runtime_telemetry(self) -> dict[str, Any] | None:
         if self._last_runtime_telemetry is None:
             return None
@@ -105,6 +127,8 @@ class DeepSeekCognitiveEngine(BaseCognitiveAgent):
         rubric: TeacherRubric | None = None
     ) -> EvaluationReport:
         """Evaluate student work with configurable stream strategy and deterministic fallback."""
+        if not settings.llm_egress_enabled:
+            raise GradingSystemError("LLM egress disabled by configuration (LLM_EGRESS_ENABLED=false)")
         ir_json_input = perception_data.model_dump_json()
         target_schema = json.dumps(EvaluationReport.model_json_schema(), indent=2)
         rubric_json = rubric.model_dump_json() if rubric is not None else ""
@@ -122,8 +146,8 @@ class DeepSeekCognitiveEngine(BaseCognitiveAgent):
                     PromptVariable(name="target_json_schema", kind="text", value=target_schema),
                     PromptVariable(name="rubric_json", kind="text", value=rubric_json),
                 ],
-                max_input_tokens=8192,
-                reserve_output_tokens=1536,
+                max_input_tokens=settings.prompt_max_input_tokens,
+                reserve_output_tokens=settings.prompt_reserve_output_tokens,
             )
         )
         token_estimate = int(prompt_bundle.token_estimate)
@@ -229,7 +253,7 @@ class DeepSeekCognitiveEngine(BaseCognitiveAgent):
                 if not cleaned_json:
                     raise json.JSONDecodeError("No JSON payload extracted from model response.", full_raw_text, 0)
 
-                parsed_data = json.loads(cleaned_json)
+                parsed_data = self._parse_json_object(cleaned_json)
                 if "evaluation_report" in parsed_data and isinstance(parsed_data["evaluation_report"], dict):
                     parsed_data = parsed_data["evaluation_report"]
                 elif len(parsed_data) == 1 and isinstance(list(parsed_data.values())[0], dict):
@@ -417,6 +441,8 @@ class DeepSeekCognitiveEngine(BaseCognitiveAgent):
 
     async def generate_rubric(self, perception_data: PerceptionOutput) -> TeacherRubric:
         """Generates a structured TeacherRubric using DeepSeek Reasoner with Round-Robin pooling."""
+        if not settings.llm_egress_enabled:
+            raise GradingSystemError("LLM egress disabled by configuration (LLM_EGRESS_ENABLED=false)")
         # Use existing key pool to get a client
         key_meta = self._key_pool.get_key_metadata()
         current_key = key_meta["key"]
@@ -437,8 +463,8 @@ class DeepSeekCognitiveEngine(BaseCognitiveAgent):
                     PromptVariable(name="perception_ir_json", kind="text", value=ir_json_input),
                     PromptVariable(name="target_json_schema", kind="text", value=target_schema),
                 ],
-                max_input_tokens=8192,
-                reserve_output_tokens=1536,
+                max_input_tokens=settings.prompt_max_input_tokens,
+                reserve_output_tokens=settings.prompt_reserve_output_tokens,
             )
         )
         
@@ -464,7 +490,7 @@ class DeepSeekCognitiveEngine(BaseCognitiveAgent):
             cleaned_json = self._extract_json_content(raw_content)
             
             try:
-                parsed_data = json.loads(cleaned_json)
+                parsed_data = self._parse_json_object(cleaned_json)
                 if "teacher_rubric" in parsed_data and isinstance(parsed_data["teacher_rubric"], dict):
                     parsed_data = parsed_data["teacher_rubric"]
                 elif len(parsed_data) == 1 and isinstance(list(parsed_data.values())[0], dict):

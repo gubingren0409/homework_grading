@@ -11,6 +11,23 @@ from src.skills.interfaces import ValidationExecutionSkill, ValidationInput, Val
 logger = logging.getLogger(__name__)
 
 
+def _map_validation_http_error(exc: requests.RequestException) -> str:
+    if isinstance(exc, requests.Timeout):
+        return "SKILL_VALIDATION_TIMEOUT"
+    if isinstance(exc, requests.ConnectionError):
+        return "SKILL_VALIDATION_UNAVAILABLE"
+    if isinstance(exc, requests.HTTPError):
+        status_code = exc.response.status_code if exc.response is not None else None
+        if status_code in {401, 403}:
+            return "SKILL_VALIDATION_UNAUTHORIZED"
+        if status_code == 429:
+            return "SKILL_VALIDATION_RATE_LIMITED"
+        if status_code is not None and status_code >= 500:
+            return "SKILL_VALIDATION_UPSTREAM_ERROR"
+        return "SKILL_VALIDATION_BAD_REQUEST"
+    return "SKILL_VALIDATION_REQUEST_FAILED"
+
+
 class HttpValidationExecutionSkill(ValidationExecutionSkill):
     """
     Generic HTTP adapter for objective validation services (e.g., E2B sandbox gateway).
@@ -56,9 +73,9 @@ class HttpValidationExecutionSkill(ValidationExecutionSkill):
             resp.raise_for_status()
             data = resp.json()
         except requests.RequestException as exc:
-            raise RuntimeError(f"validation skill request failed: {exc}") from exc
+            raise RuntimeError(_map_validation_http_error(exc)) from exc
         except ValueError as exc:
-            raise RuntimeError(f"validation skill response is not valid JSON: {exc}") from exc
+            raise RuntimeError("SKILL_VALIDATION_INVALID_RESPONSE") from exc
 
         status = str(data.get("status") or "error")
         if status not in {"ok", "mismatch", "error"}:

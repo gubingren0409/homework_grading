@@ -1,24 +1,17 @@
-import asyncio
 import json
 import logging
 import os
-import random
 import sqlite3
 import uuid
-from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, AsyncIterator, Dict, List, Mapping, Optional, Sequence
+from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 import aiosqlite
+from src.db.core_utils import _execute_write_with_retry, _open_connection
+from src.db.json_utils import _to_json_compatible, _to_json_string
 
 
 logger = logging.getLogger(__name__)
-
-# 写操作锁重试参数：指数退避 + 轻微抖动，缓解高并发 "database is locked"。
-_WRITE_LOCK_MAX_RETRIES: int = 6
-_WRITE_BACKOFF_BASE_SECONDS: float = 0.05
-_WRITE_BACKOFF_MAX_SECONDS: float = 1.0
-_SQLITE_BUSY_TIMEOUT_MS: int = 5000
 
 _STATUS_WEIGHTS: Dict[str, int] = {
     "PENDING": 0,
@@ -26,100 +19,6 @@ _STATUS_WEIGHTS: Dict[str, int] = {
     "COMPLETED": 2,
     "FAILED": 3,
 }
-
-
-async def _apply_connection_pragmas(db: aiosqlite.Connection) -> None:
-    """
-    对每个连接强制注入并发相关 PRAGMA，避免仅初始化连接生效导致的行为漂移。
-    """
-    await db.execute("PRAGMA journal_mode=WAL;")
-    await db.execute("PRAGMA synchronous=NORMAL;")
-    await db.execute(f"PRAGMA busy_timeout={_SQLITE_BUSY_TIMEOUT_MS};")
-
-
-@asynccontextmanager
-async def _open_connection(db_path: str) -> AsyncIterator[aiosqlite.Connection]:
-    """
-    统一数据库连接入口：确保所有读写连接都带上并发参数。
-    """
-    db = await aiosqlite.connect(db_path)
-    try:
-        await _apply_connection_pragmas(db)
-        yield db
-    finally:
-        await db.close()
-
-
-def _is_lock_error(exc: BaseException) -> bool:
-    """
-    判定 SQLite 是否因写锁冲突失败。
-    """
-    message = str(exc).lower()
-    return "database is locked" in message or "database table is locked" in message
-
-
-def _to_json_compatible(payload: Any) -> Any:
-    """
-    将 Pydantic 对象/字典/字符串统一转为 JSON 可序列化结构。
-    """
-    if payload is None:
-        return None
-
-    if isinstance(payload, str):
-        try:
-            return json.loads(payload)
-        except json.JSONDecodeError:
-            return payload
-
-    model_dump = getattr(payload, "model_dump", None)
-    if callable(model_dump):
-        return model_dump()
-
-    if isinstance(payload, (dict, list, int, float, bool)):
-        return payload
-
-    raise TypeError(f"Unsupported payload type for JSON serialization: {type(payload)!r}")
-
-
-def _to_json_string(payload: Any) -> str:
-    """
-    将输入稳定序列化为 JSON 字符串（保留中文）。
-    """
-    if isinstance(payload, str):
-        try:
-            json.loads(payload)
-            return payload
-        except json.JSONDecodeError:
-            return json.dumps(payload, ensure_ascii=False)
-
-    normalized = _to_json_compatible(payload)
-    return json.dumps(normalized, ensure_ascii=False)
-
-
-async def _execute_write_with_retry(
-    db_path: str,
-    write_operation: Any,
-) -> None:
-    """
-    为 INSERT / UPDATE 等写操作提供锁冲突重试。
-    - write_operation 需是 async callable，签名为 (db) -> awaitable
-    """
-    for attempt in range(1, _WRITE_LOCK_MAX_RETRIES + 1):
-        try:
-            async with _open_connection(db_path) as db:
-                await write_operation(db)
-                await db.commit()
-                return
-        except (aiosqlite.OperationalError, sqlite3.OperationalError) as exc:
-            if not _is_lock_error(exc) or attempt == _WRITE_LOCK_MAX_RETRIES:
-                raise
-
-            backoff = min(
-                _WRITE_BACKOFF_BASE_SECONDS * (2 ** (attempt - 1)),
-                _WRITE_BACKOFF_MAX_SECONDS,
-            )
-            jitter = random.uniform(0.0, _WRITE_BACKOFF_BASE_SECONDS)
-            await asyncio.sleep(backoff + jitter)
 
 
 async def init_db(db_path: str) -> None:
@@ -136,6 +35,7 @@ async def init_db(db_path: str) -> None:
         await db.executescript(schema_script)
         await _ensure_tasks_columns(db, include_celery=True)
         await _ensure_rubrics_schema(db)
+        await _ensure_rubric_audit_schema(db)
         await _ensure_domain_split_tables(db)
         await _ensure_skill_validation_tables(db)
         await _ensure_runtime_telemetry_table(db)
@@ -178,6 +78,15 @@ async def _ensure_tasks_columns(db: aiosqlite.Connection, *, include_celery: boo
     if "fallback_reason" not in column_names:
         await db.execute("ALTER TABLE tasks ADD COLUMN fallback_reason TEXT")
         column_names.add("fallback_reason")
+    if "submitted_count" not in column_names:
+        await db.execute("ALTER TABLE tasks ADD COLUMN submitted_count INTEGER NOT NULL DEFAULT 0")
+        column_names.add("submitted_count")
+    if "progress" not in column_names:
+        await db.execute("ALTER TABLE tasks ADD COLUMN progress REAL NOT NULL DEFAULT 0")
+        column_names.add("progress")
+    if "eta_seconds" not in column_names:
+        await db.execute("ALTER TABLE tasks ADD COLUMN eta_seconds INTEGER")
+        column_names.add("eta_seconds")
 
     await db.execute("CREATE INDEX IF NOT EXISTS idx_review_status ON tasks(review_status)")
     await db.execute("CREATE INDEX IF NOT EXISTS idx_grading_status ON tasks(grading_status)")
@@ -194,11 +103,44 @@ async def _ensure_rubrics_schema(db: aiosqlite.Connection) -> None:
             rubric_id TEXT PRIMARY KEY,
             question_id TEXT,
             rubric_json TEXT NOT NULL,
+            source_fingerprint TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
         """
     )
+    async with db.execute("PRAGMA table_info(rubrics)") as cursor:
+        columns = await cursor.fetchall()
+    column_names = {str(col[1]) for col in columns}
+    if "source_fingerprint" not in column_names:
+        await db.execute("ALTER TABLE rubrics ADD COLUMN source_fingerprint TEXT")
     await db.execute("CREATE INDEX IF NOT EXISTS idx_rubrics_created_at ON rubrics(created_at)")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_rubrics_source_fingerprint ON rubrics(source_fingerprint)")
+
+
+async def _ensure_rubric_audit_schema(db: aiosqlite.Connection) -> None:
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS rubric_generate_audit (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            trace_id TEXT NOT NULL,
+            rubric_id TEXT,
+            source_fingerprint TEXT NOT NULL,
+            reused_from_cache INTEGER NOT NULL CHECK (reused_from_cache IN (0, 1)),
+            force_regenerate INTEGER NOT NULL CHECK (force_regenerate IN (0, 1)),
+            source_file_count INTEGER NOT NULL CHECK (source_file_count >= 1),
+            client_ip TEXT,
+            user_agent TEXT,
+            referer TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_rubric_generate_audit_created_at ON rubric_generate_audit(created_at)"
+    )
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_rubric_generate_audit_fingerprint ON rubric_generate_audit(source_fingerprint)"
+    )
 
 
 async def _ensure_domain_split_tables(db: aiosqlite.Connection) -> None:
@@ -244,11 +186,31 @@ async def _ensure_domain_split_tables(db: aiosqlite.Connection) -> None:
         )
         """
     )
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS teacher_review_decisions (
+            task_id TEXT NOT NULL,
+            sample_id TEXT NOT NULL,
+            student_id TEXT,
+            decision TEXT NOT NULL
+                CHECK (decision IN ('CONFIRM_MACHINE', 'ADJUST_SCORE', 'MARK_UNREADABLE', 'ESCALATE')),
+            final_score REAL,
+            teacher_comment TEXT NOT NULL,
+            include_in_dataset INTEGER NOT NULL DEFAULT 0 CHECK (include_in_dataset IN (0, 1)),
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (task_id, sample_id),
+            FOREIGN KEY(task_id) REFERENCES tasks(task_id)
+        )
+        """
+    )
     await db.execute("CREATE INDEX IF NOT EXISTS idx_hygiene_trace_id ON hygiene_interception_log(trace_id)")
     await db.execute("CREATE INDEX IF NOT EXISTS idx_hygiene_created_at ON hygiene_interception_log(created_at)")
     await db.execute("CREATE INDEX IF NOT EXISTS idx_golden_trace_id ON golden_annotation_assets(trace_id)")
     await db.execute("CREATE INDEX IF NOT EXISTS idx_golden_task_id ON golden_annotation_assets(task_id)")
     await db.execute("CREATE INDEX IF NOT EXISTS idx_golden_region_id ON golden_annotation_assets(region_id)")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_review_decisions_task_id ON teacher_review_decisions(task_id)")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_review_decisions_student_id ON teacher_review_decisions(student_id)")
     await db.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS uq_golden_trace_region ON golden_annotation_assets(trace_id, region_id)"
     )
@@ -433,6 +395,7 @@ async def _migrate_drop_legacy_review_columns(db: aiosqlite.Connection) -> None:
     """
     SQLite-compatible table rebuild executed in the current transaction.
     """
+    await _ensure_tasks_columns(db, include_celery=True)
     await db.execute("DROP TABLE IF EXISTS tasks_new")
     await db.execute(
         """
@@ -447,6 +410,12 @@ async def _migrate_drop_legacy_review_columns(db: aiosqlite.Connection) -> None:
             review_status TEXT NOT NULL DEFAULT 'NOT_REQUIRED'
                 CHECK (review_status IN ('NOT_REQUIRED', 'PENDING_REVIEW', 'REVIEWED')),
             fallback_reason TEXT,
+            submitted_count INTEGER NOT NULL DEFAULT 0
+                CHECK (submitted_count >= 0),
+            progress REAL NOT NULL DEFAULT 0
+                CHECK (progress >= 0.0 AND progress <= 1.0),
+            eta_seconds INTEGER
+                CHECK (eta_seconds IS NULL OR eta_seconds >= 0),
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
@@ -455,8 +424,13 @@ async def _migrate_drop_legacy_review_columns(db: aiosqlite.Connection) -> None:
     await db.execute(
         """
         INSERT INTO tasks_new
-        (task_id, status, grading_status, celery_task_id, rubric_id, error_message, review_status, fallback_reason, created_at, updated_at)
-        SELECT task_id, status, grading_status, celery_task_id, rubric_id, error_message, review_status, fallback_reason, created_at, updated_at
+        (
+            task_id, status, grading_status, celery_task_id, rubric_id, error_message, review_status,
+            fallback_reason, submitted_count, progress, eta_seconds, created_at, updated_at
+        )
+        SELECT
+            task_id, status, grading_status, celery_task_id, rubric_id, error_message, review_status,
+            fallback_reason, COALESCE(submitted_count, 0), COALESCE(progress, 0.0), eta_seconds, created_at, updated_at
         FROM tasks
         """
     )
@@ -480,12 +454,48 @@ async def migrate_drop_legacy_review_columns(db_path: str) -> None:
     await _execute_write_with_retry(db_path, _op)
 
 
-async def create_task(db_path: str, task_id: str) -> None:
+async def create_task(
+    db_path: str,
+    task_id: str,
+    *,
+    submitted_count: int = 0,
+) -> None:
     async def _op(db: aiosqlite.Connection) -> None:
         await _ensure_tasks_columns(db, include_celery=False)
         await db.execute(
-            "INSERT INTO tasks (task_id, status) VALUES (?, ?)",
-            (task_id, "PENDING"),
+            "INSERT INTO tasks (task_id, status, submitted_count, progress, eta_seconds) VALUES (?, ?, ?, ?, ?)",
+            (task_id, "PENDING", max(0, int(submitted_count)), 0.0, 60),
+        )
+
+    await _execute_write_with_retry(db_path, _op)
+
+
+async def update_task_progress(
+    db_path: str,
+    task_id: str,
+    *,
+    progress: float,
+    eta_seconds: Optional[int] = None,
+) -> None:
+    bounded_progress = float(progress)
+    if bounded_progress < 0.0:
+        bounded_progress = 0.0
+    if bounded_progress > 1.0:
+        bounded_progress = 1.0
+    eta_value: Optional[int] = None
+    if eta_seconds is not None:
+        eta_value = max(0, int(eta_seconds))
+
+    async def _op(db: aiosqlite.Connection) -> None:
+        await _ensure_tasks_columns(db, include_celery=False)
+        await db.execute(
+            """
+            UPDATE tasks
+            SET progress = ?, eta_seconds = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE task_id = ?
+              AND status IN ('PENDING', 'PROCESSING')
+            """,
+            (bounded_progress, eta_value, task_id),
         )
 
     await _execute_write_with_retry(db_path, _op)
@@ -497,6 +507,17 @@ async def set_task_rubric_id(db_path: str, task_id: str, rubric_id: str) -> None
         await db.execute(
             "UPDATE tasks SET rubric_id = ?, updated_at = CURRENT_TIMESTAMP WHERE task_id = ?",
             (rubric_id, task_id),
+        )
+
+    await _execute_write_with_retry(db_path, _op)
+
+
+async def set_task_review_status(db_path: str, task_id: str, review_status: str) -> None:
+    async def _op(db: aiosqlite.Connection) -> None:
+        await _ensure_tasks_columns(db, include_celery=False)
+        await db.execute(
+            "UPDATE tasks SET review_status = ?, updated_at = CURRENT_TIMESTAMP WHERE task_id = ?",
+            (review_status, task_id),
         )
 
     await _execute_write_with_retry(db_path, _op)
@@ -517,12 +538,29 @@ async def update_task_status(
         raise ValueError(f"Unsupported status transition target: {status}")
 
     async def _op(db: aiosqlite.Connection) -> None:
+        await _ensure_tasks_columns(db, include_celery=False)
         assignments = [
             "status = ?",
             "error_message = ?",
             "updated_at = CURRENT_TIMESTAMP",
         ]
         params: List[Any] = [status, error]
+        if status == "PENDING":
+            assignments.append("progress = ?")
+            assignments.append("eta_seconds = ?")
+            params.extend([0.0, 60])
+        elif status == "PROCESSING":
+            assignments.append("progress = ?")
+            assignments.append("eta_seconds = ?")
+            params.extend([0.1, 60])
+        elif status == "COMPLETED":
+            assignments.append("progress = ?")
+            assignments.append("eta_seconds = ?")
+            params.extend([1.0, 0])
+        elif status == "FAILED":
+            assignments.append("progress = ?")
+            assignments.append("eta_seconds = ?")
+            params.extend([1.0, 0])
         if review_status is not None:
             assignments.append("review_status = ?")
             params.append(review_status)
@@ -615,6 +653,32 @@ async def list_pending_review_tasks(
         normalized_direction = "ASC" if str(order_direction).strip().lower() == "asc" else "DESC"
         sql += f" ORDER BY {normalized_order} {normalized_direction}, task_id DESC LIMIT ? OFFSET ?"
         params.extend([limit, offset])
+        async with db.execute(sql, tuple(params)) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+
+async def list_pending_review_task_rows(
+    db_path: str,
+    *,
+    grading_status_filter: Optional[str] = None,
+    task_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    async with _open_connection(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        sql = (
+            "SELECT task_id, status, grading_status, rubric_id, review_status, submitted_count, "
+            "error_message, fallback_reason, created_at, updated_at "
+            "FROM tasks WHERE review_status = 'PENDING_REVIEW'"
+        )
+        params: List[Any] = []
+        if task_id:
+            sql += " AND task_id = ?"
+            params.append(task_id)
+        if grading_status_filter:
+            sql += " AND grading_status = ?"
+            params.append(grading_status_filter)
+        sql += " ORDER BY updated_at DESC, task_id DESC"
         async with db.execute(sql, tuple(params)) as cursor:
             rows = await cursor.fetchall()
             return [dict(r) for r in rows]
@@ -883,6 +947,8 @@ async def save_rubric(
     rubric_id: str,
     question_id: Optional[str],
     rubric_json: Any,
+    *,
+    source_fingerprint: Optional[str] = None,
 ) -> None:
     rubric_str = _to_json_string(rubric_json)
 
@@ -890,10 +956,10 @@ async def save_rubric(
         await _ensure_rubrics_schema(db)
         await db.execute(
             """
-            INSERT INTO rubrics (rubric_id, question_id, rubric_json)
-            VALUES (?, ?, ?)
+            INSERT INTO rubrics (rubric_id, question_id, rubric_json, source_fingerprint)
+            VALUES (?, ?, ?, ?)
             """,
-            (rubric_id, question_id, rubric_str),
+            (rubric_id, question_id, rubric_str, source_fingerprint),
         )
 
     await _execute_write_with_retry(db_path, _op)
@@ -933,6 +999,92 @@ async def list_rubrics(
             return [dict(r) for r in rows]
 
 
+async def get_recent_rubric_by_fingerprint(
+    db_path: str,
+    *,
+    source_fingerprint: str,
+    within_seconds: int,
+) -> Optional[Dict[str, Any]]:
+    async with _open_connection(db_path) as db:
+        await _ensure_rubrics_schema(db)
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """
+            SELECT rubric_id, question_id, created_at
+            FROM rubrics
+            WHERE source_fingerprint = ?
+              AND created_at >= datetime('now', '-' || ? || ' seconds')
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (source_fingerprint, within_seconds),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+
+async def append_rubric_generate_audit(
+    db_path: str,
+    *,
+    trace_id: str,
+    rubric_id: Optional[str],
+    source_fingerprint: str,
+    reused_from_cache: bool,
+    force_regenerate: bool,
+    source_file_count: int,
+    client_ip: Optional[str],
+    user_agent: Optional[str],
+    referer: Optional[str],
+) -> None:
+    async def _op(db: aiosqlite.Connection) -> None:
+        await _ensure_rubric_audit_schema(db)
+        await db.execute(
+            """
+            INSERT INTO rubric_generate_audit (
+                trace_id, rubric_id, source_fingerprint, reused_from_cache, force_regenerate,
+                source_file_count, client_ip, user_agent, referer
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                trace_id,
+                rubric_id,
+                source_fingerprint,
+                1 if reused_from_cache else 0,
+                1 if force_regenerate else 0,
+                source_file_count,
+                client_ip,
+                user_agent,
+                referer,
+            ),
+        )
+
+    await _execute_write_with_retry(db_path, _op)
+
+
+async def list_rubric_generate_audit(
+    db_path: str,
+    *,
+    limit: int = 50,
+    offset: int = 0,
+) -> List[Dict[str, Any]]:
+    async with _open_connection(db_path) as db:
+        await _ensure_rubric_audit_schema(db)
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """
+            SELECT id, trace_id, rubric_id, source_fingerprint, reused_from_cache, force_regenerate,
+                   source_file_count, client_ip, user_agent, referer, created_at
+            FROM rubric_generate_audit
+            ORDER BY id DESC
+            LIMIT ? OFFSET ?
+            """,
+            (limit, offset),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+
 async def save_grading_result(
     db_path: str,
     task_id: str,
@@ -942,6 +1094,7 @@ async def save_grading_result(
     question_id: Optional[str] = None,
     perception_output: Any = None,
     cognitive_output: Any = None,
+    report_payload_extras: Optional[Mapping[str, Any]] = None,
 ) -> None:
     """
     保存单条批改结果（API/单任务通道）。
@@ -950,7 +1103,7 @@ async def save_grading_result(
     total_deduction = float(getattr(report, "total_score_deduction"))
     is_pass = bool(getattr(report, "is_fully_correct"))
 
-    if perception_output is None and cognitive_output is None:
+    if perception_output is None and cognitive_output is None and not report_payload_extras:
         report_json = _to_json_string(report)
     else:
         payload: Dict[str, Any] = {
@@ -962,6 +1115,9 @@ async def save_grading_result(
             payload["perception_ir_snapshot"] = normalized_perception
         if cognitive_output is not None:
             payload["cognitive_ir_snapshot"] = _to_json_compatible(cognitive_output)
+        if report_payload_extras:
+            for key, value in report_payload_extras.items():
+                payload[str(key)] = _to_json_compatible(value)
         report_json = _to_json_string(payload)
 
     async def _op(db: aiosqlite.Connection) -> None:
@@ -1052,6 +1208,116 @@ async def fetch_results(db_path: str, limit: int = 10, offset: int = 0) -> List[
             return [dict(r) for r in rows]
 
 
+async def fetch_results_by_task(db_path: str, task_id: str) -> List[Dict[str, Any]]:
+    async with _open_connection(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """
+            SELECT * FROM grading_results
+            WHERE task_id = ?
+            ORDER BY created_at ASC, id ASC
+            """,
+            (task_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+
+async def upsert_teacher_review_decision(
+    db_path: str,
+    *,
+    task_id: str,
+    sample_id: str,
+    student_id: Optional[str],
+    decision: str,
+    final_score: Optional[float],
+    teacher_comment: str,
+    include_in_dataset: bool,
+) -> None:
+    async def _op(db: aiosqlite.Connection) -> None:
+        await _ensure_domain_split_tables(db)
+        await db.execute(
+            """
+            INSERT INTO teacher_review_decisions (
+                task_id, sample_id, student_id, decision, final_score, teacher_comment, include_in_dataset
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(task_id, sample_id) DO UPDATE SET
+                student_id = excluded.student_id,
+                decision = excluded.decision,
+                final_score = excluded.final_score,
+                teacher_comment = excluded.teacher_comment,
+                include_in_dataset = excluded.include_in_dataset,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (
+                task_id,
+                sample_id,
+                student_id,
+                decision,
+                float(final_score) if final_score is not None else None,
+                teacher_comment,
+                1 if include_in_dataset else 0,
+            ),
+        )
+
+    await _execute_write_with_retry(db_path, _op)
+
+
+async def list_teacher_review_decisions(
+    db_path: str,
+    *,
+    task_id: Optional[str] = None,
+    sample_id: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> List[Dict[str, Any]]:
+    async with _open_connection(db_path) as db:
+        await _ensure_domain_split_tables(db)
+        db.row_factory = aiosqlite.Row
+        sql = (
+            "SELECT task_id, sample_id, student_id, decision, final_score, teacher_comment, "
+            "include_in_dataset, created_at, updated_at "
+            "FROM teacher_review_decisions WHERE 1=1"
+        )
+        params: List[Any] = []
+        if task_id:
+            sql += " AND task_id = ?"
+            params.append(task_id)
+        if sample_id:
+            sql += " AND sample_id = ?"
+            params.append(sample_id)
+        sql += " ORDER BY updated_at DESC, task_id DESC, sample_id DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        async with db.execute(sql, tuple(params)) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+
+async def get_teacher_review_decision_counts(
+    db_path: str,
+    *,
+    task_ids: Sequence[str],
+) -> Dict[str, int]:
+    normalized = [str(x).strip() for x in task_ids if str(x).strip()]
+    if not normalized:
+        return {}
+    placeholders = ",".join("?" for _ in normalized)
+    async with _open_connection(db_path) as db:
+        await _ensure_domain_split_tables(db)
+        async with db.execute(
+            f"""
+            SELECT task_id, COUNT(1) AS cnt
+            FROM teacher_review_decisions
+            WHERE task_id IN ({placeholders})
+            GROUP BY task_id
+            """,
+            tuple(normalized),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return {str(task_id): int(cnt) for task_id, cnt in rows}
+
+
 async def get_task_status_counts(db_path: str) -> Dict[str, int]:
     async with _open_connection(db_path) as db:
         try:
@@ -1065,6 +1331,166 @@ async def get_task_status_counts(db_path: str) -> Dict[str, int]:
             if "no such table" in str(exc).lower():
                 return {}
             raise
+
+
+async def get_task_statuses_by_celery_ids(
+    db_path: str,
+    *,
+    celery_task_ids: Sequence[str],
+) -> Dict[str, str]:
+    normalized_ids = [str(x).strip() for x in celery_task_ids if str(x).strip()]
+    if not normalized_ids:
+        return {}
+    placeholders = ",".join(["?"] * len(normalized_ids))
+    query = f"SELECT celery_task_id, status FROM tasks WHERE celery_task_id IN ({placeholders})"
+    async with _open_connection(db_path) as db:
+        try:
+            async with db.execute(query, tuple(normalized_ids)) as cursor:
+                rows = await cursor.fetchall()
+                return {str(celery_task_id): str(status) for celery_task_id, status in rows}
+        except (aiosqlite.OperationalError, sqlite3.OperationalError) as exc:
+            if "no such table" in str(exc).lower():
+                return {}
+            raise
+
+
+async def list_processing_tasks(
+    db_path: str,
+    *,
+    limit: int = 20,
+) -> List[Dict[str, Any]]:
+    safe_limit = max(1, int(limit))
+    async with _open_connection(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        try:
+            async with db.execute(
+                """
+                SELECT
+                    task_id,
+                    celery_task_id,
+                    progress,
+                    eta_seconds,
+                    created_at,
+                    updated_at,
+                    CAST((julianday('now') - julianday(updated_at)) * 86400 AS INTEGER) AS age_seconds
+                FROM tasks
+                WHERE status = 'PROCESSING'
+                ORDER BY updated_at DESC, task_id DESC
+                LIMIT ?
+                """,
+                (safe_limit,),
+            ) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(r) for r in rows]
+        except (aiosqlite.OperationalError, sqlite3.OperationalError) as exc:
+            if "no such table" in str(exc).lower():
+                return []
+            raise
+
+
+async def list_stale_pending_tasks(
+    db_path: str,
+    *,
+    timeout_seconds: int = 900,
+    limit: int = 50,
+) -> List[Dict[str, Any]]:
+    safe_timeout = max(1, int(timeout_seconds))
+    safe_limit = max(1, int(limit))
+    async with _open_connection(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        try:
+            async with db.execute(
+                """
+                SELECT
+                    task_id,
+                    celery_task_id,
+                    progress,
+                    eta_seconds,
+                    created_at,
+                    updated_at,
+                    CAST((julianday('now') - julianday(created_at)) * 86400 AS INTEGER) AS age_seconds
+                FROM tasks
+                WHERE status = 'PENDING'
+                  AND (julianday('now') - julianday(created_at)) * 86400 > ?
+                ORDER BY created_at ASC, task_id ASC
+                LIMIT ?
+                """,
+                (safe_timeout, safe_limit),
+            ) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(r) for r in rows]
+        except (aiosqlite.OperationalError, sqlite3.OperationalError) as exc:
+            if "no such table" in str(exc).lower():
+                return []
+            raise
+
+
+async def fail_stale_pending_orphan_tasks(
+    db_path: str,
+    *,
+    timeout_seconds: int = 900,
+    limit: int = 200,
+) -> List[str]:
+    """
+    Mark stale PENDING tasks as FAILED when they are likely orphaned.
+
+    Orphan heuristics:
+    - celery_task_id is NULL/blank
+    - local fallback id prefix: "local:"
+    - synthetic test id: "mock-celery-id"
+    """
+    safe_timeout = max(1, int(timeout_seconds))
+    safe_limit = max(1, int(limit))
+    cleaned_task_ids: List[str] = []
+
+    async def _op(db: aiosqlite.Connection) -> None:
+        await _ensure_tasks_columns(db, include_celery=True)
+        async with db.execute(
+            """
+            SELECT task_id
+            FROM tasks
+            WHERE status = 'PENDING'
+              AND (julianday('now') - julianday(created_at)) * 86400 > ?
+              AND (
+                    celery_task_id IS NULL
+                    OR TRIM(celery_task_id) = ''
+                    OR celery_task_id LIKE 'local:%'
+                    OR celery_task_id = 'mock-celery-id'
+              )
+            ORDER BY created_at ASC, task_id ASC
+            LIMIT ?
+            """,
+            (safe_timeout, safe_limit),
+        ) as cursor:
+            rows = await cursor.fetchall()
+
+        task_ids = [str(row[0]) for row in rows]
+        if not task_ids:
+            return
+
+        placeholders = ",".join("?" for _ in task_ids)
+        error_message = (
+            f"Queue timeout: stale pending task exceeded {safe_timeout}s "
+            "without worker pickup (orphan cleanup)"
+        )
+        await db.execute(
+            f"""
+            UPDATE tasks
+            SET status = 'FAILED',
+                error_message = ?,
+                fallback_reason = ?,
+                progress = 1.0,
+                eta_seconds = 0,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE status = 'PENDING'
+              AND task_id IN ({placeholders})
+            """,
+            (error_message, "QUEUE_STALE_ORPHAN", *task_ids),
+        )
+        cleaned_task_ids.extend(task_ids)
+
+    await _execute_write_with_retry(db_path, _op)
+    return cleaned_task_ids
 
 
 async def get_completion_latencies_seconds(

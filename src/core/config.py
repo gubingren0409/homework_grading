@@ -22,12 +22,22 @@ class Settings(BaseSettings):
     deepseek_api_keys: str | None = None # Comma-separated keys
     deepseek_model_name: str = "deepseek-reasoner"
     deepseek_use_stream: bool = False
+    llm_egress_enabled: bool = True
 
     # Redis Configuration (Phase 28)
     redis_host: str = "localhost"
     redis_port: int = 6379
     redis_db: int = 0
     celery_task_always_eager: bool = False
+    batch_internal_concurrency: int = 3
+    batch_postprocess_concurrency: int = 4
+    batch_progress_update_step: int = 2
+    batch_progress_min_interval_seconds: float = 1.5
+    file_preprocess_concurrency: int = 3
+
+    # SSE runtime behavior
+    sse_stream_timeout_seconds: int = 1800
+    sse_heartbeat_interval_seconds: float = 3.0
 
     # Database configuration
     sqlite_db_path: str = "outputs/grading_database.db"
@@ -50,6 +60,8 @@ class Settings(BaseSettings):
     request_body_read_timeout_seconds: float = 5.0
     upload_chunk_size_bytes: int = 256 * 1024
     upload_spool_max_size_bytes: int = 1 * 1024 * 1024
+    pending_orphan_timeout_seconds: int = 900
+    rubric_dedupe_window_seconds: int = 86400
 
     # Prompt provider foundation (Phase 41)
     prompts_dir: str = "configs/prompts"
@@ -60,6 +72,8 @@ class Settings(BaseSettings):
     prompt_l2_key_prefix: str = "prompt:l2:"
     prompt_invalidation_channel: str = "prompt:invalidate"
     prompt_invalidation_bus_enabled: bool = True
+    prompt_max_input_tokens: int = 32768
+    prompt_reserve_output_tokens: int = 1024
 
     # Phase 45: runtime router/circuit controller
     auto_circuit_controller_enabled: bool = True
@@ -141,6 +155,13 @@ class Settings(BaseSettings):
             raise ValueError("skill timeout must be positive")
         return value
 
+    @field_validator("sse_heartbeat_interval_seconds")
+    @classmethod
+    def _validate_sse_heartbeat_interval(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError("sse_heartbeat_interval_seconds must be positive")
+        return value
+
     @field_validator("auto_circuit_failure_rate_threshold", "auto_circuit_token_spike_threshold")
     @classmethod
     def _validate_ratio_threshold(cls, value: float) -> float:
@@ -148,11 +169,42 @@ class Settings(BaseSettings):
             raise ValueError("threshold must be positive")
         return value
 
-    @field_validator("auto_circuit_min_samples", "router_budget_token_limit")
+    @field_validator(
+        "auto_circuit_min_samples",
+        "router_budget_token_limit",
+        "sse_stream_timeout_seconds",
+        "pending_orphan_timeout_seconds",
+        "rubric_dedupe_window_seconds",
+        "batch_internal_concurrency",
+        "batch_postprocess_concurrency",
+        "batch_progress_update_step",
+        "file_preprocess_concurrency",
+    )
     @classmethod
     def _validate_positive_int(cls, value: int) -> int:
         if value <= 0:
             raise ValueError("value must be positive")
+        return value
+
+    @field_validator("batch_progress_min_interval_seconds")
+    @classmethod
+    def _validate_positive_float(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError("value must be positive")
+        return value
+
+    @field_validator("prompt_max_input_tokens")
+    @classmethod
+    def _validate_prompt_max_input_tokens(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("prompt_max_input_tokens must be positive")
+        return value
+
+    @field_validator("prompt_reserve_output_tokens")
+    @classmethod
+    def _validate_prompt_reserve_output_tokens(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("prompt_reserve_output_tokens cannot be negative")
         return value
 
     @field_validator("deployment_environment")

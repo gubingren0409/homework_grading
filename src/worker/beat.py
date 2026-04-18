@@ -13,7 +13,7 @@ from typing import Dict, Any
 from celery.schedules import crontab
 
 from src.worker.main import app
-from src.db.client import update_task_status
+from src.db.client import fail_stale_pending_orphan_tasks
 from src.api.dependencies import get_db_path
 
 
@@ -56,30 +56,45 @@ def zombie_sweeper_task(timeout_seconds: int = 600) -> Dict[str, Any]:
                 rows = await cursor.fetchall()
             
             zombie_count = len(rows)
-            
+
             if zombie_count == 0:
-                logger.info("[ZombieSweeper] No zombies detected")
-                return {"zombies_found": 0, "zombies_cleaned": 0}
-            
-            logger.warning(f"[ZombieSweeper] Found {zombie_count} zombie(s)")
-            for task_id, updated_at, elapsed in rows:
-                logger.warning(f"  - {task_id}: stuck {int(elapsed)}s (last: {updated_at})")
-            
-            # Mark zombies as FAILED
-            update_query = """
-                UPDATE tasks
-                SET status = 'FAILED',
-                    error_message = 'Worker timeout: exceeded ' || ? || 's threshold (worker crash)',
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE status = 'PROCESSING'
-                  AND (julianday('now') - julianday(updated_at)) * 86400 > ?
-            """
-            
-            await db.execute(update_query, (timeout_seconds, timeout_seconds))
-            await db.commit()
-            
-            logger.info(f"[ZombieSweeper] Marked {zombie_count} zombie(s) as FAILED")
-            return {"zombies_found": zombie_count, "zombies_cleaned": zombie_count}
+                logger.info("[ZombieSweeper] No processing zombies detected")
+            else:
+                logger.warning(f"[ZombieSweeper] Found {zombie_count} processing zombie(s)")
+                for task_id, updated_at, elapsed in rows:
+                    logger.warning(f"  - {task_id}: stuck {int(elapsed)}s (last: {updated_at})")
+
+                # Mark zombies as FAILED
+                update_query = """
+                    UPDATE tasks
+                    SET status = 'FAILED',
+                        error_message = 'Worker timeout: exceeded ' || ? || 's threshold (worker crash)',
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE status = 'PROCESSING'
+                      AND (julianday('now') - julianday(updated_at)) * 86400 > ?
+                """
+
+                await db.execute(update_query, (timeout_seconds, timeout_seconds))
+                await db.commit()
+                logger.info(f"[ZombieSweeper] Marked {zombie_count} processing zombie(s) as FAILED")
+
+        # Also clean stale orphan pending tasks (local fallback/test artifacts).
+        pending_timeout = max(timeout_seconds, 900)
+        cleaned_pending = await fail_stale_pending_orphan_tasks(
+            db_path,
+            timeout_seconds=pending_timeout,
+            limit=500,
+        )
+        pending_count = len(cleaned_pending)
+        if pending_count:
+            logger.warning(
+                f"[ZombieSweeper] Marked {pending_count} stale orphan pending task(s) as FAILED"
+            )
+        return {
+            "zombies_found": zombie_count,
+            "zombies_cleaned": zombie_count,
+            "stale_pending_cleaned": pending_count,
+        }
     
     # Phase 30: Standard async bridge (explicit loop creation)
     loop = asyncio.new_event_loop()
