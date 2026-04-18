@@ -862,11 +862,29 @@ async def get_job_status_and_results(
     async with _open_connection(db_path) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
-            "SELECT COUNT(1) FROM grading_results WHERE task_id = ?",
+            """
+            SELECT
+                COUNT(1) AS total_results,
+                SUM(CASE WHEN report_json LIKE '%"status": "REJECTED_UNREADABLE"%'
+                          OR report_json LIKE '%"status":"REJECTED_UNREADABLE"%'
+                         THEN 1 ELSE 0 END) AS rejected_results
+            FROM grading_results WHERE task_id = ?
+            """,
             (task_id,),
         ) as cursor:
             row = await cursor.fetchone()
-            response_data["result_count"] = int((row[0] if row else 0) or 0)
+            total_results = int((row["total_results"] if row else 0) or 0)
+            rejected_results = int((row["rejected_results"] if row else 0) or 0)
+        # P8.5-04: 三段计数语义统一
+        # uploaded = 教师提交份数；processed = 已落库结果数（含拒判占位）；
+        # succeeded = 已落库结果中非拒判部分；rejected = 拒判数。
+        uploaded_count = int(response_data.get("submitted_count") or 0)
+        succeeded_results = max(0, total_results - rejected_results)
+        response_data["result_count"] = total_results
+        response_data["uploaded_count"] = uploaded_count
+        response_data["processed_count"] = total_results
+        response_data["succeeded_count"] = succeeded_results
+        response_data["rejected_count"] = rejected_results
 
     # Phase 29: Status-specific enrichment
     if task["status"] in ["PENDING", "PROCESSING"]:
@@ -876,6 +894,8 @@ async def get_job_status_and_results(
         response_data["next_action"] = "wait_for_completion"
     
     elif task["status"] == "FAILED":
+        response_data["progress"] = float(task.get("progress") or 0.0)
+        response_data["eta_seconds"] = 0
         # Sanitize error messages: strip internal stack traces
         raw_error = task.get("error_message", "Unknown error")
         response_data["retryable"] = True
@@ -889,6 +909,8 @@ async def get_job_status_and_results(
             response_data["error_message"] = raw_error[:200]  # Truncate long errors
     
     elif task["status"] == "COMPLETED":
+        response_data["progress"] = 1.0
+        response_data["eta_seconds"] = 0
         if task.get("grading_status") == "REJECTED_UNREADABLE":
             response_data["error_code"] = "INPUT_REJECTED"
             response_data["error_message"] = task.get("error_message", "Input quality too low")

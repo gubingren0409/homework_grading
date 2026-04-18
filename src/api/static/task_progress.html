@@ -130,9 +130,9 @@
               <div class="sub" id="pollHintValue">建议轮询间隔：-</div>
             </div>
             <div class="summary-item">
-              <div class="k">已处理 / 总输入</div>
-              <div class="v" id="countValue">0 / 0</div>
-              <div class="sub" id="countSubValue">若结果尚未落库，将用进度估算已处理量。</div>
+              <div class="k">已上传 / 已处理 / 成功</div>
+              <div class="v" id="countValue">0 / 0 / 0</div>
+              <div class="sub" id="countSubValue">三段计数：上传份数 / 已落库结果数（含拒判）/ 成功批改份数。</div>
             </div>
             <div class="summary-item">
               <div class="k">异常样本数</div>
@@ -297,10 +297,11 @@
     }
 
     function mergedCount(state) {
-      return {
-        processed: Math.max(0, Number(state.result_count || 0)),
-        total: Math.max(0, Number(state.submitted_count || 0)),
-      };
+      const uploaded = Math.max(0, Number(state.uploaded_count != null ? state.uploaded_count : (state.submitted_count || 0)));
+      const processed = Math.max(0, Number(state.processed_count != null ? state.processed_count : (state.result_count || 0)));
+      const succeeded = Math.max(0, Number(state.succeeded_count != null ? state.succeeded_count : processed));
+      const rejected = Math.max(0, Number(state.rejected_count != null ? state.rejected_count : Math.max(0, processed - succeeded)));
+      return { uploaded, processed, succeeded, rejected, total: uploaded };
     }
 
     function renderTimeline(state) {
@@ -340,10 +341,12 @@
       $("stageValue").textContent = stageMap[stage] || "当前阶段：未开始";
       $("etaValue").textContent = etaText(state.eta_seconds);
       $("pollHintValue").textContent = `建议轮询间隔：${state.suggested_poll_interval_seconds || "-"}s`;
-      $("countValue").textContent = `${counts.processed} / ${counts.total}`;
-      $("countSubValue").textContent = counts.total > 0
-        ? "这里只统计已落库结果数；进度百分比反映任务阶段，不再直接按比例换算成已完成份数。"
-        : "当前任务尚未记录输入总量。";
+      $("countValue").textContent = `${counts.uploaded} / ${counts.processed} / ${counts.succeeded}`;
+      $("countSubValue").textContent = counts.uploaded > 0
+        ? (counts.rejected > 0
+            ? `已上传 ${counts.uploaded} 份，已处理 ${counts.processed} 份（其中 ${counts.rejected} 份被拒判，${counts.succeeded} 份成功批改）。`
+            : `已上传 ${counts.uploaded} 份，已处理 ${counts.processed} 份，成功批改 ${counts.succeeded} 份。`)
+        : "当前任务尚未记录上传份数。";
       $("riskValue").textContent = String(riskCount);
       $("riskSubValue").textContent = isCompleted ? "异常样本数 = REJECTED_UNREADABLE 或 requires_human_review。" : "任务完成后可统计异常样本。";
       $("bar").style.width = `${Math.max(0, Math.min(1, progress)) * 100}%`;
@@ -360,8 +363,10 @@
         task_id: state.task_id || "-",
         status,
         progress: progress,
-        submitted_count: state.submitted_count || 0,
-        result_count: state.result_count || 0,
+        uploaded_count: counts.uploaded,
+        processed_count: counts.processed,
+        succeeded_count: counts.succeeded,
+        rejected_count: counts.rejected,
         next_action: state.next_action || "-",
       }, null, 2);
 

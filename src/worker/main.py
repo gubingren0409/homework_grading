@@ -213,22 +213,22 @@ def grade_homework_task(
         logger.info("worker_task_pulled")
         # Step 1: Mark task as processing
         run_async(update_task_status(db_path, task_id, "PROCESSING"))
-        run_async(update_task_progress(db_path, task_id, progress=0.05, eta_seconds=estimate_eta_seconds(floor_seconds=30)))
+        run_async(update_task_progress(db_path, task_id, progress=0.02, eta_seconds=estimate_eta_seconds(floor_seconds=30)))
         logger.info("task_status_persisted", extra={"extra_fields": {"status": "PROCESSING"}})
         # Phase 33: Publish status update to Redis Pub/Sub
-        run_async(_publish_status(task_id, "PROCESSING", progress=0.05, eta_seconds=estimate_eta_seconds(floor_seconds=30)))
+        run_async(_publish_status(task_id, "PROCESSING", progress=0.02, eta_seconds=estimate_eta_seconds(floor_seconds=30)))
         logger.info(f"[Worker] Task {task_id} started processing")
 
         # Step 2: Retrieve files from storage backend (Phase 32)
         file_refs = payload.get("file_refs", [])
         reconstructed_files = storage.retrieve_files(file_refs)
-        run_async(update_task_progress(db_path, task_id, progress=0.15, eta_seconds=estimate_eta_seconds(floor_seconds=25)))
-        run_async(_publish_status(task_id, "PROCESSING", progress=0.15, eta_seconds=estimate_eta_seconds(floor_seconds=25)))
+        run_async(update_task_progress(db_path, task_id, progress=0.05, eta_seconds=estimate_eta_seconds(floor_seconds=25)))
+        run_async(_publish_status(task_id, "PROCESSING", progress=0.05, eta_seconds=estimate_eta_seconds(floor_seconds=25)))
 
         # Step 3: Initialize workflow (worker-local instance)
         workflow = _build_workflow()
-        run_async(update_task_progress(db_path, task_id, progress=0.25, eta_seconds=estimate_eta_seconds(floor_seconds=20)))
-        run_async(_publish_status(task_id, "PROCESSING", progress=0.25, eta_seconds=estimate_eta_seconds(floor_seconds=20)))
+        run_async(update_task_progress(db_path, task_id, progress=0.07, eta_seconds=estimate_eta_seconds(floor_seconds=20)))
+        run_async(_publish_status(task_id, "PROCESSING", progress=0.07, eta_seconds=estimate_eta_seconds(floor_seconds=20)))
 
         # Step 4: Execute core grading pipeline (with optional rubric binding)
         rubric_obj = None
@@ -254,8 +254,8 @@ def grade_homework_task(
 
         # Auto-rubric path: rubric generation moves into worker task when reference files are provided.
         if rubric_obj is None and reference_file_refs:
-            run_async(update_task_progress(db_path, task_id, progress=0.30, eta_seconds=estimate_eta_seconds(floor_seconds=20)))
-            run_async(_publish_status(task_id, "PROCESSING", progress=0.30, eta_seconds=estimate_eta_seconds(floor_seconds=20)))
+            run_async(update_task_progress(db_path, task_id, progress=0.08, eta_seconds=estimate_eta_seconds(floor_seconds=20)))
+            run_async(_publish_status(task_id, "PROCESSING", progress=0.08, eta_seconds=estimate_eta_seconds(floor_seconds=20)))
 
             reference_files = storage.retrieve_files(reference_file_refs)
             if not reference_files:
@@ -286,8 +286,8 @@ def grade_homework_task(
                 auto_rubric_source_files = reference_files
 
         # Step 5: Execute + persist result(s)
-        run_async(update_task_progress(db_path, task_id, progress=0.35, eta_seconds=estimate_eta_seconds(floor_seconds=15)))
-        run_async(_publish_status(task_id, "PROCESSING", progress=0.35, eta_seconds=estimate_eta_seconds(floor_seconds=15)))
+        run_async(update_task_progress(db_path, task_id, progress=0.10, eta_seconds=estimate_eta_seconds(floor_seconds=15)))
+        run_async(_publish_status(task_id, "PROCESSING", progress=0.10, eta_seconds=estimate_eta_seconds(floor_seconds=15)))
 
         report = None
         reports: List[Any] = []
@@ -499,7 +499,7 @@ def grade_homework_task(
                     await insert_grading_results(db_path, records=[record], task_id=task_id)
                     processed_reports[item_idx] = one_report
                     completed_count += 1
-                    progress = 0.35 + 0.60 * (completed_count / total)
+                    progress = 0.10 + 0.85 * (completed_count / total)
                     eta_seconds = estimate_eta_seconds(completed_items=completed_count, total_items=total, floor_seconds=3)
                     await update_task_progress(db_path, task_id, progress=progress, eta_seconds=eta_seconds)
                     await _publish_status(task_id, "PROCESSING", progress=progress, eta_seconds=eta_seconds)
@@ -660,6 +660,54 @@ def grade_homework_task(
                 action="manual_review",
             )
         )
+        # P8.5-01: 单份模式拒判也写一条占位 grading_result，使 result_count 与
+        # submitted_count 在拒判路径下也保持对齐，避免前端永远显示 0/1。
+        try:
+            placeholder_student_id = str(payload.get("student_id") or "").strip() or task_id
+            placeholder_payload: Dict[str, Any] = {
+                "evaluation_report": {
+                    "status": "REJECTED_UNREADABLE",
+                    "is_fully_correct": False,
+                    "total_score_deduction": 0.0,
+                    "requires_human_review": True,
+                    "rejection_reason": str(e),
+                    "readability_status": str(e.readability_status),
+                },
+                "perception_output": {
+                    "readability_status": str(e.readability_status),
+                    "trigger_short_circuit": True,
+                },
+            }
+            input_refs = list(payload.get("file_refs") or []) if isinstance(payload, dict) else []
+            if input_refs:
+                placeholder_payload["input_file_refs"] = input_refs
+
+            class _PlaceholderReport:
+                status = "REJECTED_UNREADABLE"
+                total_score_deduction = 0.0
+                is_fully_correct = False
+
+                def model_dump(self):
+                    return placeholder_payload["evaluation_report"]
+
+            run_async(
+                save_grading_result(
+                    db_path,
+                    task_id,
+                    placeholder_student_id,
+                    _PlaceholderReport(),
+                    perception_output=placeholder_payload["perception_output"],
+                    report_payload_extras={
+                        k: v for k, v in placeholder_payload.items()
+                        if k not in ("evaluation_report", "perception_output")
+                    },
+                )
+            )
+        except Exception as placeholder_exc:
+            logger.warning(
+                "rejection_placeholder_persist_failed",
+                extra={"extra_fields": {"task_id": task_id, "error": str(placeholder_exc)}},
+            )
         run_async(
             update_task_status(
                 db_path,

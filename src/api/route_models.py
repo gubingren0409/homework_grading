@@ -22,6 +22,10 @@ class TaskStatusResponse(BaseModel):
     review_status: Optional[str] = None
     submitted_count: Optional[int] = None
     result_count: Optional[int] = None
+    uploaded_count: Optional[int] = None
+    processed_count: Optional[int] = None
+    succeeded_count: Optional[int] = None
+    rejected_count: Optional[int] = None
     fallback_reason: Optional[str] = None
     error_message: Optional[str] = None
     error_code: Optional[str] = None
