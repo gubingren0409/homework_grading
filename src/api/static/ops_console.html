@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>运营控制台</title>
   <style>
-    :root { --bg: #f5f7fb; --card: #fff; --line: #e5e8ef; --primary: #3563e9; }
+    :root { --bg: #f5f7fb; --card: #fff; --line: #e5e8ef; --primary: #3563e9; --green: #16a34a; --red: #dc2626; --amber: #d97706; }
     body { margin: 0; background: var(--bg); font-family: Arial, sans-serif; color: #1f2937; }
     .wrap { max-width: 1100px; margin: 24px auto; padding: 0 16px; }
     h1 { margin: 0 0 6px; }
@@ -17,12 +17,49 @@
     button { padding: 8px 12px; border: 0; border-radius: 8px; cursor: pointer; background: var(--primary); color: #fff; font-weight: 600; }
     button.secondary { background: #596377; }
     .muted { color: #6b7280; font-size: 12px; }
+
+    /* P9-08: Stats cards */
+    .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 12px; }
+    .stat-card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; text-align: center; }
+    .stat-card .value { font-size: 28px; font-weight: 700; margin: 4px 0; }
+    .stat-card .label { font-size: 13px; color: #6b7280; }
+    .stat-card .sub { font-size: 11px; color: #9ca3af; margin-top: 4px; }
+    .stat-card.green .value { color: var(--green); }
+    .stat-card.red .value { color: var(--red); }
+    .stat-card.amber .value { color: var(--amber); }
+
+    /* Failed tasks table */
+    .fail-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .fail-table th { text-align: left; border-bottom: 2px solid var(--line); padding: 6px 8px; font-weight: 600; }
+    .fail-table td { border-bottom: 1px solid var(--line); padding: 6px 8px; }
+    .fail-table tr:hover { background: #f8fafc; }
+    .tag { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+    .tag.fail { background: #fef2f2; color: var(--red); }
+    .tag.timeout { background: #fffbeb; color: var(--amber); }
   </style>
 </head>
 <body>
   <div class="wrap">
     <h1>运营控制台</h1>
-    <p class="desc">简化为三类高频操作：看健康、切模型、做演练。</p>
+    <p class="desc">系统可观测面板 · 今日处理量 / 失败任务 / 系统健康</p>
+
+    <!-- P9-08: Today's stats -->
+    <div class="stats-grid" id="statsGrid">
+      <div class="stat-card" id="statTotal"><div class="label">今日处理量</div><div class="value">—</div><div class="sub">最近 24 小时</div></div>
+      <div class="stat-card green" id="statCompleted"><div class="label">完成</div><div class="value">—</div><div class="sub">成功批改</div></div>
+      <div class="stat-card red" id="statFailed"><div class="label">失败</div><div class="value">—</div><div class="sub">包含超时/崩溃</div></div>
+      <div class="stat-card" id="statLatency"><div class="label">平均时长</div><div class="value">—</div><div class="sub">P50 完成秒数</div></div>
+      <div class="stat-card amber" id="statRejectRate"><div class="label">拒判率</div><div class="value">—</div><div class="sub">REJECTED / 总完成</div></div>
+    </div>
+
+    <!-- P9-08: Recent failed tasks -->
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <h3 style="margin:0;">最近失败任务</h3>
+        <button id="refreshFailedBtn" class="secondary" style="font-size:12px;padding:4px 8px;">刷新</button>
+      </div>
+      <div id="failedList" style="margin-top:8px;overflow-x:auto;"></div>
+    </div>
 
     <div class="card">
       <h3>系统健康概览</h3>
@@ -89,6 +126,67 @@
       try { return { ok: r.ok, data: JSON.parse(text) }; } catch { return { ok: r.ok, data: text }; }
     }
 
+    // P9-08: Load today's stats
+    async function loadStats() {
+      try {
+        const [sla, bench] = await Promise.all([
+          getJson("/api/v1/sla/summary"),
+          getJson("/api/v1/metrics/provider-benchmark?window_hours=24"),
+        ]);
+        if (sla.ok) {
+          const counts = sla.data.observed_status_counts || {};
+          const total = Object.values(counts).reduce((a, b) => a + b, 0);
+          $("statTotal").querySelector(".value").textContent = total;
+          $("statCompleted").querySelector(".value").textContent = counts.COMPLETED || 0;
+          $("statFailed").querySelector(".value").textContent = counts.FAILED || 0;
+          const p50 = sla.data.observed_completion_seconds_p50;
+          $("statLatency").querySelector(".value").textContent = p50 != null ? p50.toFixed(1) + "s" : "—";
+        }
+        if (bench.ok) {
+          const vol = bench.data.task_volume || {};
+          const completed = vol.completed_count || 0;
+          const failed = vol.failed_count || 0;
+          const total = completed + failed;
+          if (total > 0) {
+            // Approximate reject rate: failed / total (we don't have per-student rejection here)
+            const rate = ((failed / total) * 100).toFixed(1);
+            $("statRejectRate").querySelector(".value").textContent = rate + "%";
+          } else {
+            $("statRejectRate").querySelector(".value").textContent = "—";
+          }
+        }
+      } catch (e) {
+        console.warn("Stats load failed:", e);
+      }
+    }
+
+    // P9-08: Load recent failed tasks
+    async function loadFailedTasks() {
+      const el = $("failedList");
+      try {
+        const { ok, data } = await getJson("/api/v1/tasks/history?status=FAILED&page=1&limit=10");
+        if (!ok || !data.items || data.items.length === 0) {
+          el.innerHTML = '<div class="muted" style="padding:8px;">暂无失败任务 ✅</div>';
+          return;
+        }
+        let html = '<table class="fail-table"><thead><tr><th>任务 ID</th><th>状态</th><th>提交数</th><th>更新时间</th></tr></thead><tbody>';
+        for (const item of data.items) {
+          const shortId = (item.task_id || "").substring(0, 12) + "…";
+          const tagClass = (item.grading_status || "").includes("REJECT") ? "timeout" : "fail";
+          html += `<tr>
+            <td title="${item.task_id}" style="cursor:pointer;">${shortId}</td>
+            <td><span class="tag ${tagClass}">${item.status}</span></td>
+            <td>${item.submitted_count || 0} / ${item.result_count || 0}</td>
+            <td class="muted">${item.updated_at || "—"}</td>
+          </tr>`;
+        }
+        html += '</tbody></table>';
+        el.innerHTML = html;
+      } catch (e) {
+        el.innerHTML = '<div class="muted" style="padding:8px;color:red;">加载失败任务列表出错</div>';
+      }
+    }
+
     $("snapBtn").onclick = async () => {
       const { ok, data } = await getJson("/api/v1/ops/config/snapshot");
       setText("obs", data, ok ? "" : "err");
@@ -119,9 +217,11 @@
       const { ok, data } = await getJson("/api/v1/ops/audit/logs?page=1&limit=20");
       setText("audit", data, ok ? "" : "err");
     };
+    $("refreshFailedBtn").onclick = loadFailedTasks;
 
-    $("snapBtn").click();
-    $("dashboardBtn").click();
+    // Auto-load on page open
+    loadStats();
+    loadFailedTasks();
   </script>
 </body>
 </html>
