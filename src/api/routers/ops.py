@@ -19,6 +19,8 @@ from src.db.client import (
     list_processing_tasks,
     list_stale_pending_tasks,
     fail_stale_pending_orphan_tasks,
+    list_stale_processing_tasks,
+    fail_stale_processing_tasks,
     upsert_prompt_control_state,
     get_prompt_control_state,
     upsert_prompt_ab_config,
@@ -186,6 +188,28 @@ async def cleanup_ops_queue_stale_pending(
         cleaned_count=len(cleaned_task_ids),
         cleaned_task_ids=cleaned_task_ids,
     )
+
+
+@router.post("/ops/queue/cleanup-processing")
+async def cleanup_ops_queue_stale_processing(
+    stale_threshold_seconds: int = Query(600, ge=60, le=172800),
+    limit: int = Query(200, ge=1, le=2000),
+    db_path: str = Depends(get_db_path),
+):
+    """P9-07: Force-clean PROCESSING tasks that have exceeded heartbeat timeout."""
+    stale_rows = await list_stale_processing_tasks(
+        db_path, timeout_seconds=stale_threshold_seconds, limit=limit,
+    )
+    cleaned_task_ids = await fail_stale_processing_tasks(
+        db_path, timeout_seconds=stale_threshold_seconds, limit=limit,
+    )
+    return {
+        "stale_threshold_seconds": int(stale_threshold_seconds),
+        "stale_found": len(stale_rows),
+        "cleaned_count": len(cleaned_task_ids),
+        "cleaned_task_ids": cleaned_task_ids,
+        "hint": "Uses last_heartbeat_at when available, falls back to updated_at.",
+    }
 
 
 @router.post("/ops/queue/cleanup-task", response_model=QueueTaskCleanupResponse)

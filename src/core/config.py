@@ -61,6 +61,8 @@ class Settings(BaseSettings):
     upload_chunk_size_bytes: int = 256 * 1024
     upload_spool_max_size_bytes: int = 1 * 1024 * 1024
     pending_orphan_timeout_seconds: int = 900
+    processing_orphan_timeout_seconds: int = 600  # 10 min — stale PROCESSING detection
+    upload_ttl_days: int = 7  # P9-04: auto-cleanup uploaded files after N days
     rubric_dedupe_window_seconds: int = 86400
 
     # Prompt provider foundation (Phase 41)
@@ -174,6 +176,8 @@ class Settings(BaseSettings):
         "router_budget_token_limit",
         "sse_stream_timeout_seconds",
         "pending_orphan_timeout_seconds",
+        "processing_orphan_timeout_seconds",
+        "upload_ttl_days",
         "rubric_dedupe_window_seconds",
         "batch_internal_concurrency",
         "batch_postprocess_concurrency",

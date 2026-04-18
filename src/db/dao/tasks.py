@@ -110,6 +110,7 @@ async def update_task_status(
         elif status == "PROCESSING":
             assignments.append("progress = ?")
             assignments.append("eta_seconds = ?")
+            assignments.append("last_heartbeat_at = CURRENT_TIMESTAMP")
             params.extend([0.1, 60])
         elif status == "COMPLETED":
             assignments.append("progress = ?")
@@ -539,3 +540,143 @@ async def insert_skill_validation_records(
 
     await _execute_write_with_retry(db_path, _op)
     return len(rows_to_insert)
+
+
+# ---------------------------------------------------------------------------
+# P9-07: Heartbeat & stale PROCESSING cleanup
+# ---------------------------------------------------------------------------
+
+async def touch_task_heartbeat(db_path: str, task_id: str) -> None:
+    """Refresh the heartbeat timestamp for an active PROCESSING task."""
+    async def _op(db: aiosqlite.Connection) -> None:
+        await _ensure_tasks_columns(db, include_celery=False)
+        await db.execute(
+            """
+            UPDATE tasks
+            SET last_heartbeat_at = CURRENT_TIMESTAMP,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE task_id = ? AND status = 'PROCESSING'
+            """,
+            (task_id,),
+        )
+
+    await _execute_write_with_retry(db_path, _op)
+
+
+async def list_stale_processing_tasks(
+    db_path: str,
+    *,
+    timeout_seconds: int = 600,
+    limit: int = 50,
+) -> List[Dict[str, Any]]:
+    """
+    Find PROCESSING tasks whose heartbeat has gone stale.
+
+    Detection logic:
+    - If last_heartbeat_at is set, use it as the liveness signal.
+    - Otherwise fall back to updated_at (backward compat with tasks
+      that started before the heartbeat column existed).
+    """
+    safe_timeout = max(1, int(timeout_seconds))
+    safe_limit = max(1, int(limit))
+    async with _open_connection(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        try:
+            async with db.execute(
+                """
+                SELECT
+                    task_id,
+                    celery_task_id,
+                    progress,
+                    eta_seconds,
+                    last_heartbeat_at,
+                    updated_at,
+                    created_at,
+                    CAST(
+                        (julianday('now') - julianday(
+                            COALESCE(last_heartbeat_at, updated_at)
+                        )) * 86400 AS INTEGER
+                    ) AS stale_seconds
+                FROM tasks
+                WHERE status = 'PROCESSING'
+                  AND (julianday('now') - julianday(
+                        COALESCE(last_heartbeat_at, updated_at)
+                      )) * 86400 > ?
+                ORDER BY updated_at ASC, task_id ASC
+                LIMIT ?
+                """,
+                (safe_timeout, safe_limit),
+            ) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(r) for r in rows]
+        except (aiosqlite.OperationalError, sqlite3.OperationalError) as exc:
+            if "no such table" in str(exc).lower():
+                return []
+            raise
+
+
+async def fail_stale_processing_tasks(
+    db_path: str,
+    *,
+    timeout_seconds: int = 600,
+    limit: int = 200,
+) -> List[str]:
+    """
+    Mark stale PROCESSING tasks as FAILED with retryable=true.
+
+    A task is considered stale when its heartbeat (or updated_at fallback)
+    exceeds *timeout_seconds* without being refreshed — indicating the worker
+    likely crashed or lost connectivity.
+    """
+    safe_timeout = max(1, int(timeout_seconds))
+    safe_limit = max(1, int(limit))
+    cleaned_task_ids: List[str] = []
+
+    async def _op(db: aiosqlite.Connection) -> None:
+        await _ensure_tasks_columns(db, include_celery=False)
+        async with db.execute(
+            """
+            SELECT task_id
+            FROM tasks
+            WHERE status = 'PROCESSING'
+              AND (julianday('now') - julianday(
+                    COALESCE(last_heartbeat_at, updated_at)
+                  )) * 86400 > ?
+            ORDER BY updated_at ASC, task_id ASC
+            LIMIT ?
+            """,
+            (safe_timeout, safe_limit),
+        ) as cursor:
+            rows = await cursor.fetchall()
+
+        task_ids = [str(row[0]) for row in rows]
+        if not task_ids:
+            return
+
+        placeholders = ",".join("?" for _ in task_ids)
+        error_message = (
+            f"Worker heartbeat timeout: PROCESSING task exceeded {safe_timeout}s "
+            "without heartbeat refresh (orphan cleanup)"
+        )
+        await db.execute(
+            f"""
+            UPDATE tasks
+            SET status = 'FAILED',
+                error_message = ?,
+                fallback_reason = ?,
+                progress = 1.0,
+                eta_seconds = 0,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE status = 'PROCESSING'
+              AND task_id IN ({placeholders})
+            """,
+            (error_message, "WORKER_TIMEOUT", *task_ids),
+        )
+        cleaned_task_ids.extend(task_ids)
+        logger.info(
+            "stale_processing_tasks_cleaned",
+            extra={"extra_fields": {"count": len(task_ids), "task_ids": task_ids}},
+        )
+
+    await _execute_write_with_retry(db_path, _op)
+    return cleaned_task_ids

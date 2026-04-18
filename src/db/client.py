@@ -87,6 +87,9 @@ async def _ensure_tasks_columns(db: aiosqlite.Connection, *, include_celery: boo
     if "eta_seconds" not in column_names:
         await db.execute("ALTER TABLE tasks ADD COLUMN eta_seconds INTEGER")
         column_names.add("eta_seconds")
+    if "last_heartbeat_at" not in column_names:
+        await db.execute("ALTER TABLE tasks ADD COLUMN last_heartbeat_at TIMESTAMP")
+        column_names.add("last_heartbeat_at")
 
     await db.execute("CREATE INDEX IF NOT EXISTS idx_review_status ON tasks(review_status)")
     await db.execute("CREATE INDEX IF NOT EXISTS idx_grading_status ON tasks(grading_status)")
@@ -416,6 +419,7 @@ async def _migrate_drop_legacy_review_columns(db: aiosqlite.Connection) -> None:
                 CHECK (progress >= 0.0 AND progress <= 1.0),
             eta_seconds INTEGER
                 CHECK (eta_seconds IS NULL OR eta_seconds >= 0),
+            last_heartbeat_at TIMESTAMP,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
@@ -426,11 +430,11 @@ async def _migrate_drop_legacy_review_columns(db: aiosqlite.Connection) -> None:
         INSERT INTO tasks_new
         (
             task_id, status, grading_status, celery_task_id, rubric_id, error_message, review_status,
-            fallback_reason, submitted_count, progress, eta_seconds, created_at, updated_at
+            fallback_reason, submitted_count, progress, eta_seconds, last_heartbeat_at, created_at, updated_at
         )
         SELECT
             task_id, status, grading_status, celery_task_id, rubric_id, error_message, review_status,
-            fallback_reason, COALESCE(submitted_count, 0), COALESCE(progress, 0.0), eta_seconds, created_at, updated_at
+            fallback_reason, COALESCE(submitted_count, 0), COALESCE(progress, 0.0), eta_seconds, last_heartbeat_at, created_at, updated_at
         FROM tasks
         """
     )
@@ -478,6 +482,9 @@ from src.db.dao.tasks import (  # noqa: E402,F401
     get_completion_latencies_seconds,
     get_task_volume_stats,
     insert_skill_validation_records,
+    touch_task_heartbeat,
+    list_stale_processing_tasks,
+    fail_stale_processing_tasks,
 )
 
 from src.db.dao.rubrics import (  # noqa: E402,F401

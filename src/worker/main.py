@@ -34,6 +34,7 @@ from src.db.client import insert_grading_results, update_task_progress, update_t
 from src.db.client import create_hygiene_interception_record
 from src.db.client import upsert_task_runtime_telemetry
 from src.db.client import get_recent_rubric_by_fingerprint, get_rubric, save_rubric, set_task_rubric_id
+from src.db.client import touch_task_heartbeat
 from src.orchestration.workflow import GradingWorkflow
 from src.perception.factory import create_perception_engine
 from src.cognitive.engines.deepseek_engine import DeepSeekCognitiveEngine
@@ -213,6 +214,7 @@ def grade_homework_task(
         logger.info("worker_task_pulled")
         # Step 1: Mark task as processing
         run_async(update_task_status(db_path, task_id, "PROCESSING"))
+        run_async(touch_task_heartbeat(db_path, task_id))
         run_async(update_task_progress(db_path, task_id, progress=0.02, eta_seconds=estimate_eta_seconds(floor_seconds=30)))
         logger.info("task_status_persisted", extra={"extra_fields": {"status": "PROCESSING"}})
         # Phase 33: Publish status update to Redis Pub/Sub
@@ -502,6 +504,7 @@ def grade_homework_task(
                     progress = 0.10 + 0.85 * (completed_count / total)
                     eta_seconds = estimate_eta_seconds(completed_items=completed_count, total_items=total, floor_seconds=3)
                     await update_task_progress(db_path, task_id, progress=progress, eta_seconds=eta_seconds)
+                    await touch_task_heartbeat(db_path, task_id)
                     await _publish_status(task_id, "PROCESSING", progress=progress, eta_seconds=eta_seconds)
                 return [report for report in processed_reports if report is not None]
 
