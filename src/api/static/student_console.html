@@ -257,6 +257,7 @@
           <div class="progress"><div id="bar"></div></div>
           <div class="row" style="margin-top:12px;">
             <span id="statusTag" class="status-tag pending">未提交</span>
+            <button id="cancelBtn" class="secondary" style="background:#e74c3c;color:#fff;border-color:#c0392b;display:none;">取消任务</button>
           </div>
           <div id="hintBox" class="notice info" style="margin-top:10px;">提交任务后，页面会自动轮询当前状态；完成后会给出直达结果入口。</div>
           <div id="status" class="mono" style="margin-top:10px;"></div>
@@ -435,6 +436,7 @@
     function statusClass(status) {
       if (status === "COMPLETED") return "completed";
       if (status === "FAILED") return "failed";
+      if (status === "CANCELLED") return "failed";
       if (status === "PROCESSING") return "processing";
       return "pending";
     }
@@ -513,8 +515,19 @@
       tag.className = `status-tag ${statusClass(status)}`;
       tag.textContent = status;
 
+      // Show/hide cancel button based on task state
+      const cancelBtn = $("cancelBtn");
+      if (status === "PENDING" || status === "PROCESSING") {
+        cancelBtn.style.display = "";
+      } else {
+        cancelBtn.style.display = "none";
+      }
+
       const hintBox = $("hintBox");
-      if (isFailed) {
+      if (status === "CANCELLED") {
+        hintBox.className = "notice warn";
+        hintBox.textContent = "任务已取消。已处理的结果仍然保留，可重新提交新任务。";
+      } else if (isFailed) {
         hintBox.className = "notice warn";
         hintBox.textContent = state.error_message || "任务失败，请根据提示重新提交。";
       } else if (isCompleted) {
@@ -992,6 +1005,27 @@
     $("reportBtn").addEventListener("click", openReport);
     $("reviewBtn").addEventListener("click", openReview);
     $("flowBtn").addEventListener("click", flowGuide);
+
+    // Cancel task
+    $("cancelBtn").addEventListener("click", async () => {
+      const taskId = $("taskId").value.trim();
+      if (!taskId) { alert("没有正在执行的任务"); return; }
+      if (!confirm("确定要取消此任务吗？已完成的批改结果将保留，但未处理的作业将不再批改。")) return;
+      try {
+        const resp = await fetch(`/api/v1/grade/${encodeURIComponent(taskId)}/cancel`, {
+          method: "POST",
+          headers: Object.assign({}, _authHeaders),
+        });
+        const data = await resp.json();
+        if (data.cancelled) {
+          loadStatus(false);
+        } else {
+          alert(data.message || "无法取消");
+        }
+      } catch (e) {
+        alert("取消请求失败: " + e.message);
+      }
+    });
 
     refreshRubrics();
     updateModeUI();

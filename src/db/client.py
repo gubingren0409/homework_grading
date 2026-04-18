@@ -18,6 +18,7 @@ _STATUS_WEIGHTS: Dict[str, int] = {
     "PROCESSING": 1,
     "COMPLETED": 2,
     "FAILED": 3,
+    "CANCELLED": 4,
 }
 
 

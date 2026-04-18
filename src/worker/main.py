@@ -36,6 +36,7 @@ from src.db.client import create_hygiene_interception_record
 from src.db.client import upsert_task_runtime_telemetry
 from src.db.client import get_recent_rubric_by_fingerprint, get_rubric, save_rubric, set_task_rubric_id
 from src.db.client import touch_task_heartbeat
+from src.db.client import get_task as _get_task_from_db
 from src.orchestration.workflow import GradingWorkflow
 from src.perception.factory import create_perception_engine
 from src.cognitive.engines.deepseek_engine import DeepSeekCognitiveEngine
@@ -214,6 +215,16 @@ def grade_homework_task(
     
     try:
         logger.info("worker_task_pulled")
+
+        # Pre-check: if task was cancelled before worker picked it up, skip.
+        try:
+            pre_task = run_async(_get_task_from_db(db_path, task_id))
+            if pre_task and str(pre_task.get("status", "")) == "CANCELLED":
+                logger.info("worker_task_already_cancelled", extra={"extra_fields": {"task_id": task_id}})
+                return {"task_id": task_id, "status": "CANCELLED", "reason": "cancelled_before_start"}
+        except RuntimeError:
+            pass  # Eager mode / nested event loop — skip pre-check
+
         # Step 1: Mark task as processing
         run_async(update_task_status(db_path, task_id, "PROCESSING"))
         run_async(touch_task_heartbeat(db_path, task_id))
@@ -499,6 +510,16 @@ def grade_homework_task(
                 total = len(batch_jobs)
                 completed_count = 0
                 for job in asyncio.as_completed(batch_jobs):
+                    # Check for cancellation between items (best-effort)
+                    if completed_count > 0 and completed_count % 3 == 0:
+                        try:
+                            _check = await _get_task_from_db(db_path, task_id)
+                            if _check and str(_check.get("status", "")) == "CANCELLED":
+                                logger.info("worker_batch_cancelled_mid_flight",
+                                            extra={"extra_fields": {"task_id": task_id, "completed": completed_count, "total": total}})
+                                break
+                        except Exception:
+                            pass
                     item_idx, one_report, record = await job
                     await insert_grading_results(db_path, records=[record], task_id=task_id)
                     processed_reports[item_idx] = one_report

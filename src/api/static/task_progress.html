@@ -103,6 +103,7 @@
             <button id="loadBtn">查询状态</button>
             <button id="watchBtn">实时监听</button>
             <button id="stopBtn" class="secondary">停止监听</button>
+            <button id="cancelBtn" class="secondary" style="background:#e74c3c;color:#fff;border-color:#c0392b;">取消任务</button>
           </div>
           <div class="row">
             <button id="reportBtn" class="ghost">查看报告</button>
@@ -281,6 +282,7 @@
     function statusClass(status) {
       if (status === "COMPLETED") return "completed";
       if (status === "FAILED") return "failed";
+      if (status === "CANCELLED") return "failed";
       if (status === "PROCESSING") return "processing";
       return "pending";
     }
@@ -498,6 +500,25 @@
     $("reportBtn").addEventListener("click", openReport);
     $("resultsBtn").addEventListener("click", loadResults);
     $("clearLogBtn").addEventListener("click", () => { $("monitorLog").innerHTML = ""; });
+
+    // Cancel task handler
+    $("cancelBtn").addEventListener("click", async () => {
+      const taskId = $("taskId").value.trim();
+      if (!taskId) { alert("请先输入 task_id"); return; }
+      if (!confirm("确定要取消此任务吗？已完成的批改结果将保留，但未处理的作业将不再批改。")) return;
+      try {
+        const resp = await authFetch(`/api/v1/grade/${encodeURIComponent(taskId)}/cancel`, { method: "POST" });
+        const data = await resp.json();
+        if (data.cancelled) {
+          appendLog("ok", "CANCEL", "任务已成功取消");
+          loadStatus();
+        } else {
+          appendLog("err", "CANCEL", data.message || "无法取消");
+        }
+      } catch (e) {
+        appendLog("err", "CANCEL", "请求失败: " + e.message);
+      }
+    });
 
     const q = new URLSearchParams(window.location.search);
     const qTaskId = q.get("task_id");

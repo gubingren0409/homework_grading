@@ -23,6 +23,7 @@ from src.core.config import settings
 from src.db.client import (
     create_task,
     update_task_celery_id,
+    update_task_status,
     set_task_rubric_id,
     get_task,
     fetch_results,
@@ -33,7 +34,7 @@ from src.db.client import (
     get_recent_rubric_by_fingerprint,
     append_rubric_generate_audit,
 )
-from src.worker.main import grade_homework_task
+from src.worker.main import grade_homework_task, app as celery_app
 from src.core.storage_adapter import storage
 from src.core.trace_context import get_trace_id
 from src.cognitive.engines.deepseek_engine import DeepSeekCognitiveEngine
@@ -50,7 +51,9 @@ from src.api.route_helpers import (
     build_task_insights as _build_task_insights,
     to_report_card as _to_report_card,
     validate_batch_single_page_file as _validate_batch_single_page_file,
+    remove_task_from_celery_queue as _remove_task_from_celery_queue,
 )
+from src.api.sse import publish_task_status as _publish_task_status
 from src.api.route_models import (
     GradeFlowGuideResponse,
     GradingResultItem,
@@ -87,6 +90,24 @@ def _dispatch_grading_task(
     trace_id: str,
     background_tasks: BackgroundTasks,
 ) -> tuple[str, str]:
+    # Pre-flight: verify Redis is reachable before attempting dispatch.
+    # Without this, a down Redis may cause silent message loss.
+    redis_ok, redis_err = _check_redis_health()
+    if not redis_ok:
+        logger.warning(
+            "queue_dispatch_redis_unreachable",
+            extra={
+                "extra_fields": {
+                    "task_id": task_id,
+                    "event": "queue_dispatch_redis_unreachable",
+                    "reason": redis_err,
+                }
+            },
+        )
+        # Fall back to local execution rather than dropping the task
+        background_tasks.add_task(_run_task_locally, task_id, payload, db_path, trace_id)
+        return f"local:{task_id}", "local_fallback"
+
     try:
         celery_result = grade_homework_task.apply_async(
             args=[task_id, payload, db_path],
@@ -892,5 +913,118 @@ async def get_task_insights(
         hotspots=insights["hotspots"],
         lecture_suggestions=insights["lecture_suggestions"],
     )
+
+
+# ---------------------------------------------------------------------------
+# Task Cancellation
+# ---------------------------------------------------------------------------
+
+@router.post("/grade/{task_id}/cancel")
+async def cancel_task(
+    task_id: str,
+    db_path: str = Depends(get_db_path),
+    teacher: TeacherIdentity = Depends(get_current_teacher),
+):
+    """Cancel a PENDING or PROCESSING task.
+
+    1. Revoke the Celery task (terminate if running).
+    2. Remove any queued messages from Redis.
+    3. Mark the task CANCELLED in DB.
+    4. Publish CANCELLED event via Redis PubSub for SSE listeners.
+    """
+    task = await get_task(db_path, task_id)
+    if not task:
+        raise HTTPException(
+            status_code=404,
+            detail=_error_detail(
+                error_code="TASK_NOT_FOUND",
+                message="任务不存在",
+                retryable=False,
+                next_action="submit_new_task",
+            ),
+        )
+
+    current_status = str(task.get("status") or "")
+    if current_status not in {"PENDING", "PROCESSING"}:
+        return {
+            "task_id": task_id,
+            "cancelled": False,
+            "message": f"任务已处于终态 ({current_status})，无法取消",
+            "previous_status": current_status,
+        }
+
+    # 1) Revoke Celery task (terminate=True sends SIGTERM to running worker)
+    revoked = False
+    revoke_error = None
+    try:
+        celery_app.control.revoke(task_id, terminate=True, signal="SIGTERM")
+        revoked = True
+    except Exception as exc:
+        revoke_error = str(exc)[:200]
+        logger.warning(
+            "cancel_revoke_failed",
+            extra={"extra_fields": {"task_id": task_id, "error": revoke_error}},
+        )
+
+    # 2) Remove from Redis queue (in case still queued)
+    removed_count, queue_error = _remove_task_from_celery_queue(task_id)
+
+    # 3) Mark CANCELLED in DB
+    await update_task_status(
+        db_path,
+        task_id,
+        "CANCELLED",
+        error="教师主动取消任务",
+        fallback_reason="TEACHER_CANCELLED",
+    )
+
+    # 4) Publish CANCELLED event for SSE
+    try:
+        await _publish_task_status(task_id, "CANCELLED", progress=1.0, eta_seconds=0)
+    except Exception:
+        pass  # best-effort
+
+    logger.info(
+        "task_cancelled",
+        extra={
+            "extra_fields": {
+                "event": "task_cancelled",
+                "task_id": task_id,
+                "previous_status": current_status,
+                "revoked": revoked,
+                "removed_from_queue": removed_count,
+            }
+        },
+    )
+
+    return {
+        "task_id": task_id,
+        "cancelled": True,
+        "previous_status": current_status,
+        "revoked": revoked,
+        "removed_from_queue": removed_count,
+        "message": "任务已取消",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Redis Health Check (used by submit endpoints)
+# ---------------------------------------------------------------------------
+
+def _check_redis_health() -> tuple[bool, str]:
+    """Quick Redis ping. Returns (healthy, error_message)."""
+    try:
+        import redis as _redis
+        client = _redis.Redis(
+            host=settings.redis_host,
+            port=settings.redis_port,
+            db=settings.redis_db,
+            socket_connect_timeout=2,
+            socket_timeout=2,
+        )
+        client.ping()
+        return True, ""
+    except Exception as exc:
+        return False, str(exc)[:200]
 
 

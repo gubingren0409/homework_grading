@@ -121,6 +121,10 @@ async def update_task_status(
             assignments.append("progress = ?")
             assignments.append("eta_seconds = ?")
             params.extend([1.0, 0])
+        elif status == "CANCELLED":
+            assignments.append("progress = ?")
+            assignments.append("eta_seconds = ?")
+            params.extend([1.0, 0])
         if review_status is not None:
             assignments.append("review_status = ?")
             params.append(review_status)
@@ -139,6 +143,7 @@ async def update_task_status(
             "WHEN 'PROCESSING' THEN 1 "
             "WHEN 'COMPLETED' THEN 2 "
             "WHEN 'FAILED' THEN 3 "
+            "WHEN 'CANCELLED' THEN 4 "
             "ELSE -1 END) < ?"
         )
         cursor = await db.execute(sql, params)
