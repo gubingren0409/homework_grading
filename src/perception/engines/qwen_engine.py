@@ -38,7 +38,7 @@ class QwenVLMPerceptionEngine(BasePerceptionEngine):
             key: openai.AsyncOpenAI(
                 api_key=key,
                 base_url=settings.qwen_base_url,
-                timeout=300.0,
+                timeout=120.0,
                 max_retries=0 # Manual failover
             ) for key in keys
         }
@@ -212,8 +212,8 @@ class QwenVLMPerceptionEngine(BasePerceptionEngine):
         if not settings.llm_egress_enabled:
             raise GradingSystemError("LLM egress disabled by configuration (LLM_EGRESS_ENABLED=false)")
         connection_error_count = 0
-        max_retries = 10
-        max_connection_errors = 5
+        max_retries = 5
+        max_connection_errors = 3
         last_parse_error: Optional[str] = None
         messages = await self._resolve_prompt_messages(
             prompt_key=prompt_key,

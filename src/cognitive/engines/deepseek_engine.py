@@ -40,7 +40,7 @@ class DeepSeekCognitiveEngine(BaseCognitiveAgent):
             key: openai.AsyncOpenAI(
                 api_key=key,
                 base_url="https://api.deepseek.com",
-                timeout=400.0,
+                timeout=180.0,
                 max_retries=0 # Manual failover
             ) for key in keys
         }
@@ -153,7 +153,7 @@ class DeepSeekCognitiveEngine(BaseCognitiveAgent):
         token_estimate = int(prompt_bundle.token_estimate)
         runtime_router = get_runtime_router_controller()
         
-        max_retries = 15
+        max_retries = 6
         connection_error_count = 0
         MAX_CONNECTION_ERRORS = 1
         last_error_message = ""

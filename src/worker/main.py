@@ -26,6 +26,7 @@ import uuid
 from typing import List, Tuple, Dict, Any
 
 from celery import Celery
+from celery.exceptions import SoftTimeLimitExceeded
 
 from src.core.config import settings
 from src.core.exceptions import PerceptionShortCircuitError
@@ -149,7 +150,8 @@ def _build_workflow() -> GradingWorkflow:
     )
 
 
-@app.task(bind=True, max_retries=2, default_retry_delay=10)
+@app.task(bind=True, max_retries=2, default_retry_delay=10,
+         soft_time_limit=900, time_limit=960)
 def grade_homework_task(
     self,
     task_id: str,
@@ -740,6 +742,15 @@ def grade_homework_task(
         )
         return {"status": "rejected", "reason": str(e)}
 
+    except SoftTimeLimitExceeded:
+        timeout_msg = f"Task {task_id} exceeded soft time limit (900s). Likely stuck on LLM API."
+        logger.error(f"[Worker] {timeout_msg}")
+        run_async(update_task_status(db_path, task_id, "FAILED", error=timeout_msg))
+        run_async(update_task_progress(db_path, task_id, progress=1.0, eta_seconds=0))
+        run_async(_publish_status(task_id, "FAILED", error=timeout_msg, progress=1.0, eta_seconds=0))
+        storage.cleanup_task(task_id)
+        _route_to_dlq(task_id, payload, db_path, timeout_msg)
+        return {"status": "failed", "error": timeout_msg}
     except Exception as e:
         # Transient failure: Retry logic
         logger.error(f"[Worker] Task {task_id} failed (attempt {self.request.retries + 1}): {e}")
