@@ -109,6 +109,9 @@
   </div>
 
   <script>
+    const _graderToken = localStorage.getItem('grader_token');
+    const _authHeaders = _graderToken ? { 'Authorization': 'Bearer ' + _graderToken } : {};
+
     const $ = (id) => document.getElementById(id);
     function setText(id, v, cls = "") {
       const el = $(id);
@@ -116,12 +119,12 @@
       el.textContent = typeof v === "string" ? v : JSON.stringify(v, null, 2);
     }
     async function getJson(url) {
-      const r = await fetch(url);
+      const r = await fetch(url, { headers: _authHeaders });
       const j = await r.json();
       return { ok: r.ok, data: j };
     }
     async function postJson(url, body) {
-      const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const r = await fetch(url, { method: "POST", headers: Object.assign({ "Content-Type": "application/json" }, _authHeaders), body: JSON.stringify(body) });
       const text = await r.text();
       try { return { ok: r.ok, data: JSON.parse(text) }; } catch { return { ok: r.ok, data: text }; }
     }

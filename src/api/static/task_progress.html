@@ -221,6 +221,13 @@
   </div>
 
   <script>
+    const _graderToken = localStorage.getItem('grader_token');
+    const _authHeaders = _graderToken ? { 'Authorization': 'Bearer ' + _graderToken } : {};
+    (async function _authGuard() {
+      try { const r = await fetch('/api/v1/auth/whoami'); const d = await r.json(); if (d.auth_enabled && !_graderToken) { window.location.href = '/login'; } } catch(e) {}
+    })();
+    function authFetch(url, opts = {}) { opts.headers = Object.assign({}, _authHeaders, opts.headers || {}); return fetch(url, opts); }
+
     let es = null;
     let lastState = {};
     const maxLogLines = 140;
@@ -405,7 +412,7 @@
         $("debug").textContent = "请先输入 task_id";
         return;
       }
-      const resp = await fetch(`/api/v1/grade/${encodeURIComponent(taskId)}`);
+      const resp = await authFetch(`/api/v1/grade/${encodeURIComponent(taskId)}`);
       appendLog("info", "HTTP", `GET /api/v1/grade/${taskId}`);
       const data = await parseResponseSafe(resp);
       if (!resp.ok) {
@@ -478,7 +485,7 @@
         $("debug").textContent = "请先输入 task_id";
         return;
       }
-      const resp = await fetch(`/api/v1/results?task_id=${encodeURIComponent(taskId)}&page=1&limit=50`);
+      const resp = await authFetch(`/api/v1/results?task_id=${encodeURIComponent(taskId)}&page=1&limit=50`);
       appendLog("info", "HTTP", `GET /api/v1/results?task_id=${taskId}`);
       const data = await parseResponseSafe(resp);
       appendLog(resp.ok ? "ok" : "err", "RESULT", data);

@@ -105,7 +105,14 @@ class Settings(BaseSettings):
     skill_validation_fail_open: bool = True
     skill_gateway_auth_enabled: bool = False
     skill_gateway_auth_token: str | None = None
-    
+
+    # P9-01: Auth shell
+    auth_enabled: bool = False  # dev=False skips auth; prod should be True
+    auth_secret_key: str = "change-me-in-production"  # JWT signing key
+    auth_token_expire_minutes: int = 480  # 8 hours
+    auth_default_teacher_id: str = "teacher-default"  # fallback in dev mode
+    auth_default_teacher_name: str = "默认教师"
+
     @property
     def uploads_path(self) -> Path:
         """Absolute path to uploads directory (LocalStorage only)."""

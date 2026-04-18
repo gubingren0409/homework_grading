@@ -91,3 +91,8 @@ async def history_results_page():
 @app.get("/report-view", include_in_schema=False)
 async def report_view_page():
     return _serve_console_page("report_view.html")
+
+
+@app.get("/login", include_in_schema=False)
+async def login_page():
+    return _serve_console_page("login.html")

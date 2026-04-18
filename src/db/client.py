@@ -90,10 +90,14 @@ async def _ensure_tasks_columns(db: aiosqlite.Connection, *, include_celery: boo
     if "last_heartbeat_at" not in column_names:
         await db.execute("ALTER TABLE tasks ADD COLUMN last_heartbeat_at TIMESTAMP")
         column_names.add("last_heartbeat_at")
+    if "teacher_id" not in column_names:
+        await db.execute("ALTER TABLE tasks ADD COLUMN teacher_id TEXT")
+        column_names.add("teacher_id")
 
     await db.execute("CREATE INDEX IF NOT EXISTS idx_review_status ON tasks(review_status)")
     await db.execute("CREATE INDEX IF NOT EXISTS idx_grading_status ON tasks(grading_status)")
     await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_rubric_id ON tasks(rubric_id)")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_teacher_id ON tasks(teacher_id)")
 
 
 async def _ensure_rubrics_schema(db: aiosqlite.Connection) -> None:
@@ -420,6 +424,7 @@ async def _migrate_drop_legacy_review_columns(db: aiosqlite.Connection) -> None:
             eta_seconds INTEGER
                 CHECK (eta_seconds IS NULL OR eta_seconds >= 0),
             last_heartbeat_at TIMESTAMP,
+            teacher_id TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
@@ -430,11 +435,11 @@ async def _migrate_drop_legacy_review_columns(db: aiosqlite.Connection) -> None:
         INSERT INTO tasks_new
         (
             task_id, status, grading_status, celery_task_id, rubric_id, error_message, review_status,
-            fallback_reason, submitted_count, progress, eta_seconds, last_heartbeat_at, created_at, updated_at
+            fallback_reason, submitted_count, progress, eta_seconds, last_heartbeat_at, teacher_id, created_at, updated_at
         )
         SELECT
             task_id, status, grading_status, celery_task_id, rubric_id, error_message, review_status,
-            fallback_reason, COALESCE(submitted_count, 0), COALESCE(progress, 0.0), eta_seconds, last_heartbeat_at, created_at, updated_at
+            fallback_reason, COALESCE(submitted_count, 0), COALESCE(progress, 0.0), eta_seconds, last_heartbeat_at, teacher_id, created_at, updated_at
         FROM tasks
         """
     )
@@ -443,6 +448,7 @@ async def _migrate_drop_legacy_review_columns(db: aiosqlite.Connection) -> None:
     await db.execute("CREATE INDEX IF NOT EXISTS idx_review_status ON tasks(review_status)")
     await db.execute("CREATE INDEX IF NOT EXISTS idx_grading_status ON tasks(grading_status)")
     await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_rubric_id ON tasks(rubric_id)")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_teacher_id ON tasks(teacher_id)")
 
 
 async def migrate_drop_legacy_review_columns(db_path: str) -> None:

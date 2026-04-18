@@ -12,6 +12,7 @@ from fastapi import APIRouter
 
 from src.api.dependencies import limiter  # shared instance; main.py reads it as api_limiter
 
+from src.api.routers.auth import router as auth_router
 from src.api.routers.grade import router as grade_router
 from src.api.routers.rubric import router as rubric_router
 from src.api.routers.review import router as review_router
@@ -23,6 +24,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1", tags=["grading"])
 
+router.include_router(auth_router)
 router.include_router(rubric_router)
 router.include_router(grade_router)
 router.include_router(review_router)

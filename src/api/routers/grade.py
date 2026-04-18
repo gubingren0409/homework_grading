@@ -18,6 +18,7 @@ from redis.exceptions import RedisError
 
 from src.api.dependencies import get_db_path, limiter
 from src.api.sse import create_sse_response
+from src.api.auth import TeacherIdentity, get_current_teacher
 from src.core.config import settings
 from src.db.client import (
     create_task,
@@ -118,7 +119,8 @@ async def submit_grading_job(
     files: List[UploadFile] = File(...),
     rubric_id: Optional[str] = Form(default=None),
     student_id: Optional[str] = Form(default=None),
-    db_path: str = Depends(get_db_path)
+    db_path: str = Depends(get_db_path),
+    teacher: TeacherIdentity = Depends(get_current_teacher),
 ):
     """
     Phase 32: Storage Adapter Pattern - Backend-agnostic file handling.
@@ -146,7 +148,7 @@ async def submit_grading_job(
         file_refs.append(file_ref)
     
     # 3. Pre-persist task state (PENDING) BEFORE queueing
-    await create_task(db_path, task_id, submitted_count=len(file_refs))
+    await create_task(db_path, task_id, submitted_count=len(file_refs), teacher_id=teacher.teacher_id)
 
     bound_rubric: Optional[Dict[str, Any]] = None
     if rubric_id:
@@ -215,6 +217,7 @@ async def submit_batch_grading_job(
     files: List[UploadFile] = File(...),
     rubric_id: Optional[str] = Form(default=None),
     db_path: str = Depends(get_db_path),
+    teacher: TeacherIdentity = Depends(get_current_teacher),
 ):
     """
     Batch mode:
@@ -247,7 +250,7 @@ async def submit_batch_grading_job(
         file_ref = await _store_upload_file_with_limits(task_id, file)
         file_refs.append(file_ref)
 
-    await create_task(db_path, task_id, submitted_count=len(file_refs))
+    await create_task(db_path, task_id, submitted_count=len(file_refs), teacher_id=teacher.teacher_id)
 
     bound_rubric: Optional[Dict[str, Any]] = None
     if rubric_id:
@@ -311,6 +314,7 @@ async def submit_batch_with_reference_grading_job(
     reference_files: List[UploadFile] = File(...),
     files: List[UploadFile] = File(...),
     db_path: str = Depends(get_db_path),
+    teacher: TeacherIdentity = Depends(get_current_teacher),
 ):
     """
     One-shot smart batch mode:
@@ -358,7 +362,7 @@ async def submit_batch_with_reference_grading_job(
         file_ref = await _store_upload_file_with_limits(task_id, file)
         reference_file_refs.append(file_ref)
 
-    await create_task(db_path, task_id, submitted_count=len(file_refs))
+    await create_task(db_path, task_id, submitted_count=len(file_refs), teacher_id=teacher.teacher_id)
 
     payload = storage.prepare_payload(file_refs)
     payload["mode"] = "batch_single_page"
@@ -763,13 +767,18 @@ async def get_task_history(
     limit: int = Query(20, ge=1, le=100),
     status: Optional[str] = Query(default=None, pattern="^(PENDING|PROCESSING|COMPLETED|FAILED)$"),
     db_path: str = Depends(get_db_path),
+    teacher: TeacherIdentity = Depends(get_current_teacher),
 ):
     offset = (page - 1) * limit
-    where_clause = ""
+    where_conditions: List[str] = []
     params: List[Any] = []
     if status:
-        where_clause = "WHERE t.status = ?"
+        where_conditions.append("t.status = ?")
         params.append(status)
+    if settings.auth_enabled:
+        where_conditions.append("t.teacher_id = ?")
+        params.append(teacher.teacher_id)
+    where_clause = ("WHERE " + " AND ".join(where_conditions)) if where_conditions else ""
     params.extend([limit, offset])
 
     from src.db.client import _open_connection, aiosqlite

@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>教师登录 — AI 阅卷系统</title>
+  <style>
+    :root {
+      --bg: #f4f7fb;
+      --card: #ffffff;
+      --line: #e3e8f3;
+      --text: #1f2937;
+      --muted: #667085;
+      --primary: #3563e9;
+      --primary-hover: #2a4fbf;
+      --err: #d92d20;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); font-family: Arial, sans-serif; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+    .login-card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 4px 24px rgba(15, 23, 42, 0.06); padding: 40px 36px 32px; width: 380px; max-width: 95vw; }
+    .login-card h1 { margin: 0 0 6px; font-size: 24px; text-align: center; }
+    .login-card .subtitle { text-align: center; color: var(--muted); font-size: 14px; margin-bottom: 28px; }
+    label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 4px; color: var(--text); }
+    input[type="text"], input[type="password"] {
+      width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; font-size: 14px;
+      outline: none; transition: border 0.15s;
+    }
+    input:focus { border-color: var(--primary); }
+    .field { margin-bottom: 18px; }
+    .btn-login {
+      width: 100%; padding: 12px; border: none; border-radius: 10px;
+      background: var(--primary); color: #fff; font-size: 15px; font-weight: 600;
+      cursor: pointer; transition: background 0.15s;
+    }
+    .btn-login:hover { background: var(--primary-hover); }
+    .btn-login:disabled { background: #a0b4e8; cursor: not-allowed; }
+    .error-msg { color: var(--err); font-size: 13px; text-align: center; margin-top: 12px; min-height: 18px; }
+    .dev-hint { text-align: center; color: var(--muted); font-size: 12px; margin-top: 16px; line-height: 1.6; }
+    .dev-hint code { background: #f0f2f5; padding: 2px 5px; border-radius: 4px; font-size: 11px; }
+  </style>
+</head>
+<body>
+  <div class="login-card">
+    <h1>📝 AI 阅卷系统</h1>
+    <p class="subtitle">教师身份登录</p>
+    <form id="loginForm" autocomplete="off">
+      <div class="field">
+        <label for="teacherId">教师账号</label>
+        <input type="text" id="teacherId" placeholder="例如 teacher-demo" required />
+      </div>
+      <div class="field">
+        <label for="password">密码</label>
+        <input type="password" id="password" placeholder="请输入密码" required />
+      </div>
+      <button type="submit" class="btn-login" id="btnLogin">登 录</button>
+    </form>
+    <div class="error-msg" id="errMsg"></div>
+    <div class="dev-hint">
+      试用账号：<code>teacher-demo</code> / <code>demo2024</code>
+    </div>
+  </div>
+
+  <script>
+    const API = '/api/v1';
+
+    // If already logged in, redirect to main page
+    (async function checkAuth() {
+      try {
+        const resp = await fetch(`${API}/auth/whoami`);
+        const data = await resp.json();
+        if (!data.auth_enabled) {
+          // Auth disabled — skip login
+          window.location.href = '/student-console';
+          return;
+        }
+        const token = localStorage.getItem('grader_token');
+        if (token) {
+          // Validate token is still good
+          const check = await fetch(`${API}/tasks/history?limit=1`, {
+            headers: { 'Authorization': `Bearer ${token}` }
+          });
+          if (check.ok) {
+            window.location.href = '/student-console';
+            return;
+          }
+          // Token expired, clear it
+          localStorage.removeItem('grader_token');
+          localStorage.removeItem('grader_teacher_id');
+          localStorage.removeItem('grader_teacher_name');
+        }
+      } catch(e) { /* ignore, show login */ }
+    })();
+
+    document.getElementById('loginForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const btn = document.getElementById('btnLogin');
+      const errEl = document.getElementById('errMsg');
+      errEl.textContent = '';
+      btn.disabled = true;
+      btn.textContent = '登录中…';
+
+      const teacherId = document.getElementById('teacherId').value.trim();
+      const password = document.getElementById('password').value;
+
+      try {
+        const resp = await fetch(`${API}/auth/login`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ teacher_id: teacherId, password })
+        });
+        const data = await resp.json();
+
+        if (!resp.ok) {
+          errEl.textContent = data.detail || '登录失败，请检查账号密码';
+          return;
+        }
+
+        localStorage.setItem('grader_token', data.token);
+        localStorage.setItem('grader_teacher_id', data.teacher_id);
+        localStorage.setItem('grader_teacher_name', data.teacher_name);
+
+        window.location.href = '/student-console';
+      } catch (err) {
+        errEl.textContent = '网络错误，请稍后重试';
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '登 录';
+      }
+    });
+  </script>
+</body>
+</html>

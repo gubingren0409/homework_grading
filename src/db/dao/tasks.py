@@ -17,12 +17,13 @@ async def create_task(
     task_id: str,
     *,
     submitted_count: int = 0,
+    teacher_id: str | None = None,
 ) -> None:
     async def _op(db: aiosqlite.Connection) -> None:
         await _ensure_tasks_columns(db, include_celery=False)
         await db.execute(
-            "INSERT INTO tasks (task_id, status, submitted_count, progress, eta_seconds) VALUES (?, ?, ?, ?, ?)",
-            (task_id, "PENDING", max(0, int(submitted_count)), 0.0, 60),
+            "INSERT INTO tasks (task_id, status, submitted_count, progress, eta_seconds, teacher_id) VALUES (?, ?, ?, ?, ?, ?)",
+            (task_id, "PENDING", max(0, int(submitted_count)), 0.0, 60, teacher_id),
         )
 
     await _execute_write_with_retry(db_path, _op)

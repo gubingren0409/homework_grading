@@ -332,6 +332,21 @@
   </div>
 
   <script>
+    // --- Auth guard: redirect to /login if auth enabled and no valid token ---
+    const _graderToken = localStorage.getItem('grader_token');
+    const _authHeaders = _graderToken ? { 'Authorization': 'Bearer ' + _graderToken } : {};
+    (async function _authGuard() {
+      try {
+        const r = await fetch('/api/v1/auth/whoami');
+        const d = await r.json();
+        if (d.auth_enabled && !_graderToken) { window.location.href = '/login'; return; }
+      } catch(e) { /* offline or server down, proceed */ }
+    })();
+    function authFetch(url, opts = {}) {
+      opts.headers = Object.assign({}, _authHeaders, opts.headers || {});
+      return fetch(url, opts);
+    }
+
     let es = null;
     let pollTimer = null;
     let rubricInFlight = false;
@@ -654,7 +669,7 @@
       const sel = $("rubricSelect");
       const prev = sel.value;
       sel.innerHTML = "";
-      const resp = await fetch("/api/v1/rubrics?page=1&limit=50");
+      const resp = await authFetch("/api/v1/rubrics?page=1&limit=50");
       appendLog("info", "HTTP", "GET /api/v1/rubrics");
       const data = await parseResponseSafe(resp);
       if (!resp.ok || !Array.isArray(data)) {
@@ -686,7 +701,7 @@
     }
 
     async function loadRubricDetail(rubricId) {
-      const resp = await fetch(`/api/v1/rubrics/${encodeURIComponent(rubricId)}`);
+      const resp = await authFetch(`/api/v1/rubrics/${encodeURIComponent(rubricId)}`);
       appendLog("info", "HTTP", `GET /api/v1/rubrics/${rubricId}`);
       const data = await parseResponseSafe(resp);
       if (!resp.ok) {
@@ -720,7 +735,7 @@
       try {
         const fd = new FormData();
         for (const f of files) fd.append("files", f);
-        const resp = await fetch("/api/v1/rubric/generate", { method: "POST", body: fd });
+        const resp = await authFetch("/api/v1/rubric/generate", { method: "POST", body: fd });
         appendLog("info", "HTTP", `POST /api/v1/rubric/generate files=${files.length}`);
         const data = await parseResponseSafe(resp);
         if (!resp.ok) {
@@ -805,7 +820,7 @@
           }
         }
 
-        const resp = await fetch(endpoint, { method: "POST", body: fd });
+        const resp = await authFetch(endpoint, { method: "POST", body: fd });
         appendLog("info", "HTTP", `POST ${endpoint} mode=${logLabel} files=${files.length}`);
         const data = await parseResponseSafe(resp);
         if (!resp.ok) {
@@ -842,7 +857,7 @@
         }
         return;
       }
-      const resp = await fetch(`/api/v1/grade/${taskId}`);
+      const resp = await authFetch(`/api/v1/grade/${taskId}`);
       if (!silent) {
         appendLog("info", "HTTP", `GET /api/v1/grade/${taskId}`);
       }
@@ -918,7 +933,7 @@
         setText("extra", "请先输入 task_id", "err");
         return;
       }
-      const resp = await fetch(`/api/v1/results?task_id=${encodeURIComponent(taskId)}&page=1&limit=20`);
+      const resp = await authFetch(`/api/v1/results?task_id=${encodeURIComponent(taskId)}&page=1&limit=20`);
       appendLog("info", "HTTP", `GET /api/v1/results?task_id=${taskId}`);
       const data = await parseResponseSafe(resp);
       appendLog(resp.ok ? "ok" : "err", "RESULT", data);
@@ -926,7 +941,7 @@
     }
 
     async function flowGuide() {
-      const resp = await fetch("/api/v1/grade/flow-guide");
+      const resp = await authFetch("/api/v1/grade/flow-guide");
       appendLog("info", "HTTP", "GET /api/v1/grade/flow-guide");
       const data = await parseResponseSafe(resp);
       appendLog(resp.ok ? "ok" : "err", "FLOW", data);
