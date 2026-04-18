@@ -79,6 +79,7 @@ async def ops_console():
 
 
 @app.get("/tasks-list", include_in_schema=False)
+@app.get("/task-list", include_in_schema=False)
 async def tasks_list_page():
     return _serve_console_page("task_list.html")
 
@@ -91,6 +92,21 @@ async def history_results_page():
 @app.get("/report-view", include_in_schema=False)
 async def report_view_page():
     return _serve_console_page("report_view.html")
+
+
+@app.get("/class-dashboard", include_in_schema=False)
+async def class_dashboard_page():
+    return _serve_console_page("class_dashboard.html")
+
+
+@app.get("/task-progress", include_in_schema=False)
+async def task_progress_page():
+    return _serve_console_page("task_progress.html")
+
+
+@app.get("/student-console-batch", include_in_schema=False)
+async def student_console_batch_page():
+    return _serve_console_page("student_console_batch.html")
 
 
 @app.get("/login", include_in_schema=False)
