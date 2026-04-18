@@ -94,12 +94,58 @@ def zombie_sweeper_task(timeout_seconds: int | None = None) -> Dict[str, Any]:
         loop.close()
 
 
+@app.task(name="upload_ttl_cleanup_task")
+def upload_ttl_cleanup_task(ttl_days: int | None = None) -> Dict[str, Any]:
+    """
+    P9-04: Clean up expired upload directories.
+
+    Scans the uploads directory for task folders older than *ttl_days*.
+    Also marks associated completed tasks so the API can flag expired images.
+    """
+    effective_ttl = ttl_days or settings.upload_ttl_days
+    uploads_path = settings.uploads_path
+    logger.info(f"[UploadTTL] Scanning {uploads_path} for dirs older than {effective_ttl} days")
+
+    if not uploads_path.is_dir():
+        logger.info("[UploadTTL] Uploads directory does not exist, nothing to clean")
+        return {"scanned": 0, "cleaned": 0, "errors": 0}
+
+    import time as _time
+    cutoff_ts = _time.time() - (effective_ttl * 86400)
+    scanned = 0
+    cleaned = 0
+    errors = 0
+
+    for entry in uploads_path.iterdir():
+        if not entry.is_dir():
+            continue
+        scanned += 1
+        try:
+            dir_mtime = entry.stat().st_mtime
+            if dir_mtime < cutoff_ts:
+                import shutil
+                shutil.rmtree(entry)
+                cleaned += 1
+                logger.info(f"[UploadTTL] Removed expired dir: {entry.name}")
+        except Exception as exc:
+            errors += 1
+            logger.warning(f"[UploadTTL] Failed to remove {entry.name}: {exc}")
+
+    logger.info(f"[UploadTTL] Done: scanned={scanned}, cleaned={cleaned}, errors={errors}")
+    return {"scanned": scanned, "cleaned": cleaned, "errors": errors}
+
+
 # Celery Beat Schedule Configuration
 app.conf.beat_schedule = {
     'zombie-sweeper-every-minute': {
         'task': 'zombie_sweeper_task',
         'schedule': 60.0,
-        'args': (),  # uses settings.processing_orphan_timeout_seconds by default
+        'args': (),
+    },
+    'upload-ttl-cleanup-daily': {
+        'task': 'upload_ttl_cleanup_task',
+        'schedule': 86400.0,  # once per day
+        'args': (),
     },
 }
 

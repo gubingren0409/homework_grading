@@ -212,6 +212,45 @@ async def cleanup_ops_queue_stale_processing(
     }
 
 
+@router.post("/ops/uploads/cleanup-expired")
+async def cleanup_expired_uploads(
+    ttl_days: int = Query(7, ge=1, le=365),
+):
+    """P9-04: Manually trigger TTL-based upload directory cleanup."""
+    import time as _time
+    import shutil
+
+    uploads_path = settings.uploads_path
+    if not uploads_path.is_dir():
+        return {"scanned": 0, "cleaned": 0, "errors": 0}
+
+    cutoff_ts = _time.time() - (ttl_days * 86400)
+    scanned = 0
+    cleaned = 0
+    errors = 0
+    cleaned_dirs: list[str] = []
+
+    for entry in uploads_path.iterdir():
+        if not entry.is_dir():
+            continue
+        scanned += 1
+        try:
+            if entry.stat().st_mtime < cutoff_ts:
+                shutil.rmtree(entry)
+                cleaned += 1
+                cleaned_dirs.append(entry.name)
+        except Exception:
+            errors += 1
+
+    return {
+        "ttl_days": ttl_days,
+        "scanned": scanned,
+        "cleaned": cleaned,
+        "errors": errors,
+        "cleaned_dirs_sample": cleaned_dirs[:20],
+    }
+
+
 @router.post("/ops/queue/cleanup-task", response_model=QueueTaskCleanupResponse)
 async def cleanup_ops_queue_task_by_id(
     task_id: str = Query(..., min_length=8, max_length=128),

@@ -198,7 +198,8 @@
             <div class="image-card">
               <div class="muted" style="margin-bottom:8px;">${esc(item.name || "原图")}</div>
               <a href="${esc(item.url)}" target="_blank" rel="noopener noreferrer">
-                <img src="${esc(item.url)}" alt="${esc(item.name || "原图")}" loading="lazy" />
+                <img src="${esc(item.url)}" alt="${esc(item.name || "原图")}" loading="lazy"
+                     onerror="this.parentElement.outerHTML='<div class=\'muted\' style=\'padding:24px;text-align:center;border:1px dashed #ccc;border-radius:8px;color:#999;\'>📷 原图已过期（已被 TTL 清理）</div>'" />
               </a>
             </div>
           `).join("")

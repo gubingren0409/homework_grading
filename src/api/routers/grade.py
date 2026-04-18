@@ -751,7 +751,7 @@ async def get_result_input_asset(
     except ValueError as exc:
         raise HTTPException(status_code=403, detail="input asset path rejected") from exc
     if not asset_path.exists():
-        raise HTTPException(status_code=404, detail="input asset missing")
+        raise HTTPException(status_code=410, detail="input asset expired (TTL cleanup)")
 
     media_type = mimetypes.guess_type(asset_path.name)[0] or "application/octet-stream"
     return FileResponse(asset_path, media_type=media_type, filename=asset_path.name)
