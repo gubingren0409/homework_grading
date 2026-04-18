@@ -927,3 +927,66 @@ async def get_ops_rubric_audit(
     return RubricGenerateAuditResponse(page=page, limit=limit, items=items)
 
 
+@router.get("/ops/pg-migration/readiness")
+async def get_pg_migration_readiness(db_path: str = Depends(get_db_path)):
+    """P9-09: Check PostgreSQL migration trigger thresholds.
+
+    Returns current values vs defined thresholds so operators can
+    decide when to start the migration project.
+    """
+    import aiosqlite
+
+    thresholds = {
+        "concurrent_processing": {"threshold": 5, "description": "同时 PROCESSING 任务数"},
+        "daily_submissions": {"threshold": 50, "description": "今日提交任务数"},
+        "total_results": {"threshold": 100_000, "description": "grading_results 总行数"},
+    }
+
+    async with aiosqlite.connect(db_path) as conn:
+        conn.row_factory = aiosqlite.Row
+        # Concurrent PROCESSING tasks
+        row = await conn.execute_fetchall(
+            "SELECT COUNT(*) as cnt FROM tasks WHERE status = 'PROCESSING'"
+        )
+        concurrent = row[0][0] if row else 0
+
+        # Daily submissions (today)
+        row = await conn.execute_fetchall(
+            "SELECT COUNT(*) as cnt FROM tasks WHERE date(created_at) = date('now')"
+        )
+        daily = row[0][0] if row else 0
+
+        # Total grading results
+        row = await conn.execute_fetchall("SELECT COUNT(*) as cnt FROM grading_results")
+        total_results = row[0][0] if row else 0
+
+    checks = [
+        {
+            "metric": "concurrent_processing",
+            "description": thresholds["concurrent_processing"]["description"],
+            "current": concurrent,
+            "threshold": thresholds["concurrent_processing"]["threshold"],
+            "triggered": concurrent >= thresholds["concurrent_processing"]["threshold"],
+        },
+        {
+            "metric": "daily_submissions",
+            "description": thresholds["daily_submissions"]["description"],
+            "current": daily,
+            "threshold": thresholds["daily_submissions"]["threshold"],
+            "triggered": daily >= thresholds["daily_submissions"]["threshold"],
+        },
+        {
+            "metric": "total_results",
+            "description": thresholds["total_results"]["description"],
+            "current": total_results,
+            "threshold": thresholds["total_results"]["threshold"],
+            "triggered": total_results >= thresholds["total_results"]["threshold"],
+        },
+    ]
+
+    any_triggered = any(c["triggered"] for c in checks)
+    return {
+        "migration_recommended": any_triggered,
+        "summary": "建议启动 PostgreSQL 迁移" if any_triggered else "当前负载在 SQLite 舒适区内",
+        "checks": checks,
+    }

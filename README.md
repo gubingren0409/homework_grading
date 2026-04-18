@@ -270,11 +270,16 @@ celery -A src.worker.main worker --loglevel=info --pool=solo --concurrency=1
 docker compose up --build
 ```
 
-默认服务：
+默认服务（4 个）：
 
-1. `grader-api`
-2. `grader-worker`
-3. `redis`
+1. `nginx` — 反向代理与 HTTPS 终止（对外暴露 80/443）
+2. `grader-api` — FastAPI 主入口（仅容器内部暴露）
+3. `grader-worker` — Celery 批改引擎
+4. `redis` — 消息队列与状态中转
+
+启动后访问 `http://localhost/` 即可看到产品首页，通过 `/login` 登录教师工作台。
+
+> **Windows 本地开发注意**：Docker Worker 与 SQLite 存在 WSL2 文件锁兼容问题。建议仅 Redis 使用 Docker，API 和 Worker 在本地直接运行。详见 `docs/deployment_guide_cn.md` 8.7 节。
 
 ---
 

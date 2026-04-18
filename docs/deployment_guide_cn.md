@@ -153,14 +153,27 @@ docker compose down
 
 按顺序检查：
 
-1. `docker compose ps` 中 3 个服务都应启动
-2. 访问 `http://<host>:8000/`，应返回健康 JSON
-3. 打开 `/student-console`，确认页面可访问
-4. 打开 `/task-progress`、`/class-dashboard`、`/review-console`，确认静态页可访问
-5. 提交一个小任务，确认：
+1. `docker compose ps` 中 **4 个服务（nginx / redis / grader-api / grader-worker）** 都应启动且状态为 healthy 或 running。
+2. 访问 `http://<host>/`（通过 Nginx），应看到产品落地页。
+3. 访问 `http://<host>/login`，确认登录页可用。
+4. 使用试用账号登录（默认：teacher-demo / demo123），跳转到工作台。
+5. 检查核心页面均可访问：
+   - `/student-console`（教师任务创建向导）
+   - `/task-progress`（任务进度）
+   - `/class-dashboard`（班级看板）
+   - `/review-console`（复核工作台）
+   - `/ops-console`（运维面板）
+6. 提交一个小任务（1-2 份学生作答），确认：
    - 返回 `task_id`
-   - `/api/v1/grade/{task_id}` 可轮询
+   - 进度页显示处理中
    - Worker 日志中有任务执行记录
+   - 任务完成后可在班级看板中查看结果
+
+### 5.1 Nginx 相关检查
+
+1. 确认 Nginx 日志无 502/504 错误：`docker compose logs nginx`
+2. SSE 实时进度推送正常（进度页无需手动刷新即可更新）
+3. 大文件上传无超时（Nginx 已配置 100MB 上传限制和 1800s 超时）
 
 ---
 
@@ -239,6 +252,31 @@ docker compose up -d --build
 1. 是否在同一台机器上高并发跑了太多批任务
 2. `outputs/` 所在磁盘是否可写
 3. 是否有人直接占用了数据库文件
+
+### 8.5 Nginx 502/504 错误
+
+优先检查：
+
+1. `grader-api` 是否正常运行：`docker compose logs grader-api`
+2. Nginx 上游配置是否指向正确的服务名和端口（默认 `grader-api:8000`）
+3. SSE 端点出现 504：检查 `proxy_read_timeout` 是否设为 1800s（已在 `proxy_common.conf` 中配置）
+
+### 8.6 Windows 开发环境 Redis 端口冲突（双 Redis 问题）
+
+在 Windows 上同时安装了本地 Redis 和 Docker Redis 时，可能出现端口 6379 冲突：
+
+1. 先停止本地 Redis 服务：`Stop-Service Redis` 或 `net stop Redis`
+2. 再启动 Docker Redis：`docker compose up redis -d`
+3. 确认只有 Docker Redis 在运行：`docker compose ps redis`
+4. 如果 Celery worker 连不上 Redis，检查 `.env` 中 `REDIS_HOST=localhost`（本地开发）或 `REDIS_HOST=redis`（Docker 网络内）
+
+### 8.7 Docker Worker 与 SQLite 不兼容（WSL2 文件锁问题）
+
+Docker 容器运行在 WSL2 中，SQLite 文件锁在 Windows ↔ WSL2 bind mount 间不可靠：
+
+1. **症状**：Worker 容器日志出现 `disk I/O error` 或 `database is locked`
+2. **临时方案**：在本地直接运行 Worker（不用 Docker），仅 Redis 使用 Docker
+3. **长期方案**：迁移到 PostgreSQL（见 `docs/postgresql_migration_plan_cn.md`）
 
 ---
 
