@@ -7,7 +7,7 @@ from fastapi import FastAPI, UploadFile
 from fastapi.testclient import TestClient
 
 from src.core.http_limits import HardBodyLimitMiddleware
-from src.api.routes import _store_upload_file_with_limits
+from src.api.route_helpers import store_upload_file_with_limits as _store_upload_file_with_limits
 
 
 class _SlowReceive:
@@ -82,10 +82,10 @@ async def test_e05_slow_upload_times_out_with_408(tmp_path: Path):
 
     upload = FakeUploadFile()
 
-    with patch("src.api.routes.settings.request_body_read_timeout_seconds", 0.05), patch(
-        "src.api.routes.settings.max_request_body_bytes", 1024
-    ), patch("src.api.routes.settings.upload_chunk_size_bytes", 8), patch(
-        "src.api.routes.settings.upload_spool_max_size_bytes", 16
+    with patch("src.api.route_helpers.settings.request_body_read_timeout_seconds", 0.05), patch(
+        "src.api.route_helpers.settings.max_request_body_bytes", 1024
+    ), patch("src.api.route_helpers.settings.upload_chunk_size_bytes", 8), patch(
+        "src.api.route_helpers.settings.upload_spool_max_size_bytes", 16
     ):
         with pytest.raises(Exception) as exc_info:
             await _store_upload_file_with_limits("task-slow", upload)  # type: ignore[arg-type]
@@ -110,10 +110,10 @@ async def test_e05_stream_limit_hits_413_without_buffer_join():
             return None
 
     upload = FakeUploadFile()
-    with patch("src.api.routes.settings.request_body_read_timeout_seconds", 1.0), patch(
-        "src.api.routes.settings.max_request_body_bytes", 10
-    ), patch("src.api.routes.settings.upload_chunk_size_bytes", 8), patch(
-        "src.api.routes.settings.upload_spool_max_size_bytes", 16
+    with patch("src.api.route_helpers.settings.request_body_read_timeout_seconds", 1.0), patch(
+        "src.api.route_helpers.settings.max_request_body_bytes", 10
+    ), patch("src.api.route_helpers.settings.upload_chunk_size_bytes", 8), patch(
+        "src.api.route_helpers.settings.upload_spool_max_size_bytes", 16
     ):
         with pytest.raises(Exception) as exc_info:
             await _store_upload_file_with_limits("task-big", upload)  # type: ignore[arg-type]
