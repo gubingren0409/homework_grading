@@ -113,6 +113,20 @@ class Settings(BaseSettings):
     auth_default_teacher_id: str = "teacher-default"  # fallback in dev mode
     auth_default_teacher_name: str = "默认教师"
 
+    # Phase 10: LLM API robustness controls (configurable to prevent timeout death spiral)
+    qwen_api_timeout_seconds: float = 120.0
+    qwen_max_output_tokens: int = 16384
+    qwen_max_retries: int = 3
+    qwen_max_connection_errors: int = 3
+    deepseek_api_timeout_seconds: float = 180.0
+    deepseek_max_output_tokens: int = 8192
+    deepseek_max_retries: int = 4
+
+    # Phase 10: Celery robustness controls
+    celery_visibility_timeout: int = 1800  # Redis broker: re-deliver unacked after 30min
+    celery_task_soft_time_limit_seconds: int = 900
+    celery_task_hard_time_limit_seconds: int = 960
+
     @property
     def uploads_path(self) -> Path:
         """Absolute path to uploads directory (LocalStorage only)."""

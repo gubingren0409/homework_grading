@@ -1012,7 +1012,8 @@ async def cancel_task(
 # ---------------------------------------------------------------------------
 
 def _check_redis_health() -> tuple[bool, str]:
-    """Quick Redis ping. Returns (healthy, error_message)."""
+    """Quick Redis ping with instance identification for dual-Redis debugging."""
+    target = f"{settings.redis_host}:{settings.redis_port}/{settings.redis_db}"
     try:
         import redis as _redis
         client = _redis.Redis(
@@ -1023,8 +1024,10 @@ def _check_redis_health() -> tuple[bool, str]:
             socket_timeout=2,
         )
         client.ping()
+        logger.debug(f"Redis health OK at {target}")
         return True, ""
     except Exception as exc:
+        logger.warning(f"Redis health FAIL at {target}: {exc}")
         return False, str(exc)[:200]
 
 

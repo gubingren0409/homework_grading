@@ -9,6 +9,7 @@ from pathlib import Path
 from src.api.routes import router as grading_router
 from src.db.client import init_db
 from src.api.dependencies import get_db_path
+from src.core.config import settings
 
 # Configure logging for the API layer
 logging.basicConfig(level=logging.INFO)
@@ -19,6 +20,39 @@ async def lifespan(_: FastAPI):
     db_path = get_db_path()
     logger.info(f"Initializing database at {db_path}...")
     await init_db(db_path)
+
+    # Phase 10: Startup validation — fail fast on misconfiguration
+    _startup_warnings = []
+
+    # 1. Redis connectivity check
+    try:
+        import redis as _redis
+        _r = _redis.Redis(
+            host=settings.redis_host, port=settings.redis_port,
+            db=settings.redis_db, socket_connect_timeout=3, socket_timeout=3,
+        )
+        _r.ping()
+        _info = _r.info("server")
+        logger.info(f"Redis OK — {settings.redis_host}:{settings.redis_port} "
+                     f"(v{_info.get('redis_version', '?')})")
+        _r.close()
+    except Exception as e:
+        _startup_warnings.append(f"Redis unreachable ({settings.redis_host}:{settings.redis_port}): {e}")
+        logger.warning(f"[Startup] Redis unreachable — task dispatch will fallback to local execution: {e}")
+
+    # 2. API key presence check
+    qwen_keys = settings.parsed_qwen_keys
+    deepseek_keys = settings.parsed_deepseek_keys
+    if not qwen_keys:
+        _startup_warnings.append("QWEN_API_KEYS not set — perception disabled")
+        logger.warning("[Startup] No Qwen API keys configured — VLM perception calls will fail")
+    if not deepseek_keys:
+        _startup_warnings.append("DEEPSEEK_API_KEYS not set — cognitive disabled")
+        logger.warning("[Startup] No DeepSeek API keys configured — cognitive grading calls will fail")
+
+    if _startup_warnings:
+        logger.warning(f"[Startup] {len(_startup_warnings)} warning(s): {'; '.join(_startup_warnings)}")
+
     logger.info("API Gateway is ready.")
     yield
 
@@ -44,8 +78,25 @@ app.include_router(grading_router)
 
 @app.get("/health")
 async def health_check():
-    """Basic health check endpoint."""
-    return {"status": "healthy", "service": "grader-api"}
+    """Health check endpoint with Redis connectivity status."""
+    redis_ok = True
+    redis_detail = ""
+    try:
+        import redis as _redis
+        _r = _redis.Redis(
+            host=settings.redis_host, port=settings.redis_port,
+            db=settings.redis_db, socket_connect_timeout=2, socket_timeout=2,
+        )
+        _r.ping()
+        _r.close()
+    except Exception as exc:
+        redis_ok = False
+        redis_detail = str(exc)[:100]
+    return {
+        "status": "healthy" if redis_ok else "degraded",
+        "service": "grader-api",
+        "redis": {"ok": redis_ok, "target": f"{settings.redis_host}:{settings.redis_port}", "error": redis_detail or None},
+    }
 
 
 def _serve_console_page(filename: str) -> FileResponse:

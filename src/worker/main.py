@@ -102,6 +102,11 @@ _worker_conf = dict(
     task_default_max_retries=2,  # Global max retries
     task_always_eager=settings.celery_task_always_eager,
     task_store_eager_result=True,
+    # Phase 10: Redis visibility timeout — unacked messages re-delivered after this time.
+    # Prevents message loss when a worker acks then dies before completing.
+    broker_transport_options={
+        "visibility_timeout": settings.celery_visibility_timeout,
+    },
 )
 if _is_windows:
     _worker_conf.update(
@@ -152,7 +157,8 @@ def _build_workflow() -> GradingWorkflow:
 
 
 @app.task(bind=True, max_retries=2, default_retry_delay=10,
-         soft_time_limit=900, time_limit=960)
+         soft_time_limit=settings.celery_task_soft_time_limit_seconds,
+         time_limit=settings.celery_task_hard_time_limit_seconds)
 def grade_homework_task(
     self,
     task_id: str,
@@ -773,23 +779,36 @@ def grade_homework_task(
         _route_to_dlq(task_id, payload, db_path, timeout_msg)
         return {"status": "failed", "error": timeout_msg}
     except Exception as e:
-        # Transient failure: Retry logic
-        logger.error(f"[Worker] Task {task_id} failed (attempt {self.request.retries + 1}): {e}")
-        run_async(update_task_status(db_path, task_id, "FAILED", error=str(e)))
+        # Transient failure: Rich error logging for faster post-mortem
+        import traceback as _tb
+        _exc_type = type(e).__name__
+        _error_summary = f"{_exc_type}: {str(e)[:300]}"
+        logger.error(
+            "task_execution_failed",
+            extra={"extra_fields": {
+                "task_id": task_id,
+                "attempt": self.request.retries + 1,
+                "max_retries": self.max_retries + 1,
+                "exception_type": _exc_type,
+                "exception_message": str(e)[:500],
+            }},
+            exc_info=True,
+        )
+        run_async(update_task_status(db_path, task_id, "FAILED", error=_error_summary))
         run_async(update_task_progress(db_path, task_id, progress=1.0, eta_seconds=0))
         logger.info("task_status_persisted", extra={"extra_fields": {"status": "FAILED"}})
         # Phase 33: Publish failure event to Redis Pub/Sub
-        run_async(_publish_status(task_id, "FAILED", error=str(e), progress=1.0, eta_seconds=0))
+        run_async(_publish_status(task_id, "FAILED", error=_error_summary, progress=1.0, eta_seconds=0))
 
         # Cleanup on permanent failure (after max retries)
         if self.request.retries >= self.max_retries:
             storage.cleanup_task(task_id)
             
             # Phase 32: Route to Dead Letter Queue for audit
-            _route_to_dlq(task_id, payload, db_path, str(e))
+            _route_to_dlq(task_id, payload, db_path, _error_summary)
             
             logger.critical(f"[Worker] Task {task_id} permanently failed and routed to DLQ")
-            return {"status": "failed", "error": str(e)}
+            return {"status": "failed", "error": _error_summary}
 
         # Retry if attempts remain
         if self.request.retries < self.max_retries:
@@ -797,7 +816,7 @@ def grade_homework_task(
 
         # Permanent failure after max retries
         logger.critical(f"[Worker] Task {task_id} permanently failed after {self.max_retries} retries")
-        return {"status": "failed", "error": str(e)}
+        return {"status": "failed", "error": _error_summary}
     finally:
         reset_context(ctx_tokens)
 
