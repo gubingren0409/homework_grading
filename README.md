@@ -1,316 +1,341 @@
 # AI 自动作业批改系统
 
-面向**中学理科教师**的 AI 阅卷与复核工作台后端。当前仓库已经具备一条真实可运行的后端主链路：
+面向**中学理科教师**的 AI 阅卷与复核工作台。项目围绕“参考答案生成评分标准、学生作答自动识别与评分、异常样本进入人工复核、结果回传与沉淀”这条主链路构建，已经形成可本地运行、可容器部署、可持续迭代的完整后端系统。
 
-> **教师上传参考答案/学生作答 -> 创建任务 -> 异步批改 -> 感知识别 -> 认知评分 -> 结果落库 -> SSE/轮询回传 -> 报告/复核页展示**
-
-它已经明显超过“接口 demo”，但还没有收束成“成熟可交付 SaaS”。更准确地说，它处在：
-
-> **后端能力完整度较高，教师工作流前端已完成第一轮收口，当前主要缺口转向部署治理、交付包装与更深层结构拆分**
+> **教师上传参考答案与学生作答 → 生成或复用 rubric → 异步批改 → SSE 实时回传 → 报告查看 → 低置信度样本复核**
 
 ---
 
-## 1. 我对当前项目的判断
+## 项目定位
 
-### 最合理的当前定位
+这不是单一的 OCR 脚本，也不是只调用一次模型接口的 demo，而是一套围绕教师批改场景设计的 AI 工作流系统：
 
-> **教师侧 AI 阅卷与复核工作台**
+1. **面向教师，而不是学生练习端**
+2. **面向批量阅卷与复核，而不是单题问答**
+3. **面向可运行的工程链路，而不是概念验证**
 
-适合先解决这些问题：
+当前最适合的使用场景是：
 
-1. 教师上传标准答案，自动生成或复用 rubric。
-2. 教师批量上传学生作答，系统自动评分。
-3. 系统自动筛出低置信度、异常、不可读样本进入复核。
-4. 教师查看证据化报告，并写回反馈。
-5. 系统沉淀 rubric、标注资产、运行遥测和 prompt 运营数据。
-
-### 不建议现在这样定义
-
-1. 学生直接使用的 AI 学习 App
-2. 完整学校教务平台
-3. 通用 OCR / 文档理解平台
-4. 全学科通用教育大模型产品
-
-这些方向未来都能扩，但**和当前代码的最强能力不完全匹配**。
+- 教师上传标准答案，系统自动生成或复用评分标准
+- 教师批量上传学生试卷或作业图片 / PDF
+- 系统自动识别手写内容、完成结构化评分并生成报告
+- 低置信度、不可读、异常样本自动进入人工复核队列
+- 系统沉淀 rubric、标注资产、运行时遥测与 prompt 运营数据
 
 ---
 
-## 2. 仓库真实结构
+## 核心能力
 
-这个目录里其实同时存在两套东西：
+### 1. Rubric 驱动评分
 
-| 区域 | 作用 | 判断 |
-| --- | --- | --- |
-| 根目录 `main.py`、`vlm_client.py`、`image_processor.py` 等 | 早期原型/实验脚本 | **历史遗留，不是当前主系统入口** |
-| `homework_grader_system/` | FastAPI + Celery + Redis + SQLite 的主系统 | **当前应视为唯一主工程** |
+系统先基于教师参考答案生成评分标准，再用该标准评估学生作答，避免“只看对错”的粗糙判断，支持更细粒度的扣分说明和报告生成。
 
-如果你要重新接管项目，**请直接把 `homework_grader_system/` 当作主仓库看**，不要先从根目录原型脚本入手。
+### 2. 感知层 / 认知层解耦
+
+- **感知层**：Qwen-VL 负责图片/PDF 中手写内容和版面信息的识别与结构化输出
+- **认知层**：DeepSeek 负责基于 perception IR 与 rubric 的逻辑评估、报告生成和解释
+
+这种分层设计让模型替换、路由治理、故障降级和后续实验更容易收口。
+
+### 3. 异步批量处理
+
+系统采用 FastAPI + Celery + Redis 组合，将“上传入口”和“批改执行”解耦，支持：
+
+- 单学生多页提交
+- 多学生批量提交
+- 队列异步执行
+- Redis 不可用时的本地后台回退
+- 任务取消、进度更新、ETA 估算
+
+### 4. 实时状态回传
+
+前端可通过 **SSE + Redis Pub/Sub** 获取实时状态流，及时看到：
+
+- 当前任务状态
+- 批量进度
+- 已完成结果数
+- 最终报告是否可查看
+
+### 5. 教师复核闭环
+
+系统不是单纯给分，而是具备完整的复核链路：
+
+- 不可读 / 空白 / 异常样本拦截
+- 人工复核状态流转
+- 教师修正意见与评分写回
+- 标注资产沉淀，支持后续优化与数据集建设
+
+### 6. Prompt 与运行时治理
+
+项目内建了较完整的模型治理与 prompt 控制能力，包括：
+
+- Prompt 资产文件化管理
+- L1 / L2 缓存
+- A/B 配置与强制 variant
+- Last Known Good 回退
+- Runtime Router 自动模型路由
+- Circuit Breaker 熔断与恢复
+- 运行时遥测与 Ops 控制面
 
 ---
 
-## 3. 当前系统主链路
+## 典型流程
 
 ```text
 教师上传参考答案 / 学生作答
   -> FastAPI API Gateway
-  -> 文件存储（LocalStorage / S3 适配层）
-  -> create_task(status=PENDING)
-  -> Celery worker / 本地后台回退
+  -> Storage Adapter（Local / S3）
+  -> 创建任务（PENDING）
+  -> Celery Worker 异步执行
   -> 文件预处理（图片归一化 / PDF 转图）
   -> 感知层（Qwen-VL）
   -> 认知层（DeepSeek）
   -> 结果落库（tasks / grading_results / telemetry / audit）
   -> Redis Pub/Sub 推送状态
   -> SSE / 轮询查询
-  -> 报告 DTO
-  -> 报告页 / 历史页 / 复核页
+  -> 报告页 / 历史页 / 复核工作台展示
 ```
 
 ---
 
-## 4. 代码结构与职责
+## 系统组成
 
-| 目录/文件 | 职责 | 审计判断 |
-| --- | --- | --- |
-| `src/main.py` | FastAPI 入口、异常处理、静态页面路由 | 清晰，适合作为维护入口 |
-| `src/api/routes.py` | 核心 API 集中入口 | 功能全，但已膨胀到 **3120 行 / 54 个端点** |
-| `src/api/sse.py` | SSE 状态流、Redis Pub/Sub 订阅 | 实现清楚，工程化程度不错 |
-| `src/worker/main.py` | Celery worker、批处理编排、落库、Pub/Sub、DLQ | 核心价值区，也是主要维护风险点 |
-| `src/orchestration/workflow.py` | 感知 -> 认知的业务编排层 | 当前最清楚、最值得先读的业务文件之一 |
-| `src/perception/` | Qwen 感知层、布局识别 | 已从 OCR 升级为结构化 IR 输出 |
-| `src/cognitive/` | DeepSeek 评分、降级、JSON 修复、遥测 | 能力强，但复杂度高 |
-| `src/prompts/` | Prompt 资产、缓存、A/B、LKG、失效广播 | 平台化能力很强，是重要资产 |
-| `src/db/` | SQLite schema + DAO | 数据覆盖完整，但 `client.py` 已达 **2018 行** |
-| `src/skills/` | 外部 layout/validation skill 基座 | 可扩展钩子已具备，但默认仍偏可选能力 |
-| `src/api/static/` | 现有前端页面 | 已能串通链路，但仍是工具台形态 |
+### 后端服务
 
----
+| 模块 | 说明 |
+| --- | --- |
+| `src/main.py` | FastAPI 入口、异常处理、中间件、静态页面路由 |
+| `src/api/routers/` | 按领域拆分的 API：auth / rubric / grade / review / meta / ops / skills |
+| `src/orchestration/workflow.py` | 感知 → 认知主业务编排 |
+| `src/perception/` | 多模态感知识别层 |
+| `src/cognitive/` | 评分、报告与 rubric 生成层 |
+| `src/worker/main.py` | Celery Worker 批改执行引擎 |
+| `src/prompts/` | Prompt Provider、缓存、A/B 与失效广播 |
+| `src/core/` | 配置、追踪、熔断、运行时路由、存储适配等基础设施 |
+| `src/db/` | SQLite schema 与数据访问层 |
+| `src/skills/` | 外部 layout / validation skill 扩展接口 |
 
-## 5. 当前完成情况
+### 前端页面
 
-| 方向 | 状态 | 说明 |
-| --- | --- | --- |
-| 单学生多页提交 | **已完成** | 图片/PDF 均可，多页汇总评分 |
-| 多学生单页批处理 | **已完成** | 单任务内并发处理多个学生文件 |
-| one-shot 批量入口 | **已完成** | 可一次提交参考答案与学生作答 |
-| rubric 生成与复用 | **已完成** | 支持内容指纹去重 |
-| 队列与本地回退 | **已完成** | Redis/Celery 不可用时能回退本地执行 |
-| SSE 实时回传 | **已完成** | 依赖 Redis Pub/Sub |
-| 报告 API | **已完成** | 任务、历史、报告读取链路齐全 |
-| 复核后端 | **已完成** | 待复核、标注资产、教师反馈写回已打通 |
-| Prompt 控制面 | **已完成** | L1/L2 缓存、A/B、forced variant、LKG、invalidate |
-| 运行时路由与熔断 | **已完成** | runtime router + circuit breaker 已接入 |
-| 运营/观测 API | **已完成** | runtime dashboard、queue diagnostics 等已具备 |
-| 前端产品化 | **第一轮已完成** | 教师任务创建、进度跟踪、班级看板、单份报告、复核工作台已串成完整工作流，当前仍以静态页形态交付 |
-| 部署治理 | **进行中** | Docker Compose 可运行，Nginx/HTTPS/云部署未收口 |
+项目内置了一组用于教师工作流和运维演示的静态页面：
+
+- `/student-console`：单份作答提交
+- `/student-console-batch`：批量提交
+- `/task-progress`：任务实时进度
+- `/tasks-list`：任务列表
+- `/history-results`：历史结果
+- `/report-view`：单份报告查看
+- `/review-console`：复核工作台
+- `/class-dashboard`：班级看板
+- `/ops-console`：运行时控制与观测台
 
 ---
 
-## 6. 系统最强的部分
+## API 分组
 
-### 6.1 后端闭环已经做出来了
+所有主接口统一挂载在 `/api/v1` 下，按业务拆分为以下几组：
 
-它不是“调一下模型接口”的项目，而是已经把这些环节全部串起来：
-
-1. 任务状态
-2. 异步队列
-3. 本地回退
-4. 报告落库
-5. SSE 状态推送
-6. 复核链路
-7. prompt 控制
-8. runtime telemetry
-9. 数据卫生拦截
-10. 标注资产沉淀
-
-### 6.2 平台化雏形已经成立
-
-`src/prompts/provider.py`、`src/core/runtime_router.py`、`src/skills/`、`src/db/schema.sql` 说明这套系统已经有“**可配置、可治理、可实验**”的平台底子。
-
-### 6.3 数据模型不是临时拼的
-
-数据库不仅有 `tasks` / `grading_results`，还有：
-
-1. `task_runtime_telemetry`
-2. `prompt_control_state`
-3. `prompt_ab_configs`
-4. `prompt_ops_audit_log`
-5. `hygiene_interception_log`
-6. `golden_annotation_assets`
-7. `skill_validation_records`
-8. `rubrics`
-9. `rubric_generate_audit`
-
-这意味着系统已经开始从“功能脚本”进入“运营系统”。
+| 路由组 | 作用 |
+| --- | --- |
+| `auth` | 教师登录与身份探测 |
+| `rubric` | rubric 生成、查询与复用 |
+| `grade` | 批改任务提交、状态查询、结果获取、批量处理 |
+| `review` | 复核任务、标注资产、卫生拦截处理 |
+| `meta` | 运行时 dashboard、SLA、数据管线、能力目录 |
+| `ops` | 模型切换、prompt 控制、A/B、熔断演练、队列诊断 |
+| `skills` | 外部 layout / validation skill 网关 |
 
 ---
 
-## 7. 当前最伤维护者的地方
+## 数据与状态沉淀
 
-### 7.1 主工程与原型代码并存
+默认数据库为 SQLite，核心数据表覆盖了任务流转、结果、治理和数据资产：
 
-仓库根目录保留了一批早期脚本，而真实系统在 `homework_grader_system/` 子目录。  
-这会直接增加接手者的认知噪音。
+- `tasks`
+- `grading_results`
+- `rubrics`
+- `rubric_generate_audit`
+- `task_runtime_telemetry`
+- `prompt_control_state`
+- `prompt_ab_configs`
+- `prompt_ops_audit_log`
+- `hygiene_interception_log`
+- `golden_annotation_assets`
+- `teacher_review_decisions`
+- `skill_validation_records`
 
-### 7.2 巨型文件已经出现
-
-当前最典型的三个“认知黑洞”：
-
-1. `src/api/routes.py`
-2. `src/worker/main.py`
-3. `src/db/client.py`
-
-它们不是写坏了，而是因为 phase 式持续叠加导致**职责越来越多但还没完成模块化回收**。
-
-### 7.3 前端已能支撑教师工作流，但交付壳仍偏轻
-
-前端已经不再只是上传工具页，而是能覆盖：  
-任务创建 -> 进度跟踪 -> 班级汇总 -> 单份报告 -> 异常复核。  
-但它仍然是静态 HTML 交付形态，离成熟 SaaS 前端还有一层“统一设计系统 / 登录权限 / 部署外壳 / 试点包装”。
-
-### 7.4 文档历史包袱偏重
-
-`docs/handoffs/` 对追历史有价值，但不适合作为当前入口。  
-如果维护者先读这些阶段文档，很容易重新陷入 phase 细节，反而看不清现状。
+这意味着系统不仅能“出结果”，还能积累后续优化所需要的运行与标注数据。
 
 ---
 
-## 8. 实际测试基线
+## 技术栈
 
-本轮围绕教师工作流与 worker 主链路做的针对性回归基线为：
-
-- **52 passed**
-
-已覆盖的关键变更包括：
-
-1. worker 事件循环兼容性修复；
-2. 教师任务创建页内嵌进度摘要与结果跳转；
-3. 独立进度页布局修复；
-4. 结果页原图预览；
-5. 批处理 `result_count` 按单份递增；
-6. `eta_seconds` 从固定常量改为动态估算。
-
-已用真实数据再次验证：
-
-1. `data\3.20_physics\question_13\students` 可正常完成批量任务；
-2. 状态接口中的 `result_count` 会在处理中递增，不再卡在 `0/N` 直到结束；
-3. 报告接口可返回原始作答图片预览链接；
-4. 当前 worker 在线，教师端主链路可继续使用。
+| 层次 | 技术 |
+| --- | --- |
+| Web API | FastAPI, Uvicorn |
+| 异步任务 | Celery, Redis |
+| 数据存储 | SQLite, aiosqlite |
+| 多模态 / LLM | Qwen-VL, DeepSeek, OpenAI-compatible SDK |
+| 图像 / PDF | Pillow, PyMuPDF |
+| 实时状态 | sse-starlette, Redis Pub/Sub |
+| 鉴权 / 限流 | PyJWT, SlowAPI |
+| 对象存储扩展 | boto3 |
+| 测试 | pytest, pytest-asyncio, fakeredis, moto |
+| 部署 | Docker, Docker Compose, Nginx |
 
 ---
 
-## 9. 当前前端实际情况
+## 快速开始
 
-现有页面：
-
-1. `/student-console`
-2. `/student-console-batch`
-3. `/review-console`
-4. `/ops-console`
-5. `/tasks-list`
-6. `/history-results`
-7. `/report-view`
-
-以及一个历史保留页文件：`review_console.html`。
-
-这些页面的真实意义是：
-
-- **优点**：它们能把后端主链路跑通，适合联调、验流程、演示能力。
-- **不足**：它们仍是“工程控制台”，不是教师长期愿意用的产品前端。
-
----
-
-## 10. 推荐维护阅读顺序
-
-如果你要重新掌握项目，建议按这个顺序读：
-
-1. `README.md`
-2. `EXECUTIVE_SUMMARY.md`
-3. `AUDIT_REPORT.md`
-4. `src/main.py`
-5. `src/api/routes.py`
-6. `src/worker/main.py`
-7. `src/orchestration/workflow.py`
-8. `src/cognitive/engines/deepseek_engine.py`
-9. `src/perception/engines/qwen_engine.py`
-10. `src/prompts/provider.py`
-11. `src/db/schema.sql`
-12. `docs/product_strategy_cn.md`
-
----
-
-## 11. 本地运行
-
-### 安装依赖
+### 1. 安装依赖
 
 ```bash
-cd homework_grader_system
 pip install -r requirements.txt
 ```
 
-### 启动 API
+### 2. 配置环境变量
+
+复制 `.env.example` 为 `.env`，至少补齐以下配置：
+
+```env
+QWEN_API_KEYS=sk-xxx
+DEEPSEEK_API_KEYS=sk-xxx
+REDIS_HOST=localhost
+REDIS_PORT=6379
+SQLITE_DB_PATH=outputs/grading_database.db
+AUTH_ENABLED=false
+```
+
+`.env.example` 中还包含：
+
+- 批处理并发参数
+- SSE 心跳参数
+- Prompt token 预算
+- Runtime Router 开关
+- Skills 网关配置
+- Nginx 端口配置
+
+### 3. 启动 API
 
 ```bash
 uvicorn src.main:app --host 0.0.0.0 --port 8000 --timeout-keep-alive 15
 ```
 
-### 启动 Worker
+### 4. 启动 Worker
 
 ```bash
-# Linux/macOS
+# Linux / macOS
 celery -A src.worker.main worker --loglevel=info --concurrency=4
 
 # Windows
 celery -A src.worker.main worker --loglevel=info --pool=solo --concurrency=1
 ```
 
-### Docker Compose
+### 5. 使用 Docker Compose
 
 ```bash
 docker compose up --build
 ```
 
-默认服务：
+默认会启动 4 个服务：
 
-1. `grader-api`
-2. `grader-worker`
-3. `redis`
+1. `nginx`：反向代理
+2. `grader-api`：FastAPI 主入口
+3. `grader-worker`：Celery Worker
+4. `redis`：消息队列与状态中转
 
 ---
 
-## 12. 测试方式
+## Docker 部署形态
 
-建议这样跑测试：
+`docker-compose.yml` 提供了一套单机可运行的部署方式：
+
+- `nginx` 负责统一入口与反向代理
+- `grader-api` 仅在容器内部暴露 8000
+- `grader-worker` 执行实际批改任务
+- `redis` 同时承担 Celery broker、缓存与 Pub/Sub
+- `outputs/` 与 `data/` 通过 volume 挂载持久化
+
+`Dockerfile` 基于 `python:3.11-slim` 构建，默认启动命令为：
+
+```bash
+uvicorn src.main:app --host 0.0.0.0 --port 8000 --workers 1
+```
+
+---
+
+## 测试
 
 ```bash
 pytest -q
 ```
 
----
+测试覆盖了：
 
-## 13. 当前最值得做的三件事
-
-1. **部署与交付外壳收口**  
-   把当前可运行系统继续推进到“可试点交付”：反向代理、HTTPS、最小账号体系、运维脚本、部署模板。
-
-2. **技术减认知负担**  
-   优先拆解 `routes.py` / `worker/main.py` / `db/client.py` 的阅读与维护入口。
-
-3. **试点包装与市场落地**  
-   明确卖点是“批量阅卷 + 复核提效 + 讲评依据生成”，并把它落实到首页文案、演示话术、试点交付材料。
+- API 集成
+- workflow 编排
+- perception / cognitive 工厂与 mock
+- prompt provider
+- runtime router
+- SSE / circuit breaker / serialization 等阶段特性
 
 ---
 
-## 14. 文档导航
+## 目录结构
 
-1. `EXECUTIVE_SUMMARY.md`：适合快速看结论
-2. `AUDIT_REPORT.md`：适合看详细技术判断
-3. `docs/product_strategy_cn.md`：适合看市场、交互、前端建议
-4. `docs/deployment_guide_cn.md`：适合看单机/试点部署路径
-5. `docs/production_readiness_cn.md`：适合看生产前检查清单与单点风险
-6. `docs/postgresql_migration_plan_cn.md`：适合看数据库升级路线
-7. `docs/demo_script_cn.md`：适合看 5-10 分钟演示脚本
-8. `docs/go_to_market_cn.md`：适合看对外口径、试点沟通与 FAQ
-9. `INDEX.md`：适合重新建立阅读路径
+```text
+homework_grader_system/
+├─ src/
+│  ├─ api/
+│  ├─ cognitive/
+│  ├─ core/
+│  ├─ db/
+│  ├─ orchestration/
+│  ├─ perception/
+│  ├─ prompts/
+│  ├─ schemas/
+│  ├─ skills/
+│  └─ worker/
+├─ configs/
+│  └─ prompts/
+├─ docs/
+├─ tests/
+├─ docker-compose.yml
+├─ Dockerfile
+├─ requirements.txt
+└─ .env.example
+```
 
-如果你现在的目标是**重新获得对项目的掌控感**，建议先读这些文档，再回到代码。
+---
+
+## 文档导航
+
+| 文档 | 用途 |
+| --- | --- |
+| `README.md` | 项目总览、能力结构、启动方式 |
+| `EXECUTIVE_SUMMARY.md` | 快速了解项目全貌 |
+| `AUDIT_REPORT.md` | 详细技术审计 |
+| `INDEX.md` | 文档阅读入口 |
+| `docs/product_strategy_cn.md` | 产品定位与市场口径 |
+| `docs/deployment_guide_cn.md` | 部署与试点落地 |
+| `docs/production_readiness_cn.md` | 上线前检查项 |
+| `docs/postgresql_migration_plan_cn.md` | 数据库升级路线 |
+| `docs/demo_script_cn.md` | 演示话术与展示脚本 |
+| `docs/go_to_market_cn.md` | 对外沟通与试点策略 |
+
+---
+
+## 适合谁使用 / 接手
+
+这份仓库适合以下几类人快速上手：
+
+- 想搭建 AI 阅卷工作流的工程团队
+- 正在做教师侧作业批改 / 复核产品的开发者
+- 想研究多模态感知 + 评分编排的学生团队
+- 需要一个可运行的 AI 教育项目基础盘来继续产品化、前端化或试点落地的人
+
+---
+
+## License
+
+MIT

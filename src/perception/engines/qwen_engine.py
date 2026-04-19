@@ -31,14 +31,20 @@ class QwenVLMPerceptionEngine(BasePerceptionEngine):
 
     def __init__(self):
         """Initialize the pool of circuit-breaker-aware clients for Qwen-VL."""
-        keys = settings.parsed_qwen_keys or ["MISSING"]
+        keys = settings.parsed_qwen_keys or []
+        if not keys:
+            logger.warning("No Qwen API keys configured — perception calls will fail at runtime")
+            keys = ["MISSING"]
         self._key_pool = CircuitBreakerKeyPool("QwenPool", keys)
         
+        _timeout = settings.qwen_api_timeout_seconds
+        logger.info(f"Initializing Qwen engine: {len(keys)} key(s), timeout={_timeout}s, "
+                     f"max_tokens={settings.qwen_max_output_tokens}, max_retries={settings.qwen_max_retries}")
         self._clients = {
             key: openai.AsyncOpenAI(
                 api_key=key,
                 base_url=settings.qwen_base_url,
-                timeout=300.0,
+                timeout=_timeout,
                 max_retries=0 # Manual failover
             ) for key in keys
         }
@@ -203,7 +209,7 @@ class QwenVLMPerceptionEngine(BasePerceptionEngine):
         *,
         prompt_key: str,
         prompt_variables: Sequence[PromptVariable],
-        max_tokens: int = 2048,
+        max_tokens: int | None = None,
         temperature: float = 0.0,
     ) -> Dict[str, Any]:
         """
@@ -211,9 +217,10 @@ class QwenVLMPerceptionEngine(BasePerceptionEngine):
         """
         if not settings.llm_egress_enabled:
             raise GradingSystemError("LLM egress disabled by configuration (LLM_EGRESS_ENABLED=false)")
+        effective_max_tokens = max_tokens or settings.qwen_max_output_tokens
         connection_error_count = 0
-        max_retries = 10
-        max_connection_errors = 5
+        max_retries = settings.qwen_max_retries
+        max_connection_errors = settings.qwen_max_connection_errors
         last_parse_error: Optional[str] = None
         messages = await self._resolve_prompt_messages(
             prompt_key=prompt_key,
@@ -239,7 +246,7 @@ class QwenVLMPerceptionEngine(BasePerceptionEngine):
                             extra_headers=outbound_trace_headers(),
                             messages=messages,  # type: ignore[arg-type]
                             temperature=temperature,
-                            max_tokens=max_tokens,
+                            max_tokens=effective_max_tokens,
                             response_format={"type": "json_object"},
                         )
 
@@ -309,7 +316,6 @@ class QwenVLMPerceptionEngine(BasePerceptionEngine):
                 PromptVariable(name="target_question_no", kind="text", value=target_value),
                 PromptVariable(name="image_1", kind="image_base64", value=base64_image),
             ],
-            max_tokens=2048,
             temperature=0.0,
         )
         raw.setdefault("context_type", context_type)
@@ -333,7 +339,6 @@ class QwenVLMPerceptionEngine(BasePerceptionEngine):
                 PromptVariable(name="context_type", kind="text", value="student_homework"),
                 PromptVariable(name="image_1", kind="image_base64", value=base64_image),
             ],
-            max_tokens=2048,
             temperature=0.01,
         )
         try:

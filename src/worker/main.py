@@ -26,6 +26,7 @@ import uuid
 from typing import List, Tuple, Dict, Any
 
 from celery import Celery
+from celery.exceptions import SoftTimeLimitExceeded
 
 from src.core.config import settings
 from src.core.exceptions import PerceptionShortCircuitError
@@ -34,6 +35,8 @@ from src.db.client import insert_grading_results, update_task_progress, update_t
 from src.db.client import create_hygiene_interception_record
 from src.db.client import upsert_task_runtime_telemetry
 from src.db.client import get_recent_rubric_by_fingerprint, get_rubric, save_rubric, set_task_rubric_id
+from src.db.client import touch_task_heartbeat
+from src.db.client import get_task as _get_task_from_db
 from src.orchestration.workflow import GradingWorkflow
 from src.perception.factory import create_perception_engine
 from src.cognitive.engines.deepseek_engine import DeepSeekCognitiveEngine
@@ -99,6 +102,11 @@ _worker_conf = dict(
     task_default_max_retries=2,  # Global max retries
     task_always_eager=settings.celery_task_always_eager,
     task_store_eager_result=True,
+    # Phase 10: Redis visibility timeout — unacked messages re-delivered after this time.
+    # Prevents message loss when a worker acks then dies before completing.
+    broker_transport_options={
+        "visibility_timeout": settings.celery_visibility_timeout,
+    },
 )
 if _is_windows:
     _worker_conf.update(
@@ -148,7 +156,9 @@ def _build_workflow() -> GradingWorkflow:
     )
 
 
-@app.task(bind=True, max_retries=2, default_retry_delay=10)
+@app.task(bind=True, max_retries=2, default_retry_delay=10,
+         soft_time_limit=settings.celery_task_soft_time_limit_seconds,
+         time_limit=settings.celery_task_hard_time_limit_seconds)
 def grade_homework_task(
     self,
     task_id: str,
@@ -211,8 +221,19 @@ def grade_homework_task(
     
     try:
         logger.info("worker_task_pulled")
+
+        # Pre-check: if task was cancelled before worker picked it up, skip.
+        try:
+            pre_task = run_async(_get_task_from_db(db_path, task_id))
+            if pre_task and str(pre_task.get("status", "")) == "CANCELLED":
+                logger.info("worker_task_already_cancelled", extra={"extra_fields": {"task_id": task_id}})
+                return {"task_id": task_id, "status": "CANCELLED", "reason": "cancelled_before_start"}
+        except RuntimeError:
+            pass  # Eager mode / nested event loop — skip pre-check
+
         # Step 1: Mark task as processing
         run_async(update_task_status(db_path, task_id, "PROCESSING"))
+        run_async(touch_task_heartbeat(db_path, task_id))
         run_async(update_task_progress(db_path, task_id, progress=0.02, eta_seconds=estimate_eta_seconds(floor_seconds=30)))
         logger.info("task_status_persisted", extra={"extra_fields": {"status": "PROCESSING"}})
         # Phase 33: Publish status update to Redis Pub/Sub
@@ -495,6 +516,16 @@ def grade_homework_task(
                 total = len(batch_jobs)
                 completed_count = 0
                 for job in asyncio.as_completed(batch_jobs):
+                    # Check for cancellation between items (best-effort)
+                    if completed_count > 0 and completed_count % 3 == 0:
+                        try:
+                            _check = await _get_task_from_db(db_path, task_id)
+                            if _check and str(_check.get("status", "")) == "CANCELLED":
+                                logger.info("worker_batch_cancelled_mid_flight",
+                                            extra={"extra_fields": {"task_id": task_id, "completed": completed_count, "total": total}})
+                                break
+                        except Exception:
+                            pass
                     item_idx, one_report, record = await job
                     await insert_grading_results(db_path, records=[record], task_id=task_id)
                     processed_reports[item_idx] = one_report
@@ -502,6 +533,7 @@ def grade_homework_task(
                     progress = 0.10 + 0.85 * (completed_count / total)
                     eta_seconds = estimate_eta_seconds(completed_items=completed_count, total_items=total, floor_seconds=3)
                     await update_task_progress(db_path, task_id, progress=progress, eta_seconds=eta_seconds)
+                    await touch_task_heartbeat(db_path, task_id)
                     await _publish_status(task_id, "PROCESSING", progress=progress, eta_seconds=eta_seconds)
                 return [report for report in processed_reports if report is not None]
 
@@ -737,24 +769,46 @@ def grade_homework_task(
         )
         return {"status": "rejected", "reason": str(e)}
 
+    except SoftTimeLimitExceeded:
+        timeout_msg = f"Task {task_id} exceeded soft time limit (900s). Likely stuck on LLM API."
+        logger.error(f"[Worker] {timeout_msg}")
+        run_async(update_task_status(db_path, task_id, "FAILED", error=timeout_msg))
+        run_async(update_task_progress(db_path, task_id, progress=1.0, eta_seconds=0))
+        run_async(_publish_status(task_id, "FAILED", error=timeout_msg, progress=1.0, eta_seconds=0))
+        storage.cleanup_task(task_id)
+        _route_to_dlq(task_id, payload, db_path, timeout_msg)
+        return {"status": "failed", "error": timeout_msg}
     except Exception as e:
-        # Transient failure: Retry logic
-        logger.error(f"[Worker] Task {task_id} failed (attempt {self.request.retries + 1}): {e}")
-        run_async(update_task_status(db_path, task_id, "FAILED", error=str(e)))
+        # Transient failure: Rich error logging for faster post-mortem
+        import traceback as _tb
+        _exc_type = type(e).__name__
+        _error_summary = f"{_exc_type}: {str(e)[:300]}"
+        logger.error(
+            "task_execution_failed",
+            extra={"extra_fields": {
+                "task_id": task_id,
+                "attempt": self.request.retries + 1,
+                "max_retries": self.max_retries + 1,
+                "exception_type": _exc_type,
+                "exception_message": str(e)[:500],
+            }},
+            exc_info=True,
+        )
+        run_async(update_task_status(db_path, task_id, "FAILED", error=_error_summary))
         run_async(update_task_progress(db_path, task_id, progress=1.0, eta_seconds=0))
         logger.info("task_status_persisted", extra={"extra_fields": {"status": "FAILED"}})
         # Phase 33: Publish failure event to Redis Pub/Sub
-        run_async(_publish_status(task_id, "FAILED", error=str(e), progress=1.0, eta_seconds=0))
+        run_async(_publish_status(task_id, "FAILED", error=_error_summary, progress=1.0, eta_seconds=0))
 
         # Cleanup on permanent failure (after max retries)
         if self.request.retries >= self.max_retries:
             storage.cleanup_task(task_id)
             
             # Phase 32: Route to Dead Letter Queue for audit
-            _route_to_dlq(task_id, payload, db_path, str(e))
+            _route_to_dlq(task_id, payload, db_path, _error_summary)
             
             logger.critical(f"[Worker] Task {task_id} permanently failed and routed to DLQ")
-            return {"status": "failed", "error": str(e)}
+            return {"status": "failed", "error": _error_summary}
 
         # Retry if attempts remain
         if self.request.retries < self.max_retries:
@@ -762,7 +816,7 @@ def grade_homework_task(
 
         # Permanent failure after max retries
         logger.critical(f"[Worker] Task {task_id} permanently failed after {self.max_retries} retries")
-        return {"status": "failed", "error": str(e)}
+        return {"status": "failed", "error": _error_summary}
     finally:
         reset_context(ctx_tokens)
 

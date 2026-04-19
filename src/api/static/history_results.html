@@ -35,12 +35,19 @@
     <div id="debug" class="mono"></div>
   </div>
   <script>
+    const _graderToken = localStorage.getItem('grader_token');
+    const _authHeaders = _graderToken ? { 'Authorization': 'Bearer ' + _graderToken } : {};
+    (async function _authGuard() {
+      try { const r = await fetch('/api/v1/auth/whoami'); const d = await r.json(); if (d.auth_enabled && !_graderToken) { window.location.href = '/login'; } } catch(e) {}
+    })();
+    function authFetch(url, opts = {}) { opts.headers = Object.assign({}, _authHeaders, opts.headers || {}); return fetch(url, opts); }
+
     const $ = (id) => document.getElementById(id);
     function setDebug(v) { $("debug").textContent = typeof v === "string" ? v : JSON.stringify(v, null, 2); }
     async function load() {
       const tid = $("taskId").value.trim();
       const url = tid ? `/api/v1/results?task_id=${encodeURIComponent(tid)}&page=1&limit=50` : "/api/v1/results?page=1&limit=50";
-      const resp = await fetch(url);
+      const resp = await authFetch(url);
       const data = await resp.json();
       if (!resp.ok) { setDebug(data); return; }
       const body = $("tbody");

@@ -128,6 +128,13 @@
   </div>
 
   <script>
+    const _graderToken = localStorage.getItem('grader_token');
+    const _authHeaders = _graderToken ? { 'Authorization': 'Bearer ' + _graderToken } : {};
+    (async function _authGuard() {
+      try { const r = await fetch('/api/v1/auth/whoami'); const d = await r.json(); if (d.auth_enabled && !_graderToken) { window.location.href = '/login'; } } catch(e) {}
+    })();
+    function authFetch(url, opts = {}) { opts.headers = Object.assign({}, _authHeaders, opts.headers || {}); return fetch(url, opts); }
+
     const $ = (id) => document.getElementById(id);
 
     function esc(v) {
@@ -269,8 +276,8 @@
         return;
       }
       const [reportResp, insightsResp] = await Promise.all([
-        fetch(`/api/v1/grade/${encodeURIComponent(taskId)}/report`),
-        fetch(`/api/v1/grade/${encodeURIComponent(taskId)}/insights`),
+        authFetch(`/api/v1/grade/${encodeURIComponent(taskId)}/report`),
+        authFetch(`/api/v1/grade/${encodeURIComponent(taskId)}/insights`),
       ]);
       const data = await reportResp.json();
       const insights = await insightsResp.json();

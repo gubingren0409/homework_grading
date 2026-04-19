@@ -31,7 +31,7 @@ def test_grade_endpoint_happy_path():
     files = [("files", ("test_hw.jpg", b"fake_image_bytes", "image/jpeg"))]
 
     # 2. Execute POST
-    with patch("src.api.routes.grade_homework_task.apply_async", return_value=Mock(id="mock-celery-id")) as mocked_apply_async:
+    with patch("src.api.routers.grade.grade_homework_task.apply_async", return_value=Mock(id="mock-celery-id")) as mocked_apply_async:
         response = client.post("/api/v1/grade/submit", files=files)
 
     # 3. Assertions
@@ -52,7 +52,7 @@ def test_grade_endpoint_circuit_breaker_422():
     to an HTTP 422 Unprocessable Entity response using Dependency Overrides.
     """
     files = [("files", ("dirty_hw.jpg", b"dirty_bytes", "image/jpeg"))]
-    with patch("src.api.routes.grade_homework_task.apply_async", return_value=Mock(id="mock-celery-id")):
+    with patch("src.api.routers.grade.grade_homework_task.apply_async", return_value=Mock(id="mock-celery-id")):
         response = client.post("/api/v1/grade/submit", files=files)
     assert response.status_code == 202
 
@@ -66,8 +66,8 @@ def test_grade_submit_queue_unavailable_falls_back_to_local():
         raise KombuOperationalError("broker down")
 
     with (
-        patch("src.api.routes.grade_homework_task.apply_async", side_effect=_raise_queue_error),
-        patch("src.api.routes._run_task_locally", return_value=None) as mocked_local_runner,
+        patch("src.api.routers.grade.grade_homework_task.apply_async", side_effect=_raise_queue_error),
+        patch("src.api.routers.grade._run_task_locally", return_value=None) as mocked_local_runner,
     ):
         response = client.post("/api/v1/grade/submit", files=files)
 
@@ -88,8 +88,8 @@ def test_grade_submit_redis_connection_error_falls_back_to_local():
         raise RedisConnectionError("redis down")
 
     with (
-        patch("src.api.routes.grade_homework_task.apply_async", side_effect=_raise_redis_error),
-        patch("src.api.routes._run_task_locally", return_value=None) as mocked_local_runner,
+        patch("src.api.routers.grade.grade_homework_task.apply_async", side_effect=_raise_redis_error),
+        patch("src.api.routers.grade._run_task_locally", return_value=None) as mocked_local_runner,
     ):
         response = client.post("/api/v1/grade/submit", files=files)
 
@@ -167,7 +167,7 @@ def test_skill_layout_parse_gateway(monkeypatch):
             }
             return LayoutIR.model_validate(payload, context={"image_width": 1000, "image_height": 800})
 
-    monkeypatch.setattr("src.api.routes.create_perception_engine", lambda: _FakePerceptionEngine())
+    monkeypatch.setattr("src.api.routers.skills.create_perception_engine", lambda: _FakePerceptionEngine())
     response = client.post(
         "/api/v1/skills/layout/parse",
         json={
@@ -185,8 +185,8 @@ def test_skill_layout_parse_gateway(monkeypatch):
 
 
 def test_skill_gateway_auth_token_required(monkeypatch):
-    monkeypatch.setattr("src.api.routes.settings.skill_gateway_auth_enabled", True)
-    monkeypatch.setattr("src.api.routes.settings.skill_gateway_auth_token", "token-1")
+    monkeypatch.setattr("src.api.route_helpers.settings.skill_gateway_auth_enabled", True)
+    monkeypatch.setattr("src.api.route_helpers.settings.skill_gateway_auth_token", "token-1")
     response = client.post(
         "/api/v1/skills/validate",
         json={
@@ -211,8 +211,8 @@ def test_skill_gateway_auth_token_required(monkeypatch):
         },
     )
     assert response_ok.status_code == 200
-    monkeypatch.setattr("src.api.routes.settings.skill_gateway_auth_enabled", False)
-    monkeypatch.setattr("src.api.routes.settings.skill_gateway_auth_token", None)
+    monkeypatch.setattr("src.api.route_helpers.settings.skill_gateway_auth_enabled", False)
+    monkeypatch.setattr("src.api.route_helpers.settings.skill_gateway_auth_token", None)
 
 
 def test_skill_validation_gateway_stub():
@@ -277,7 +277,7 @@ def test_grade_submit_batch_endpoint_happy_path():
         ("files", ("stu_001.jpg", b"fake_img_1", "image/jpeg")),
         ("files", ("stu_002.png", b"fake_img_2", "image/png")),
     ]
-    with patch("src.api.routes.grade_homework_task.apply_async", return_value=Mock(id="mock-celery-id")) as mocked_apply_async:
+    with patch("src.api.routers.grade.grade_homework_task.apply_async", return_value=Mock(id="mock-celery-id")) as mocked_apply_async:
         response = client.post("/api/v1/grade/submit-batch", files=files)
     assert response.status_code == 202
     data = response.json()
@@ -296,7 +296,7 @@ def test_grade_submit_batch_with_reference_endpoint_happy_path():
         ("files", ("stu_001.jpg", b"fake_img_1", "image/jpeg")),
         ("files", ("stu_002.png", b"fake_img_2", "image/png")),
     ]
-    with patch("src.api.routes.grade_homework_task.apply_async", return_value=Mock(id="mock-celery-id")) as mocked_apply_async:
+    with patch("src.api.routers.grade.grade_homework_task.apply_async", return_value=Mock(id="mock-celery-id")) as mocked_apply_async:
         response = client.post("/api/v1/grade/submit-batch-with-reference", files=files)
     assert response.status_code == 202
     data = response.json()
@@ -326,8 +326,8 @@ def test_grade_submit_batch_queue_unavailable_falls_back_to_local():
         raise KombuOperationalError("broker down")
 
     with (
-        patch("src.api.routes.grade_homework_task.apply_async", side_effect=_raise_queue_error),
-        patch("src.api.routes._run_task_locally", return_value=None) as mocked_local_runner,
+        patch("src.api.routers.grade.grade_homework_task.apply_async", side_effect=_raise_queue_error),
+        patch("src.api.routers.grade._run_task_locally", return_value=None) as mocked_local_runner,
     ):
         response = client.post("/api/v1/grade/submit-batch", files=files)
 
@@ -351,7 +351,7 @@ def test_grade_submit_batch_rejects_pdf():
 
 def test_rate_limit_handler_returns_structured_contract(monkeypatch):
     files = [("files", ("reference.jpg", b"fake_reference", "image/jpeg"))]
-    with patch("src.api.routes.GradingWorkflow.generate_rubric_pipeline") as mocked:
+    with patch("src.api.routers.rubric.GradingWorkflow.generate_rubric_pipeline") as mocked:
         mocked.return_value = Mock(
             question_id="q-1",
             grading_points=[{"id": "a"}],
@@ -372,7 +372,7 @@ def test_rubric_generate_runtime_phase35_non_gate_maps_upstream(monkeypatch):
         del self, files_data
         raise RuntimeError("PHASE35_CONTRACT_BLOCK: slicing produced no regions on page 0.")
 
-    monkeypatch.setattr("src.api.routes.GradingWorkflow.generate_rubric_pipeline", _raise_runtime)
+    monkeypatch.setattr("src.api.routers.rubric.GradingWorkflow.generate_rubric_pipeline", _raise_runtime)
     files = [("files", ("reference.jpg", f"fake_reference_{uuid.uuid4()}".encode(), "image/jpeg"))]
     response = client.post("/api/v1/rubric/generate", files=files, data={"force_regenerate": "true"})
     assert response.status_code == 503
@@ -388,7 +388,7 @@ def test_rubric_generate_rejects_unsupported_format(monkeypatch):
         del self, files_data
         raise UnsupportedFormatError("Word documents are unsupported. Please convert to PDF.")
 
-    monkeypatch.setattr("src.api.routes.GradingWorkflow.generate_rubric_pipeline", _raise_unsupported)
+    monkeypatch.setattr("src.api.routers.rubric.GradingWorkflow.generate_rubric_pipeline", _raise_unsupported)
     files = [("files", ("reference.jpg", f"fake_reference_{uuid.uuid4()}".encode(), "image/jpeg"))]
     response = client.post("/api/v1/rubric/generate", files=files, data={"force_regenerate": "true"})
     assert response.status_code == 422
@@ -404,7 +404,7 @@ def test_rubric_generate_upstream_unavailable_returns_503(monkeypatch):
         del self, files_data
         raise GradingSystemError("redis unavailable")
 
-    monkeypatch.setattr("src.api.routes.GradingWorkflow.generate_rubric_pipeline", _raise_upstream)
+    monkeypatch.setattr("src.api.routers.rubric.GradingWorkflow.generate_rubric_pipeline", _raise_upstream)
     files = [("files", ("reference.jpg", f"fake_reference_{uuid.uuid4()}".encode(), "image/jpeg"))]
     response = client.post("/api/v1/rubric/generate", files=files, data={"force_regenerate": "true"})
     assert response.status_code == 503
@@ -421,7 +421,7 @@ def test_rubric_generate_egress_disabled_maps_explicit_error(monkeypatch):
         del self, files_data
         raise GradingSystemError("LLM egress disabled by configuration (LLM_EGRESS_ENABLED=false)")
 
-    monkeypatch.setattr("src.api.routes.GradingWorkflow.generate_rubric_pipeline", _raise_egress_disabled)
+    monkeypatch.setattr("src.api.routers.rubric.GradingWorkflow.generate_rubric_pipeline", _raise_egress_disabled)
     files = [("files", ("reference.jpg", f"fake_reference_{uuid.uuid4()}".encode(), "image/jpeg"))]
     response = client.post("/api/v1/rubric/generate", files=files, data={"force_regenerate": "true"})
     assert response.status_code == 503
@@ -445,7 +445,7 @@ def test_rubric_generate_response_contains_source_file_count(monkeypatch):
         assert len(files_data) == 2
         return _FakeRubric()
 
-    monkeypatch.setattr("src.api.routes.GradingWorkflow.generate_rubric_pipeline", _ok)
+    monkeypatch.setattr("src.api.routers.rubric.GradingWorkflow.generate_rubric_pipeline", _ok)
     files = [
         ("files", ("reference-1.jpg", f"fake_reference_1_{uuid.uuid4()}".encode(), "image/jpeg")),
         ("files", ("reference-2.jpg", f"fake_reference_2_{uuid.uuid4()}".encode(), "image/jpeg")),
@@ -475,7 +475,7 @@ def test_rubric_generate_reuses_recent_same_source(monkeypatch):
         assert len(files_data) == 1
         return _FakeRubric()
 
-    monkeypatch.setattr("src.api.routes.GradingWorkflow.generate_rubric_pipeline", _ok)
+    monkeypatch.setattr("src.api.routers.rubric.GradingWorkflow.generate_rubric_pipeline", _ok)
     unique_blob = f"same_reference_{uuid.uuid4()}".encode()
     files = [("files", ("reference-1.jpg", unique_blob, "image/jpeg"))]
 
@@ -510,7 +510,7 @@ def test_ops_rubric_audit_records_generate_calls(tmp_path, monkeypatch):
         assert len(files_data) == 1
         return _FakeRubric()
 
-    monkeypatch.setattr("src.api.routes.GradingWorkflow.generate_rubric_pipeline", _ok)
+    monkeypatch.setattr("src.api.routers.rubric.GradingWorkflow.generate_rubric_pipeline", _ok)
     blob = f"audit_reference_{uuid.uuid4()}".encode()
     files = [("files", ("reference-audit.jpg", blob, "image/jpeg"))]
 
@@ -691,9 +691,9 @@ def test_task_report_exposes_input_images_and_asset_endpoint(tmp_path):
     asyncio.run(init_db(db_path))
     app.dependency_overrides[get_db_path] = lambda: db_path
 
-    from src.api import routes as api_routes
+    from src.core.config import settings as _cfg
 
-    uploads_root = api_routes.settings.uploads_path
+    uploads_root = _cfg.uploads_path
     task_upload_dir = uploads_root / "task-report-images"
     task_upload_dir.mkdir(parents=True, exist_ok=True)
     image_path = task_upload_dir / "stu_001.png"
@@ -1085,7 +1085,7 @@ def test_ops_queue_diagnostics_endpoint_classifies_stale_pending(tmp_path):
         asyncio.run(_seed())
 
         with patch(
-            "src.api.routes._fetch_celery_queue_snapshot",
+            "src.api.routers.ops._fetch_celery_queue_snapshot",
             return_value=(2, ["queued-task-id", "completed-task-id"], None),
         ):
             response = client.get("/api/v1/ops/queue/diagnostics?stale_threshold_seconds=300&sample_limit=20")
@@ -1159,7 +1159,7 @@ def test_ops_queue_cleanup_task_endpoint_marks_failed_by_task_id(tmp_path):
 
         asyncio.run(_seed())
 
-        with patch("src.api.routes._remove_task_from_celery_queue", return_value=(1, None)):
+        with patch("src.api.routers.ops._remove_task_from_celery_queue", return_value=(1, None)):
             response = client.post(
                 "/api/v1/ops/queue/cleanup-task?task_id=cleanup-by-id-task&remove_from_queue=true"
             )
@@ -1216,7 +1216,7 @@ def test_submit_endpoint_best_effort_cleans_stale_pending_orphans(tmp_path):
         asyncio.run(_seed())
 
         files = [("files", ("test_hw.jpg", b"fake_image_bytes", "image/jpeg"))]
-        with patch("src.api.routes.grade_homework_task.apply_async", return_value=Mock(id="mock-celery-id")):
+        with patch("src.api.routers.grade.grade_homework_task.apply_async", return_value=Mock(id="mock-celery-id")):
             response = client.post("/api/v1/grade/submit", files=files)
         assert response.status_code == 202
 

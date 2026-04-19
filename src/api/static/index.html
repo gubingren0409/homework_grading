@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AI 阅卷与复核工作台</title>
+  <style>
+    :root {
+      --bg: #f4f7fb;
+      --card: #ffffff;
+      --line: #e3e8f3;
+      --text: #1f2937;
+      --muted: #667085;
+      --primary: #3563e9;
+      --primary-hover: #2a4fbf;
+      --accent: #10b981;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; }
+
+    /* --- Hero Section --- */
+    .hero {
+      text-align: center;
+      padding: 80px 24px 60px;
+      background: linear-gradient(135deg, #3563e9 0%, #6366f1 100%);
+      color: #fff;
+    }
+    .hero h1 { font-size: 40px; font-weight: 700; margin-bottom: 16px; letter-spacing: -0.5px; }
+    .hero .tagline { font-size: 18px; opacity: 0.9; max-width: 560px; margin: 0 auto 36px; line-height: 1.7; }
+    .hero .cta-group { display: flex; gap: 16px; justify-content: center; flex-wrap: wrap; }
+    .btn {
+      display: inline-block; padding: 14px 32px; border-radius: 10px;
+      font-size: 15px; font-weight: 600; text-decoration: none;
+      transition: all 0.2s; cursor: pointer; border: none;
+    }
+    .btn-white { background: #fff; color: var(--primary); }
+    .btn-white:hover { background: #e8ecf5; }
+    .btn-outline { background: transparent; color: #fff; border: 2px solid rgba(255,255,255,0.6); }
+    .btn-outline:hover { background: rgba(255,255,255,0.15); border-color: #fff; }
+
+    /* --- Features --- */
+    .features {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 24px;
+      max-width: 960px;
+      margin: -40px auto 0;
+      padding: 0 24px 60px;
+      position: relative;
+      z-index: 1;
+    }
+    .feature-card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 32px 28px;
+      box-shadow: 0 4px 24px rgba(15,23,42,0.06);
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+    .feature-card:hover { transform: translateY(-4px); box-shadow: 0 8px 32px rgba(15,23,42,0.1); }
+    .feature-card .icon { font-size: 36px; margin-bottom: 16px; }
+    .feature-card h3 { font-size: 18px; margin-bottom: 8px; }
+    .feature-card p { font-size: 14px; color: var(--muted); line-height: 1.7; }
+
+    /* --- How It Works --- */
+    .section { max-width: 960px; margin: 0 auto; padding: 60px 24px; }
+    .section h2 { font-size: 28px; font-weight: 700; text-align: center; margin-bottom: 40px; }
+    .steps {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 32px;
+      text-align: center;
+    }
+    .step-num {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 48px; height: 48px; border-radius: 50%;
+      background: var(--primary); color: #fff; font-size: 20px; font-weight: 700;
+      margin-bottom: 12px;
+    }
+    .steps h4 { font-size: 16px; margin-bottom: 6px; }
+    .steps p { font-size: 13px; color: var(--muted); line-height: 1.6; }
+
+    /* --- For Who --- */
+    .audience {
+      background: #fff;
+      border-top: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+    }
+    .audience-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 40px;
+    }
+    @media (max-width: 640px) { .audience-grid { grid-template-columns: 1fr; } }
+    .audience-grid h3 { font-size: 18px; margin-bottom: 12px; color: var(--primary); }
+    .audience-grid ul { list-style: none; padding: 0; }
+    .audience-grid li { padding: 6px 0; font-size: 14px; color: var(--muted); line-height: 1.6; }
+    .audience-grid li::before { content: "✓ "; color: var(--accent); font-weight: 700; }
+
+    /* --- Footer --- */
+    footer {
+      text-align: center;
+      padding: 32px 24px;
+      color: var(--muted);
+      font-size: 13px;
+      border-top: 1px solid var(--line);
+    }
+    footer a { color: var(--primary); text-decoration: none; }
+    footer a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+
+  <!-- Hero -->
+  <section class="hero">
+    <h1>📝 AI 阅卷与复核工作台</h1>
+    <p class="tagline">面向中学理科教师，覆盖批量批改、风险复核和讲评依据整理，<br>让重复性阅卷工作交给 AI，教师专注于教学判断。</p>
+    <div class="cta-group">
+      <a class="btn btn-white" href="/login">登录工作台</a>
+      <a class="btn btn-outline" href="/docs">查看 API 文档</a>
+    </div>
+  </section>
+
+  <!-- Feature Cards -->
+  <div class="features">
+    <div class="feature-card">
+      <div class="icon">📤</div>
+      <h3>批量批改更省时</h3>
+      <p>上传参考答案和全班作答，系统自动生成评分标准并逐份批改，教师不再逐本翻阅。</p>
+    </div>
+    <div class="feature-card">
+      <div class="icon">🔍</div>
+      <h3>复核更聚焦</h3>
+      <p>不可读样本、低置信度判分自动进入待复核队列，教师优先处理最需要人工判断的答卷。</p>
+    </div>
+    <div class="feature-card">
+      <div class="icon">📊</div>
+      <h3>讲评更有依据</h3>
+      <p>班级看板汇总错因分布与风险聚类，直接输出讲评建议要点，备课更高效。</p>
+    </div>
+  </div>
+
+  <!-- How It Works -->
+  <section class="section">
+    <h2>使用流程</h2>
+    <div class="steps">
+      <div>
+        <div class="step-num">1</div>
+        <h4>上传作答</h4>
+        <p>拍照或扫描学生作答，连同参考答案一起上传。</p>
+      </div>
+      <div>
+        <div class="step-num">2</div>
+        <h4>AI 自动批改</h4>
+        <p>系统识别文字与公式，对照评分标准逐步打分。</p>
+      </div>
+      <div>
+        <div class="step-num">3</div>
+        <h4>教师复核</h4>
+        <p>对高风险样本进行人工复核，确认或改判得分。</p>
+      </div>
+      <div>
+        <div class="step-num">4</div>
+        <h4>查看结果</h4>
+        <p>浏览班级看板、单份报告，获取讲评建议。</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Audience -->
+  <section class="audience">
+    <div class="section">
+      <h2>适用场景</h2>
+      <div class="audience-grid">
+        <div>
+          <h3>面向教师</h3>
+          <ul>
+            <li>批量批改作业和考试试卷，减少重复劳动</li>
+            <li>通过复核工作台聚焦异常样本，提升批改质量</li>
+            <li>利用错因统计和讲评建议，高效准备课堂讲解</li>
+            <li>任务进度实时可见，随时了解批改状态</li>
+          </ul>
+        </div>
+        <div>
+          <h3>面向学校</h3>
+          <ul>
+            <li>将教师经验性阅卷流程转化为可追溯的数字化工作流</li>
+            <li>在保留教师最终判断权的前提下提升批改一致性</li>
+            <li>沉淀题目级错误画像和复核记录，积累教学数据资产</li>
+            <li>支持试点部署，渐进式推广，无需一次性替换现有流程</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer>
+    <p>AI 阅卷与复核工作台 · v1.0</p>
+    <p style="margin-top:6px;">
+      <a href="/docs">API 文档</a> ·
+      <a href="/login">教师登录</a> ·
+      <a href="/ops-console">运维面板</a>
+    </p>
+  </footer>
+
+</body>
+</html>

@@ -61,6 +61,8 @@ class Settings(BaseSettings):
     upload_chunk_size_bytes: int = 256 * 1024
     upload_spool_max_size_bytes: int = 1 * 1024 * 1024
     pending_orphan_timeout_seconds: int = 900
+    processing_orphan_timeout_seconds: int = 600  # 10 min — stale PROCESSING detection
+    upload_ttl_days: int = 7  # P9-04: auto-cleanup uploaded files after N days
     rubric_dedupe_window_seconds: int = 86400
 
     # Prompt provider foundation (Phase 41)
@@ -103,7 +105,28 @@ class Settings(BaseSettings):
     skill_validation_fail_open: bool = True
     skill_gateway_auth_enabled: bool = False
     skill_gateway_auth_token: str | None = None
-    
+
+    # P9-01: Auth shell
+    auth_enabled: bool = False  # dev=False skips auth; prod should be True
+    auth_secret_key: str = "change-me-in-production"  # JWT signing key
+    auth_token_expire_minutes: int = 480  # 8 hours
+    auth_default_teacher_id: str = "teacher-default"  # fallback in dev mode
+    auth_default_teacher_name: str = "默认教师"
+
+    # Phase 10: LLM API robustness controls (configurable to prevent timeout death spiral)
+    qwen_api_timeout_seconds: float = 120.0
+    qwen_max_output_tokens: int = 16384
+    qwen_max_retries: int = 3
+    qwen_max_connection_errors: int = 3
+    deepseek_api_timeout_seconds: float = 180.0
+    deepseek_max_output_tokens: int = 8192
+    deepseek_max_retries: int = 4
+
+    # Phase 10: Celery robustness controls
+    celery_visibility_timeout: int = 1800  # Redis broker: re-deliver unacked after 30min
+    celery_task_soft_time_limit_seconds: int = 900
+    celery_task_hard_time_limit_seconds: int = 960
+
     @property
     def uploads_path(self) -> Path:
         """Absolute path to uploads directory (LocalStorage only)."""
@@ -174,6 +197,8 @@ class Settings(BaseSettings):
         "router_budget_token_limit",
         "sse_stream_timeout_seconds",
         "pending_orphan_timeout_seconds",
+        "processing_orphan_timeout_seconds",
+        "upload_ttl_days",
         "rubric_dedupe_window_seconds",
         "batch_internal_concurrency",
         "batch_postprocess_concurrency",

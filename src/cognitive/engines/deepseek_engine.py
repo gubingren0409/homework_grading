@@ -32,15 +32,21 @@ class DeepSeekCognitiveEngine(BaseCognitiveAgent):
 
     def __init__(self):
         """Initialize a circuit-breaker-aware pool of clients."""
-        keys = settings.parsed_deepseek_keys or ["MISSING"]
+        keys = settings.parsed_deepseek_keys or []
+        if not keys:
+            logger.warning("No DeepSeek API keys configured — cognitive calls will fail at runtime")
+            keys = ["MISSING"]
         self._key_pool = CircuitBreakerKeyPool("DeepSeekPool", keys)
         
+        _timeout = settings.deepseek_api_timeout_seconds
+        logger.info(f"Initializing DeepSeek engine: {len(keys)} key(s), timeout={_timeout}s, "
+                     f"max_retries={settings.deepseek_max_retries}")
         # Mapping: Key string -> AsyncOpenAI client
         self._clients = {
             key: openai.AsyncOpenAI(
                 api_key=key,
                 base_url="https://api.deepseek.com",
-                timeout=400.0,
+                timeout=_timeout,
                 max_retries=0 # Manual failover
             ) for key in keys
         }
@@ -153,7 +159,7 @@ class DeepSeekCognitiveEngine(BaseCognitiveAgent):
         token_estimate = int(prompt_bundle.token_estimate)
         runtime_router = get_runtime_router_controller()
         
-        max_retries = 15
+        max_retries = settings.deepseek_max_retries
         connection_error_count = 0
         MAX_CONNECTION_ERRORS = 1
         last_error_message = ""

@@ -135,7 +135,7 @@ async def test_polling_endpoint_contract_pending_status(test_db_path):
     
     This ensures frontend can display meaningful waiting indicators.
     """
-    from src.api.routes import get_job_status_and_results
+    from src.api.routers.grade import get_job_status_and_results
     task_id = "test-polling-001"
     await create_task(test_db_path, task_id)
 
@@ -168,7 +168,7 @@ async def test_polling_endpoint_sanitizes_internal_errors(test_db_path):
     
     Expected: Raw Python exceptions replaced with sanitized error_code.
     """
-    from src.api.routes import get_job_status_and_results
+    from src.api.routers.grade import get_job_status_and_results
     task_id = "test-error-001"
     await create_task(test_db_path, task_id)
     

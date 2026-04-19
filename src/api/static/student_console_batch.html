@@ -167,6 +167,19 @@
   </div>
 
   <script>
+    const _graderToken = localStorage.getItem('grader_token');
+    const _authHeaders = _graderToken ? { 'Authorization': 'Bearer ' + _graderToken } : {};
+    (async function _authGuard() {
+      try { const r = await fetch('/api/v1/auth/whoami'); const d = await r.json(); if (d.auth_enabled && !_graderToken) { window.location.href = '/login'; } } catch(e) {}
+    })();
+    const _origFetch = window.fetch.bind(window);
+    window.fetch = function(url, opts = {}) {
+      if (typeof url === 'string' && url.startsWith('/api/')) {
+        opts.headers = Object.assign({}, _authHeaders, opts.headers || {});
+      }
+      return _origFetch(url, opts);
+    };
+
     let es = null;
     let lastSseErrorLogAt = 0;
     const maxLogLines = 120;
