@@ -170,6 +170,11 @@ async def history_results_page() -> FileResponse:
     return _serve_console_page("history_results.html")
 
 
+@app.get("/demo-showcase", include_in_schema=False)
+async def demo_showcase_page() -> FileResponse:
+    return _serve_console_page("demo_showcase.html")
+
+
 @app.get("/report-view", include_in_schema=False)
 async def report_view_page() -> FileResponse:
     return _serve_console_page("report_view.html")

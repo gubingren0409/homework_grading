@@ -1,0 +1,450 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>项目离线演示页</title>
+  <style>
+    :root {
+      --bg: #f4f7fb;
+      --card: #ffffff;
+      --line: #e4e9f4;
+      --text: #1f2937;
+      --muted: #667085;
+      --primary: #3563e9;
+      --primary-soft: #eef3ff;
+      --ok: #0f9d58;
+      --warn: #b54708;
+    }
+
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); font-family: Arial, sans-serif; }
+    a { color: var(--primary); text-decoration: none; }
+    button {
+      border: 0;
+      border-radius: 10px;
+      padding: 10px 14px;
+      background: var(--primary);
+      color: #fff;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    button.secondary { background: #667085; }
+    .wrap { max-width: 1240px; margin: 0 auto; padding: 28px 18px 40px; }
+    .hero, .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      box-shadow: 0 4px 18px rgba(15, 23, 42, 0.04);
+    }
+    .hero { padding: 22px; margin-bottom: 16px; }
+    .hero h1 { margin: 0 0 10px; font-size: 30px; }
+    .lead { margin: 0; color: #475467; line-height: 1.7; }
+    .pill {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: var(--primary-soft);
+      color: var(--primary);
+      font-size: 12px;
+      font-weight: 700;
+      margin-bottom: 12px;
+    }
+    .hero-links { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
+    .link-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 12px;
+      border: 1px solid #d7def0;
+      border-radius: 999px;
+      background: #f8fbff;
+      font-size: 13px;
+    }
+    .layout {
+      display: grid;
+      gap: 16px;
+      grid-template-columns: minmax(0, 1.5fr) minmax(320px, 0.9fr);
+      align-items: start;
+    }
+    .stack { display: grid; gap: 16px; }
+    .card { padding: 18px; }
+    .summary-grid,
+    .scenario-grid,
+    .step-grid {
+      display: grid;
+      gap: 12px;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    }
+    .summary-item,
+    .scenario-card,
+    .step-card {
+      border: 1px solid #e8edf7;
+      border-radius: 14px;
+      background: #fbfdff;
+      padding: 14px;
+    }
+    .summary-item .k,
+    .mini-title {
+      color: var(--muted);
+      font-size: 12px;
+      margin-bottom: 6px;
+    }
+    .summary-item .v {
+      font-size: 24px;
+      font-weight: 700;
+      line-height: 1.2;
+    }
+    .summary-item .sub,
+    .muted {
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.6;
+    }
+    .tag {
+      display: inline-block;
+      padding: 3px 8px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+      margin-right: 8px;
+    }
+    .tag.ok { background: #e8f7ee; color: var(--ok); }
+    .tag.warn { background: #fffaeb; color: var(--warn); }
+    .tag.info { background: #eef2ff; color: var(--primary); }
+    .mono {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+      font-size: 13px;
+      background: #f8fafc;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 12px;
+      font-family: Consolas, monospace;
+    }
+    .list { display: grid; gap: 10px; }
+    .list-item {
+      border: 1px solid #e8edf7;
+      border-radius: 12px;
+      padding: 12px;
+      background: #fbfdff;
+    }
+    .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
+    .actions a {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 148px;
+      border-radius: 10px;
+      padding: 10px 14px;
+      background: var(--primary);
+      color: #fff;
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .actions a.secondary { background: #667085; }
+    .notice {
+      border-radius: 12px;
+      padding: 12px 14px;
+      font-size: 13px;
+      line-height: 1.7;
+      background: #eff6ff;
+      border: 1px solid #dbeafe;
+      color: #1d4ed8;
+    }
+    .step-head {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 10px;
+      font-size: 13px;
+      color: var(--primary);
+      font-weight: 700;
+    }
+    .step-num {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 22px;
+      height: 22px;
+      border-radius: 999px;
+      background: var(--primary);
+      color: #fff;
+      font-size: 12px;
+    }
+    h2, h3 { margin: 0 0 10px; }
+    p { margin: 0; line-height: 1.7; }
+    @media (max-width: 960px) {
+      .layout { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <section class="hero">
+      <span class="pill">指导老师演示专用</span>
+      <h1>项目离线演示页</h1>
+      <p class="lead">这不是重新跑 worker 的实时演示，而是把<strong>已经批改完成的本地任务</strong>组织成一条稳定的展示动线。你明天只需要启动 FastAPI，让页面从现有 SQLite 中读取结果即可，不依赖重新上传、模型外呼或 Redis 状态流是否可用。</p>
+      <div class="hero-links">
+        <a class="link-chip" href="/student-console">任务创建向导</a>
+        <a class="link-chip" href="/task-progress">任务进度页</a>
+        <a class="link-chip" href="/class-dashboard">班级结果看板</a>
+        <a class="link-chip" href="/report-view">报告展示页</a>
+        <a class="link-chip" href="/review-console">复核工作台</a>
+      </div>
+    </section>
+
+    <div class="layout">
+      <div class="stack">
+        <section class="card">
+          <h2>怎么使用这页</h2>
+          <div class="notice">
+            先启动 API：<strong>uvicorn src.main:app --host 127.0.0.1 --port 8000</strong>。<br />
+            然后打开 <strong>/demo-showcase</strong>，按下方按钮依次进入真实的任务进度页、班级看板、报告页和复核台。<br />
+            这次演示不需要重新发起批改任务；数据直接来自本地已有的 <code>outputs\grading_database.db</code>。
+          </div>
+          <div class="actions">
+            <a href="http://127.0.0.1:8000/demo-showcase" target="_blank" rel="noopener noreferrer">打开演示页</a>
+          </div>
+        </section>
+
+        <section class="card">
+          <h2>推荐你明天演这两组任务</h2>
+          <div class="scenario-grid" id="scenarioGrid"></div>
+        </section>
+
+        <section class="card">
+          <h2>3 分钟最短演示顺序</h2>
+          <div class="step-grid" id="stepGrid"></div>
+        </section>
+
+        <section class="card">
+          <h2>预置提交结果</h2>
+          <p class="muted">这段 JSON 用来模拟“老师刚提交完批改任务”的第一屏，不需要现场重新上传文件。</p>
+          <div id="submitSnapshot" class="mono"></div>
+        </section>
+      </div>
+
+      <aside class="stack">
+        <section class="card">
+          <h3>你可以直接照着说</h3>
+          <div class="list">
+            <div class="list-item">
+              <strong>开场</strong>
+              <p class="muted">我这里不现场重新跑模型，而是展示已经完成的一批真实结果，重点让老师看清业务流程、结果形态和后续复核入口。</p>
+            </div>
+            <div class="list-item">
+              <strong>任务进度页</strong>
+              <p class="muted">这一页对应“任务已经提交后，老师最关心有没有在正常推进、还要等多久、结果能不能看”。</p>
+            </div>
+            <div class="list-item">
+              <strong>班级看板</strong>
+              <p class="muted">这一页不再是一份份翻结果，而是先看到班级整体水平、主要错因和值得优先关注的样本。</p>
+            </div>
+            <div class="list-item">
+              <strong>单份报告</strong>
+              <p class="muted">进入某个学生后，系统会把扣分点、证据片段和修改建议组织成老师能直接看的报告，而不是原始 JSON。</p>
+            </div>
+            <div class="list-item">
+              <strong>复核工作台</strong>
+              <p class="muted">如果样本复杂或证据偏弱，系统会把风险样本集中起来，老师只需要重点看最值得看的那一部分。</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="card">
+          <h3>演示时别说过头</h3>
+          <div class="list">
+            <div class="list-item">
+              <span class="tag info">定位</span>
+              <p class="muted">说“教师侧 AI 阅卷与复核工作台”，不要说“全学科、全场景教学平台”。</p>
+            </div>
+            <div class="list-item">
+              <span class="tag warn">边界</span>
+              <p class="muted">说“适合单题、小批量、单机试点”，不要说“已经可以直接大规模云服务”。</p>
+            </div>
+            <div class="list-item">
+              <span class="tag ok">价值</span>
+              <p class="muted">强调“批量提效 + 风险样本复核 + 讲评依据生成”，不要强调“完全替代老师”。</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="card">
+          <h3>演示入口速查</h3>
+          <div id="quickLinks" class="list"></div>
+        </section>
+      </aside>
+    </div>
+  </div>
+
+  <script>
+    const demos = {
+      standard: {
+        key: "standard",
+        label: "标准批改演示",
+        tag: "推荐先演",
+        taskId: "19c9a722-b892-4971-ac83-d8214caa0729",
+        reportStudent: "stu_ans_03",
+        title: "无线电广播填空题",
+        description: "这组任务更适合先讲主流程：结果清晰、通过样本和扣分样本都存在，班级看板会比较好解释。",
+        submittedCount: 21,
+        passedCount: 9,
+        avgDeduction: "1.19",
+        avgConfidence: "97.5%",
+        errorTypes: "CONCEPTUAL 23 次，TRANSCRIPTION_ERROR 2 次",
+        reportHighlight: "可直接打开 stu_ans_03，看四个扣分点是如何被组织成单份报告的。",
+        links: {
+          progress: "/task-progress?task_id=19c9a722-b892-4971-ac83-d8214caa0729",
+          dashboard: "/class-dashboard?task_id=19c9a722-b892-4971-ac83-d8214caa0729",
+          report: "/report-view?task_id=19c9a722-b892-4971-ac83-d8214caa0729&student_id=stu_ans_03"
+        }
+      },
+      review: {
+        key: "review",
+        label: "复杂题复核演示",
+        tag: "适合展示难度",
+        taskId: "f4003573-9104-4cb4-a55b-8e017c5e6924",
+        reportStudent: "stu_ans_17",
+        title: "物理综合题批改 + 复核入口",
+        description: "这组任务更适合展示系统在复杂题上的扣分拆解和复核价值，虽然不现场重跑，但可以展示真实高难样本。",
+        submittedCount: 21,
+        passedCount: 0,
+        avgDeduction: "7.67",
+        avgConfidence: "91.4%",
+        errorTypes: "CONCEPTUAL 40 次，CALCULATION 35 次，LOGIC 22 次",
+        reportHighlight: "可直接打开 stu_ans_17，看复杂物理题如何拆出多个扣分点与证据片段；复核台会按 task_id 过滤到这批数据。",
+        links: {
+          dashboard: "/class-dashboard?task_id=f4003573-9104-4cb4-a55b-8e017c5e6924",
+          report: "/report-view?task_id=f4003573-9104-4cb4-a55b-8e017c5e6924&student_id=stu_ans_17",
+          review: "/review-console?task_id=f4003573-9104-4cb4-a55b-8e017c5e6924"
+        }
+      }
+    };
+
+    const stepFlow = [
+      {
+        step: 1,
+        title: "先说明这次是离线预演",
+        text: "用已经完成的 task 来演，避免现场受网络、模型外呼或 Redis 状态影响。",
+        actions: [
+          { label: "看标准任务看板", href: demos.standard.links.dashboard },
+          { label: "看复杂题看板", href: demos.review.links.dashboard }
+        ]
+      },
+      {
+        step: 2,
+        title: "打开任务进度页",
+        text: "重点讲“任务提交后，老师先看的是进度与状态，而不是后台日志”。",
+        actions: [
+          { label: "标准任务进度", href: demos.standard.links.progress }
+        ]
+      },
+      {
+        step: 3,
+        title: "进入班级结果看板",
+        text: "先展示整体通过率、平均扣分和主要错因，再切单份报告。",
+        actions: [
+          { label: "标准任务看板", href: demos.standard.links.dashboard },
+          { label: "复杂题看板", href: demos.review.links.dashboard }
+        ]
+      },
+      {
+        step: 4,
+        title: "展示单份报告",
+        text: "建议先看标准批改任务里的一个错误样本，再看复杂物理题里的高扣分样本。",
+        actions: [
+          { label: "标准任务报告", href: demos.standard.links.report },
+          { label: "复杂题报告", href: demos.review.links.report }
+        ]
+      },
+      {
+        step: 5,
+        title: "最后讲复核价值",
+        text: "强调系统不是替老师拍板全部结果，而是把复杂样本集中出来，方便老师优先处理。",
+        actions: [
+          { label: "打开复核工作台", href: demos.review.links.review }
+        ]
+      }
+    ];
+
+    const submitSnapshot = {
+      task_id: demos.standard.taskId,
+      status: "PENDING",
+      rubric_id: "demo-rubric-prebound",
+      mode: "batch_submit",
+      submitted_count: demos.standard.submittedCount,
+      status_endpoint: `/api/v1/grade/${demos.standard.taskId}`,
+      stream_endpoint: `/api/v1/tasks/${demos.standard.taskId}/stream`,
+      suggested_poll_interval_seconds: 3
+    };
+
+    function scenarioCard(demo) {
+      const reviewLink = demo.links.review
+        ? `<a class="secondary" href="${demo.links.review}">复核台</a>`
+        : "";
+      return `
+        <article class="scenario-card">
+          <div class="mini-title">${demo.title}</div>
+          <h3>${demo.label}</h3>
+          <p class="muted"><span class="tag info">${demo.tag}</span>task_id：<code>${demo.taskId}</code></p>
+          <p class="muted">${demo.description}</p>
+          <div class="summary-grid" style="margin-top:12px;">
+            <div class="summary-item"><div class="k">样本数</div><div class="v">${demo.submittedCount}</div><div class="sub">已完成批改</div></div>
+            <div class="summary-item"><div class="k">通过样本</div><div class="v">${demo.passedCount}</div><div class="sub">更适合解释班级结果</div></div>
+            <div class="summary-item"><div class="k">平均扣分</div><div class="v">${demo.avgDeduction}</div><div class="sub">任务级均值</div></div>
+            <div class="summary-item"><div class="k">平均置信度</div><div class="v">${demo.avgConfidence}</div><div class="sub">越低越值得复核</div></div>
+          </div>
+          <div class="muted" style="margin-top:10px;">主要错因：${demo.errorTypes}</div>
+          <div class="muted" style="margin-top:6px;">报告亮点：${demo.reportHighlight}</div>
+          <div class="actions">
+            <a href="${demo.links.dashboard}">班级看板</a>
+            <a href="${demo.links.report}">单份报告</a>
+            ${reviewLink}
+          </div>
+        </article>
+      `;
+    }
+
+    function stepCard(item) {
+      const actions = item.actions.map((action) => `<a href="${action.href}">${action.label}</a>`).join("");
+      return `
+        <article class="step-card">
+          <div class="step-head"><span class="step-num">${item.step}</span>${item.title}</div>
+          <p class="muted">${item.text}</p>
+          <div class="actions">${actions}</div>
+        </article>
+      `;
+    }
+
+    function quickLink(title, href, note) {
+      return `
+        <div class="list-item">
+          <strong>${title}</strong>
+          <div class="muted">${note}</div>
+          <div class="actions"><a href="${href}">${title}</a></div>
+        </div>
+      `;
+    }
+
+    document.getElementById("scenarioGrid").innerHTML = [
+      scenarioCard(demos.standard),
+      scenarioCard(demos.review),
+    ].join("");
+
+    document.getElementById("stepGrid").innerHTML = stepFlow.map(stepCard).join("");
+
+    document.getElementById("submitSnapshot").textContent = JSON.stringify(submitSnapshot, null, 2);
+
+    document.getElementById("quickLinks").innerHTML = [
+      quickLink("标准任务进度", demos.standard.links.progress, "先讲“任务提交后老师怎么跟进状态”。"),
+      quickLink("标准任务班级看板", demos.standard.links.dashboard, "适合讲整体通过率、均分和错因。"),
+      quickLink("标准任务单份报告", demos.standard.links.report, "适合讲扣分点、证据片段和建议。"),
+      quickLink("复杂题单份报告", demos.review.links.report, "适合讲系统在复杂题上的拆解能力。"),
+      quickLink("复杂题复核台", demos.review.links.review, "适合讲人机协同复核，而不是全自动替代老师。"),
+    ].join("");
+  </script>
+</body>
+</html>
