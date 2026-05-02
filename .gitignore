@@ -99,9 +99,14 @@ Thumbs.db
 data/uploads/
 
 # Runtime outputs (临时验证产物)
+output/
+outputs/acceptance_3_20_contract/
+outputs/acceptance_3_20_samples/
 outputs/perception_isolation_*/
 outputs/phase*_*/
 outputs/phasec_regression_matrix_report.json
+outputs/q02_debug/
+outputs/q18_debug/
 
 # Local Docker artifacts
 DockerDesktopWSL/
