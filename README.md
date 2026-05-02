@@ -77,6 +77,16 @@
 - Circuit Breaker 熔断与恢复
 - 运行时遥测与 Ops 控制面
 
+### 7. 整卷切题与按题评分（新增）
+
+系统现在已经补上了“整卷参考答案 / 整卷学生作答”这条中间管道，核心新增能力包括：
+
+- `RubricBundle`：从整卷参考答案中提取题号树与每题 rubric
+- `QuestionAnchorDetector`：从整卷版面中定位印刷题号锚点
+- `MinerULayoutSkill`：适配本地 / 网关式 MinerU API，输出可复用的 layout blocks
+- `AnswerRegionSplitter`：把题号锚点之间的条带切成 `StudentAnswerRegion`
+- `PaperGradingWorkflow`：按题复用既有单题评分链路，输出 `PaperEvaluationReport`
+
 ---
 
 ## 典型流程
@@ -145,6 +155,11 @@
 | `ops` | 模型切换、prompt 控制、A/B、熔断演练、队列诊断 |
 | `skills` | 外部 layout / validation skill 网关 |
 
+### 新增整卷接口
+
+- `POST /api/v1/rubric/bundle/generate`：整卷参考答案 -> `RubricBundle`
+- `POST /api/v1/grade/paper`：整卷学生作答 + `bundle_id` -> `PaperEvaluationReport`
+
 ---
 
 ## 数据与状态沉淀
@@ -153,6 +168,9 @@
 
 - `tasks`
 - `grading_results`
+- `rubric_bundles`
+- `paper_tasks`
+- `paper_question_results`
 - `rubrics`
 - `rubric_generate_audit`
 - `task_runtime_telemetry`
@@ -206,6 +224,15 @@ SQLITE_DB_PATH=outputs/grading_database.db
 AUTH_ENABLED=false
 ```
 
+如果要启用整卷切题建议同时开启 layout skill，最小配置示例：
+
+```env
+SKILL_LAYOUT_PARSER_ENABLED=true
+SKILL_LAYOUT_PARSER_PROVIDER=mineru
+SKILL_LAYOUT_PARSER_API_URL=http://127.0.0.1:30000
+SKILL_LAYOUT_PARSER_TIMEOUT_SECONDS=20
+```
+
 `.env.example` 中还包含：
 
 - 批处理并发参数
@@ -214,6 +241,13 @@ AUTH_ENABLED=false
 - Runtime Router 开关
 - Skills 网关配置
 - Nginx 端口配置
+
+## 当前整卷能力边界
+
+- 教师端整卷 rubric 提取、题号树抽取、bundle 持久化已可用
+- 学生端整卷切题、按题评分、worker 持久化链路已可用
+- 真实教师样卷已验证到参考答案侧
+- **真实学生整卷拍照回归样本仍缺失**，当前 student 侧回归以单元测试、合成版面和接口测试为主
 
 ### 3. 启动 API
 
