@@ -8,18 +8,26 @@ from src.core.trace_context import get_trace_id
 
 
 logger = logging.getLogger(__name__)
+_PUBSUB_CLIENT = None
 
 
-async def publish_status(task_id: str, status: str, **kwargs) -> None:
-    import redis.asyncio as aioredis
+async def _get_pubsub_client():
+    global _PUBSUB_CLIENT
+    if _PUBSUB_CLIENT is None:
+        import redis.asyncio as aioredis
 
-    redis_client = None
-    try:
-        redis_client = await aioredis.from_url(
+        _PUBSUB_CLIENT = await aioredis.from_url(
             settings.redis_url,
             encoding="utf-8",
             decode_responses=True,
         )
+    return _PUBSUB_CLIENT
+
+
+async def publish_status(task_id: str, status: str, **kwargs) -> None:
+    global _PUBSUB_CLIENT
+    try:
+        redis_client = await _get_pubsub_client()
         channel = f"task_status:{task_id}"
         event_data = {
             "task_id": task_id,
@@ -30,10 +38,13 @@ async def publish_status(task_id: str, status: str, **kwargs) -> None:
         await redis_client.publish(channel, json.dumps(event_data))
         logger.info(f"[Worker-PubSub] Published status update for task {task_id}: {status}")
     except Exception as exc:
+        if _PUBSUB_CLIENT is not None:
+            try:
+                await _PUBSUB_CLIENT.aclose()
+            except Exception:
+                pass
+            _PUBSUB_CLIENT = None
         logger.warning(f"[Worker-PubSub] Failed to publish task {task_id} status: {exc}")
-    finally:
-        if redis_client:
-            await redis_client.aclose()
 
 
 def route_to_dlq(*, dlq_queue_name: str, task_id: str, payload: Dict[str, Any], db_path: str, error: str) -> None:

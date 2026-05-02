@@ -130,6 +130,16 @@ async def student_console():
     return _serve_console_page("student_console.html")
 
 
+@app.get("/whole-paper-console", include_in_schema=False)
+async def whole_paper_console():
+    return _serve_console_page("whole_paper_console.html")
+
+
+@app.get("/whole-paper-report", include_in_schema=False)
+async def whole_paper_report():
+    return _serve_console_page("whole_paper_report.html")
+
+
 @app.get("/ops-console", include_in_schema=False)
 async def ops_console():
     return _serve_console_page("ops_console.html")

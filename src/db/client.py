@@ -39,6 +39,7 @@ async def init_db(db_path: str) -> None:
         await _ensure_rubric_audit_schema(db)
         await _ensure_domain_split_tables(db)
         await _ensure_skill_validation_tables(db)
+        await _ensure_paper_grading_tables(db)
         await _ensure_runtime_telemetry_table(db)
         await _ensure_prompt_control_tables(db)
         if await _has_legacy_review_columns(db):
@@ -248,6 +249,51 @@ async def _ensure_skill_validation_tables(db: aiosqlite.Connection) -> None:
     )
     await db.execute("CREATE INDEX IF NOT EXISTS idx_skill_validation_task_id ON skill_validation_records(task_id)")
     await db.execute("CREATE INDEX IF NOT EXISTS idx_skill_validation_checker ON skill_validation_records(checker)")
+
+
+async def _ensure_paper_grading_tables(db: aiosqlite.Connection) -> None:
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS paper_tasks (
+            task_id TEXT PRIMARY KEY,
+            student_id TEXT,
+            bundle_id TEXT,
+            paper_id TEXT NOT NULL,
+            total_questions INTEGER NOT NULL CHECK (total_questions >= 0),
+            answered_questions INTEGER NOT NULL CHECK (answered_questions >= 0),
+            total_score_deduction REAL NOT NULL CHECK (total_score_deduction >= 0.0),
+            requires_human_review INTEGER NOT NULL CHECK (requires_human_review IN (0, 1)),
+            report_json TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(task_id) REFERENCES tasks(task_id)
+        )
+        """
+    )
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS paper_question_results (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT NOT NULL,
+            student_id TEXT,
+            question_id TEXT NOT NULL,
+            page_indexes_json TEXT,
+            total_deduction REAL NOT NULL CHECK (total_deduction >= 0.0),
+            status TEXT NOT NULL,
+            requires_human_review INTEGER NOT NULL CHECK (requires_human_review IN (0, 1)),
+            report_json TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(task_id) REFERENCES tasks(task_id)
+        )
+        """
+    )
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_paper_tasks_student_id ON paper_tasks(student_id)")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_paper_tasks_bundle_id ON paper_tasks(bundle_id)")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_paper_tasks_paper_id ON paper_tasks(paper_id)")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_paper_question_results_task_id ON paper_question_results(task_id)")
+    await db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_paper_question_results_question_id ON paper_question_results(question_id)"
+    )
 
 
 async def _ensure_runtime_telemetry_table(db: aiosqlite.Connection) -> None:
@@ -496,7 +542,9 @@ from src.db.dao.tasks import (  # noqa: E402,F401
 
 from src.db.dao.rubrics import (  # noqa: E402,F401
     save_rubric,
+    save_rubric_bundle,
     get_rubric,
+    get_rubric_bundle,
     list_rubrics,
     get_recent_rubric_by_fingerprint,
     append_rubric_generate_audit,
@@ -508,6 +556,12 @@ from src.db.dao.results import (  # noqa: E402,F401
     insert_grading_results,
     fetch_results,
     fetch_results_by_task,
+)
+
+from src.db.dao.paper import (  # noqa: E402,F401
+    save_paper_grading_report,
+    get_paper_task,
+    list_paper_question_results,
 )
 
 from src.db.dao.review import (  # noqa: E402,F401

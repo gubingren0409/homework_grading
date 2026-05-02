@@ -31,7 +31,10 @@ def test_grade_endpoint_happy_path():
     files = [("files", ("test_hw.jpg", b"fake_image_bytes", "image/jpeg"))]
 
     # 2. Execute POST
-    with patch("src.api.routers.grade.grade_homework_task.apply_async", return_value=Mock(id="mock-celery-id")) as mocked_apply_async:
+    with (
+        patch("src.api.routers.grade._check_redis_health", return_value=(True, "")),
+        patch("src.api.routers.grade.grade_homework_task.apply_async", return_value=Mock(id="mock-celery-id")) as mocked_apply_async,
+    ):
         response = client.post("/api/v1/grade/submit", files=files)
 
     # 3. Assertions
@@ -262,6 +265,7 @@ def test_grade_flow_guide_endpoint():
     assert data["submit_endpoint"] == "/api/v1/grade/submit"
     assert data["batch_submit_endpoint"] == "/api/v1/grade/submit-batch"
     assert data["batch_submit_with_reference_endpoint"] == "/api/v1/grade/submit-batch-with-reference"
+    assert data["paper_submit_endpoint"] == "/api/v1/grade/paper/submit"
     assert data["status_endpoint_template"] == "/api/v1/grade/{task_id}"
     assert data["stream_endpoint_template"] == "/api/v1/tasks/{task_id}/stream"
     assert "SSE_BACKEND_UNAVAILABLE" in data["error_code_actions"]
@@ -277,7 +281,10 @@ def test_grade_submit_batch_endpoint_happy_path():
         ("files", ("stu_001.jpg", b"fake_img_1", "image/jpeg")),
         ("files", ("stu_002.png", b"fake_img_2", "image/png")),
     ]
-    with patch("src.api.routers.grade.grade_homework_task.apply_async", return_value=Mock(id="mock-celery-id")) as mocked_apply_async:
+    with (
+        patch("src.api.routers.grade._check_redis_health", return_value=(True, "")),
+        patch("src.api.routers.grade.grade_homework_task.apply_async", return_value=Mock(id="mock-celery-id")) as mocked_apply_async,
+    ):
         response = client.post("/api/v1/grade/submit-batch", files=files)
     assert response.status_code == 202
     data = response.json()
@@ -296,7 +303,10 @@ def test_grade_submit_batch_with_reference_endpoint_happy_path():
         ("files", ("stu_001.jpg", b"fake_img_1", "image/jpeg")),
         ("files", ("stu_002.png", b"fake_img_2", "image/png")),
     ]
-    with patch("src.api.routers.grade.grade_homework_task.apply_async", return_value=Mock(id="mock-celery-id")) as mocked_apply_async:
+    with (
+        patch("src.api.routers.grade._check_redis_health", return_value=(True, "")),
+        patch("src.api.routers.grade.grade_homework_task.apply_async", return_value=Mock(id="mock-celery-id")) as mocked_apply_async,
+    ):
         response = client.post("/api/v1/grade/submit-batch-with-reference", files=files)
     assert response.status_code == 202
     data = response.json()

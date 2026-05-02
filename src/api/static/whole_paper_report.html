@@ -1,0 +1,351 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>整卷班级报告</title>
+  <style>
+    :root {
+      --blue: #4f6df5;
+      --cyan: #4ecdc4;
+      --orange: #ff9f43;
+      --bg: #f7f9fc;
+      --card: #fff;
+      --text: #111827;
+      --muted: #64748b;
+      --line: #e6ebf4;
+      --ok: #16a34a;
+      --warn: #b45309;
+      --bad: #dc2626;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; }
+    .topbar { height: 64px; background: linear-gradient(135deg, var(--blue), #6c86ff); color: #fff; display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 16px rgba(79,109,245,.18); }
+    .back { position: absolute; left: 18px; color: #fff; text-decoration: none; font-size: 24px; }
+    .topbar h1 { margin: 0; font-size: 23px; }
+    .wrap { max-width: 1280px; margin: 0 auto; padding: 28px 18px 44px; }
+    .hero, .card { background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 8px 24px rgba(15,23,42,.06); }
+    .hero { padding: 24px; margin-bottom: 18px; display: grid; grid-template-columns: minmax(0, 1fr) 150px; gap: 18px; align-items: center; }
+    .hero h2 { margin: 0 0 8px; font-size: 28px; }
+    .desc { color: var(--muted); line-height: 1.65; margin: 0; }
+    .ring { width: 104px; height: 104px; border-radius: 50%; background: conic-gradient(var(--orange) 0%, #edf1f8 0); display: grid; place-items: center; justify-self: end; }
+    .ring span { width: 84px; height: 84px; border-radius: 50%; background: #fff; display: grid; place-items: center; color: var(--orange); font-weight: 900; font-size: 20px; }
+    .toolbar { display: grid; grid-template-columns: 120px minmax(0, 1fr) 120px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 18px; margin-bottom: 18px; }
+    label { color: #344054; font-weight: 800; }
+    input { width: 100%; padding: 11px 12px; border: 1px solid #d5dce8; border-radius: 10px; background: #fff; font: inherit; }
+    button { border: 0; border-radius: 10px; padding: 11px 18px; background: var(--blue); color: #fff; font-weight: 900; cursor: pointer; box-shadow: 0 4px 10px rgba(79,109,245,.24); }
+    .stats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 14px; margin-bottom: 18px; }
+    .stat { background: #fff; border: 1px solid var(--line); border-radius: 14px; padding: 16px; box-shadow: 0 5px 18px rgba(15,23,42,.05); }
+    .stat strong { display: block; color: var(--blue); font-size: 25px; margin-bottom: 6px; }
+    .stat span { color: var(--muted); font-size: 13px; }
+    .layout { display: grid; grid-template-columns: 340px minmax(0, 1fr); gap: 18px; align-items: start; }
+    .card { padding: 18px; }
+    .student-list { display: grid; gap: 10px; max-height: 72vh; overflow: auto; padding-right: 4px; }
+    .student-item { text-align: left; background: #fbfdff; color: var(--text); border: 1px solid var(--line); box-shadow: none; border-radius: 14px; padding: 13px; }
+    .student-item.active { border-color: var(--blue); background: #f5f8ff; }
+    .student-name { display: flex; justify-content: space-between; gap: 8px; align-items: center; font-weight: 900; }
+    .badge { display: inline-block; padding: 4px 8px; border-radius: 999px; font-size: 12px; font-weight: 900; background: #eef3ff; color: var(--blue); }
+    .badge.ok { background: #e9f9ef; color: var(--ok); }
+    .badge.warn { background: #fff4e8; color: var(--warn); }
+    .badge.bad { background: #fff1f2; color: var(--bad); }
+    .muted { color: var(--muted); font-size: 12px; margin-top: 7px; }
+    .question-grid { display: grid; gap: 14px; }
+    .question-card { border: 1px solid var(--line); border-left: 4px solid var(--orange); border-radius: 14px; padding: 15px; background: #fbfdff; }
+    .question-head { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; }
+    .mini-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(135px, 1fr)); gap: 10px; margin-bottom: 10px; }
+    .mini { border: 1px solid #edf1f7; border-radius: 10px; background: #fff; padding: 10px; }
+    .mini span { display: block; color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+    .mini strong { color: var(--blue); }
+    .text-block { white-space: pre-wrap; overflow-wrap: anywhere; border: 1px solid #edf1f7; border-radius: 10px; background: #fff; padding: 10px; color: #263447; line-height: 1.6; font-size: 13px; }
+    .render-block { white-space: normal; overflow-wrap: anywhere; border: 1px solid #edf1f7; border-radius: 10px; background: #fff; padding: 10px; color: #263447; line-height: 1.75; font-size: 13px; }
+    .render-block .math { font-family: "Cambria Math", "Times New Roman", serif; background: #f8fafc; border: 1px solid #edf1f7; border-radius: 6px; padding: 1px 5px; margin: 0 2px; display: inline-block; }
+    .render-block .frac { display: inline-flex; flex-direction: column; align-items: center; vertical-align: middle; line-height: 1.05; margin: 0 2px; }
+    .render-block .frac .num { border-bottom: 1px solid currentColor; padding: 0 3px; }
+    .render-block .frac .den { padding: 0 3px; }
+    .image-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px; margin: 10px 0; }
+    .image-card { border: 1px solid #edf1f7; border-radius: 10px; background: #fff; padding: 10px; }
+    .image-card img { display: block; width: 100%; max-height: 520px; object-fit: contain; background: #f8fafc; border-radius: 8px; border: 1px solid #edf1f7; }
+    .image-card .caption { color: var(--muted); font-size: 12px; margin-bottom: 7px; overflow-wrap: anywhere; }
+    .overview { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 13px; }
+    .overview th, .overview td { border-bottom: 1px solid var(--line); padding: 9px; text-align: left; }
+    .overview th { color: var(--muted); font-size: 12px; }
+    .notice { padding: 14px; border-radius: 12px; background: #eef3ff; color: #1f3f7a; margin-top: 12px; line-height: 1.6; }
+    @media (max-width: 920px) {
+      .hero, .layout, .toolbar { grid-template-columns: 1fr; }
+      .ring { justify-self: start; }
+      .stats { grid-template-columns: 1fr 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <a class="back" href="/whole-paper-console">‹</a>
+    <h1>整卷班级报告</h1>
+  </header>
+
+  <main class="wrap">
+    <section class="hero">
+      <div>
+        <h2>整卷批改 · 全班结果</h2>
+        <p class="desc">按同一个 RubricBundle 汇总所有 paper_submission 任务。左侧选择学生，右侧查看该学生整卷逐题扣分、反馈和作答抽取文本。</p>
+      </div>
+      <div class="ring" id="completionRing"><span id="completionText">0%</span></div>
+    </section>
+
+    <section class="card toolbar">
+      <label for="bundleId">bundle_id</label>
+      <input id="bundleId" type="text" placeholder="例如 469be618-b8eb-4d4f-b948-c85418b487dd" />
+      <label for="taskId">或 task_id</label>
+      <input id="taskId" type="text" placeholder="任意一个整卷任务，可自动定位同 bundle 全班报告" />
+      <button id="loadBtn">加载全班报告</button>
+    </section>
+
+    <section class="stats">
+      <div class="stat"><strong id="studentCount">0</strong><span>学生份数</span></div>
+      <div class="stat"><strong id="completedCount">0</strong><span>已完成</span></div>
+      <div class="stat"><strong id="questionCount">0</strong><span>题目数</span></div>
+      <div class="stat"><strong id="avgDeduction">0.00</strong><span>平均扣分</span></div>
+      <div class="stat"><strong id="reviewCount">0</strong><span>建议复核</span></div>
+    </section>
+
+    <section class="layout">
+      <aside class="card">
+        <h3 style="margin:0 0 10px;">学生列表</h3>
+        <div id="studentList" class="student-list"><div class="desc">等待加载。</div></div>
+      </aside>
+      <main class="card">
+        <div id="detail"><div class="desc">请选择学生查看整卷报告。</div></div>
+      </main>
+    </section>
+  </main>
+
+  <script>
+    const token = localStorage.getItem("grader_token");
+    const authHeaders = token ? { "Authorization": "Bearer " + token } : {};
+    const $ = (id) => document.getElementById(id);
+    let reportData = null;
+    let selectedTaskId = "";
+
+    function authFetch(url, opts = {}) {
+      opts.headers = Object.assign({}, authHeaders, opts.headers || {});
+      return fetch(url, opts);
+    }
+    function esc(value) {
+      return String(value ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    }
+    function renderLatexLike(value) {
+      let html = esc(value || "")
+        .replace(/&lt;student&gt;([\s\S]*?)&lt;\/student&gt;/g, '<span class="math">$1</span>')
+        .replace(/\\frac\{([^{}]+)\}\{([^{}]+)\}/g, '<span class="frac"><span class="num">$1</span><span class="den">$2</span></span>')
+        .replace(/\^\{([^{}]+)\}/g, '<sup>$1</sup>')
+        .replace(/_\{([^{}]+)\}/g, '<sub>$1</sub>')
+        .replace(/\^([A-Za-z0-9+\-=]+)/g, '<sup>$1</sup>')
+        .replace(/_([A-Za-z0-9+\-=]+)/g, '<sub>$1</sub>')
+        .replace(/\\pi/g, "π")
+        .replace(/\\theta/g, "θ")
+        .replace(/\\omega/g, "ω")
+        .replace(/\\Delta/g, "Δ")
+        .replace(/\\sqrt\{([^{}]+)\}/g, '√($1)')
+        .replace(/\\mathrm\{([^{}]+)\}/g, '$1')
+        .replace(/\\text\{([^{}]+)\}/g, '$1')
+        .replace(/\\quad/g, " ")
+        .replace(/\\\\/g, "<br>");
+      return html.replace(/\n/g, "<br>");
+    }
+    function renderedBlock(title, value) {
+      return `
+        <div class="text-block" style="margin-top:10px;"><strong>${esc(title)}（原文）</strong>\n${esc(value || "未抽取到文本")}</div>
+        <div class="render-block" style="margin-top:8px;"><strong>${esc(title)}（渲染）</strong><br>${renderLatexLike(value || "未抽取到文本")}</div>
+      `;
+    }
+    function pct(value) {
+      const n = Number(value);
+      if (!Number.isFinite(n)) return "0%";
+      return `${Math.round(Math.max(0, Math.min(1, n)) * 100)}%`;
+    }
+    function setCompletion(data) {
+      const ratio = data.student_count ? data.completed_count / data.student_count : 0;
+      $("completionText").textContent = pct(ratio);
+      $("completionRing").style.background = `conic-gradient(var(--orange) ${Math.round(ratio * 100)}%, #edf1f8 0)`;
+    }
+    function answerMap(student) {
+      const report = student.paper_report || {};
+      const bundle = report.student_answer_bundle || {};
+      const answers = Array.isArray(bundle.answers) ? bundle.answers : [];
+      return new Map(answers.map((item) => [String(item.question_id || ""), item]));
+    }
+    function renderSummary(data) {
+      $("bundleId").value = data.bundle_id || $("bundleId").value;
+      $("studentCount").textContent = String(data.student_count || 0);
+      $("completedCount").textContent = String(data.completed_count || 0);
+      $("questionCount").textContent = String((data.question_ids || []).length);
+      $("avgDeduction").textContent = Number(data.average_deduction || 0).toFixed(2);
+      $("reviewCount").textContent = String(data.review_count || 0);
+      setCompletion(data);
+    }
+    function renderStudentList(students) {
+      const list = $("studentList");
+      if (!students.length) {
+        list.innerHTML = '<div class="desc">暂无整卷学生结果。</div>';
+        return;
+      }
+      list.innerHTML = students.map((student) => `
+        <button class="student-item${student.task_id === selectedTaskId ? " active" : ""}" data-task-id="${esc(student.task_id)}">
+          <div class="student-name">
+            <span>${esc(student.student_id || "未命名学生")}</span>
+            <span class="badge ${student.task_status === "COMPLETED" ? "ok" : "warn"}">${esc(student.task_status || "-")}</span>
+          </div>
+          <div class="muted">扣分：${Number(student.total_score_deduction || 0).toFixed(2)} ｜ 识别：${Number(student.answered_questions || 0)}/${Number(student.total_questions || 0)}</div>
+          <div class="muted">复核：${student.requires_human_review ? "建议复核" : "无需复核"} ｜ task：${esc(student.task_id)}</div>
+        </button>
+      `).join("");
+      list.querySelectorAll(".student-item").forEach((btn) => {
+        btn.addEventListener("click", () => selectStudent(btn.dataset.taskId));
+      });
+    }
+    function renderOverview(students) {
+      const rows = students.map((student) => `
+        <tr>
+          <td>${esc(student.student_id || "-")}</td>
+          <td>${esc(student.task_status || "-")}</td>
+          <td>${Number(student.total_score_deduction || 0).toFixed(2)}</td>
+          <td>${Number(student.answered_questions || 0)}/${Number(student.total_questions || 0)}</td>
+          <td>${student.requires_human_review ? "建议复核" : "无需复核"}</td>
+        </tr>
+      `).join("");
+      return `
+        <table class="overview">
+          <thead><tr><th>学生</th><th>状态</th><th>总扣分</th><th>识别题数</th><th>复核</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      `;
+    }
+    function renderDetail(student) {
+      const box = $("detail");
+      if (!student) {
+        box.innerHTML = '<div class="desc">请选择学生查看整卷报告。</div>';
+        return;
+      }
+      const report = student.paper_report || {};
+      const perQuestion = report.per_question && typeof report.per_question === "object" ? report.per_question : {};
+      const inputImagesByQuestion = report.input_images_by_question && typeof report.input_images_by_question === "object" ? report.input_images_by_question : {};
+      const answers = answerMap(student);
+      const warnings = Array.isArray(report.warnings) ? report.warnings : [];
+      const questionCards = Object.keys(perQuestion).map((questionId) => {
+        const item = perQuestion[questionId] || {};
+        const answer = answers.get(String(questionId)) || {};
+        const steps = Array.isArray(item.step_evaluations) ? item.step_evaluations : [];
+        const wrongSteps = steps.filter((step) => step && step.is_correct === false);
+        const extractionWarnings = Array.isArray(answer.extraction_warnings) ? answer.extraction_warnings : [];
+        const inputImages = Array.isArray(inputImagesByQuestion[String(questionId)]) ? inputImagesByQuestion[String(questionId)] : [];
+        const imageHtml = inputImages.length ? `
+          <div class="image-grid">
+            ${inputImages.map((image) => `
+              <div class="image-card">
+                <div class="caption">${esc(image.name || "作答原图")}</div>
+                <img src="${esc(image.url || "")}" alt="${esc(questionId)} 作答原图" loading="lazy" />
+              </div>
+            `).join("")}
+          </div>
+        ` : `<div class="notice">未找到该题作答原图预览。</div>`;
+        const wrongStepHtml = wrongSteps.length ? `
+          <div class="text-block" style="margin-top:10px;"><strong>扣分证据（原文）</strong>
+${wrongSteps.map((step, idx) => {
+  const evidence = step.evidence_snippet || "暂无证据片段";
+  const suggestion = step.correction_suggestion || "暂无修正建议";
+  return `${idx + 1}. [${esc(step.error_type || "UNKNOWN")}] ${esc(suggestion)}\n证据片段：${esc(evidence)}\nreference_element_id：${esc(step.reference_element_id || "-")}`;
+}).join("\n\n")}</div>
+          <div class="render-block" style="margin-top:8px;"><strong>扣分证据（渲染）</strong><br>
+${wrongSteps.map((step, idx) => {
+  const evidence = step.evidence_snippet || "暂无证据片段";
+  return `${idx + 1}. ${renderLatexLike(evidence)}`;
+}).join("<br><br>")}</div>` : "";
+        return `
+          <div class="question-card">
+            <div class="question-head">
+              <strong>题号 ${esc(questionId)}</strong>
+              <div>
+                <span class="badge">${esc(item.status || "SCORED")}</span>
+                <span class="badge ${item.requires_human_review ? "warn" : "ok"}">${item.requires_human_review ? "建议复核" : "无需复核"}</span>
+              </div>
+            </div>
+            <div class="mini-grid">
+              <div class="mini"><span>扣分</span><strong>${Number(item.total_score_deduction || 0).toFixed(2)}</strong></div>
+              <div class="mini"><span>置信度</span><strong>${pct(item.system_confidence)}</strong></div>
+              <div class="mini"><span>扣分点</span><strong>${wrongSteps.length}</strong></div>
+              <div class="mini"><span>作答抽取</span><strong>${answer.is_blank ? "空白/未识别" : "已抽取"}</strong></div>
+            </div>
+            ${imageHtml}
+            <div class="text-block"><strong>评分反馈</strong>\n${esc(item.overall_feedback || "暂无反馈")}</div>
+            ${wrongStepHtml}
+            ${renderedBlock("学生作答文本", answer.answer_text)}
+            ${renderedBlock("原始 OCR 文本", answer.ocr_text)}
+            ${extractionWarnings.length ? `<div class="notice">作答抽取警告：${extractionWarnings.map(esc).join("；")}</div>` : ""}
+          </div>
+        `;
+      }).join("");
+      box.innerHTML = `
+        <div class="question-head">
+          <div>
+            <h2 style="margin:0;">${esc(student.student_id || "未命名学生")}</h2>
+            <div class="muted">task_id：${esc(student.task_id)} ｜ bundle_id：${esc(student.bundle_id || "")}</div>
+          </div>
+          <div>
+            <span class="badge ${student.task_status === "COMPLETED" ? "ok" : "warn"}">${esc(student.task_status || "-")}</span>
+            <span class="badge ${student.requires_human_review ? "warn" : "ok"}">${student.requires_human_review ? "建议复核" : "无需复核"}</span>
+          </div>
+        </div>
+        <div class="mini-grid">
+          <div class="mini"><span>总扣分</span><strong>${Number(student.total_score_deduction || 0).toFixed(2)}</strong></div>
+          <div class="mini"><span>题目识别</span><strong>${Number(student.answered_questions || 0)}/${Number(student.total_questions || 0)}</strong></div>
+          <div class="mini"><span>卷级警告</span><strong>${warnings.length}</strong></div>
+        </div>
+        ${warnings.length ? `<div class="notice">卷级警告：${warnings.map(esc).join("；")}</div>` : ""}
+        <div class="question-grid" style="margin-top:14px;">${questionCards || '<div class="desc">暂无逐题结果。</div>'}</div>
+      `;
+    }
+    function selectStudent(taskId) {
+      selectedTaskId = taskId;
+      const students = reportData ? reportData.students || [] : [];
+      renderStudentList(students);
+      renderDetail(students.find((item) => item.task_id === taskId) || students[0] || null);
+      const url = new URL(location.href);
+      url.searchParams.set("task_id", taskId);
+      url.searchParams.delete("bundle_id");
+      history.replaceState({}, "", url.toString());
+    }
+    async function loadReport() {
+      const params = new URLSearchParams();
+      const bundleId = $("bundleId").value.trim();
+      const taskId = $("taskId").value.trim();
+      if (bundleId) params.set("bundle_id", bundleId);
+      if (!bundleId && taskId) params.set("task_id", taskId);
+      const resp = await authFetch(`/api/v1/grade/paper/reports?${params.toString()}`);
+      const data = await resp.json();
+      if (!resp.ok) {
+        $("detail").innerHTML = `<div class="notice">${esc(JSON.stringify(data, null, 2))}</div>`;
+        return;
+      }
+      reportData = data;
+      const students = data.students || [];
+      selectedTaskId = (students.find((item) => item.task_id === selectedTaskId) || students[0] || {}).task_id || "";
+      renderSummary(data);
+      renderStudentList(students);
+      $("detail").innerHTML = `
+        <h2 style="margin:0;">全班概览</h2>
+        <p class="desc" style="margin-top:8px;">已加载 ${Number(data.student_count || 0)} 份整卷报告。点击左侧学生查看逐题明细。</p>
+        ${renderOverview(students)}
+      `;
+      if (selectedTaskId) selectStudent(selectedTaskId);
+    }
+    $("loadBtn").addEventListener("click", loadReport);
+    const query = new URLSearchParams(location.search);
+    if (query.get("bundle_id")) $("bundleId").value = query.get("bundle_id");
+    if (query.get("task_id")) {
+      $("taskId").value = query.get("task_id");
+      selectedTaskId = query.get("task_id");
+    }
+    if ($("bundleId").value || $("taskId").value) loadReport();
+  </script>
+</body>
+</html>

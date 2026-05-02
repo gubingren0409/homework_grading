@@ -1,6 +1,7 @@
 import uuid
 import json
 import logging
+import fitz
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, Query, Request
@@ -11,16 +12,22 @@ from src.db.client import (
     get_rubric,
     list_rubrics,
     save_rubric,
+    save_rubric_bundle,
     get_recent_rubric_by_fingerprint,
     append_rubric_generate_audit,
 )
 from src.core.trace_context import get_trace_id
 from src.cognitive.engines.deepseek_engine import DeepSeekCognitiveEngine
+from src.orchestration.rubric_bundle_workflow import RubricBundleWorkflow
+from src.orchestration.rubric_selection import (
+    parse_question_ids,
+    validate_rubric_solution_content,
+)
 from src.orchestration.workflow import GradingWorkflow
-from src.schemas.rubric_ir import TeacherRubric
+from src.schemas.rubric_ir import RubricBundle, TeacherRubric
 from src.skills.service import SkillService
 from src.perception.factory import create_perception_engine
-from src.utils.file_parsers import UnsupportedFormatError
+from src.utils.file_parsers import UnsupportedFormatError, process_multiple_files
 from src.core.exceptions import GradingSystemError
 from src.api.route_helpers import (
     compute_source_fingerprint as _compute_source_fingerprint,
@@ -29,12 +36,27 @@ from src.api.route_helpers import (
 )
 from src.api.route_models import (
     RubricDetailResponse,
+    RubricBundleGenerateResponse,
     RubricGenerateResponse,
     RubricSummaryItem,
 )
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _extract_embedded_pdf_text(files_data: list[tuple[bytes, str]]) -> str | None:
+    if not files_data or any(not filename.lower().endswith(".pdf") for _, filename in files_data):
+        return None
+
+    pages: list[str] = []
+    for content, _ in files_data:
+        with fitz.open(stream=content, filetype="pdf") as document:
+            pages.extend(page.get_text("text") for page in document)
+    text = "\n".join(page.strip() for page in pages if page.strip()).strip()
+    if len(text) < 200 or "答案" not in text:
+        return None
+    return text
 
 
 @router.post("/rubric/generate", response_model=RubricGenerateResponse, status_code=201)
@@ -182,6 +204,125 @@ async def generate_rubric_job(
         grading_points_count=len(rubric.grading_points),
         source_file_count=len(files),
         reused_from_cache=False,
+    )
+
+
+@router.post("/rubric/bundle/generate", response_model=RubricBundleGenerateResponse, status_code=201)
+@limiter.limit("5/minute")
+async def generate_rubric_bundle(
+    request: Request,
+    files: List[UploadFile] = File(...),
+    reference_mode: str = Form("printed"),
+    expected_question_ids: Optional[str] = Form(default=None),
+    require_solution_content: bool = Form(default=True),
+    db_path: str = Depends(get_db_path),
+):
+    del request
+    files_data = []
+    for file in files:
+        content = await file.read()
+        files_data.append((content, file.filename))
+
+    normalized_reference_mode = reference_mode.strip().lower()
+    if normalized_reference_mode not in {"printed", "handwritten"}:
+        raise HTTPException(
+            status_code=422,
+            detail=_error_detail(
+                error_code="INPUT_REJECTED",
+                message="reference_mode must be 'printed' or 'handwritten'.",
+                retryable=False,
+                next_action="adjust_file",
+            ),
+        )
+
+    perception_engine = create_perception_engine()
+    skill_service = SkillService(db_path=db_path)
+    workflow = RubricBundleWorkflow(
+        perception_engine=perception_engine,
+        skill_service=skill_service,
+        cognitive_agent=DeepSeekCognitiveEngine(),
+    )
+    bundle_id = str(uuid.uuid4())
+    paper_id = f"paper-{bundle_id[:8]}"
+
+    try:
+        embedded_pdf_text = (
+            _extract_embedded_pdf_text(files_data)
+            if normalized_reference_mode == "printed"
+            else None
+        )
+        if embedded_pdf_text:
+            bundle = await workflow.generate_from_printed_reference_text(
+                embedded_pdf_text,
+                paper_id=paper_id,
+            )
+        else:
+            try:
+                image_bytes_list = await process_multiple_files(files_data)
+            except UnsupportedFormatError as exc:
+                raise HTTPException(
+                    status_code=422,
+                    detail=_error_detail(
+                        error_code="INPUT_REJECTED",
+                        message=str(exc),
+                        retryable=False,
+                        next_action="adjust_file",
+                    ),
+                ) from exc
+            if normalized_reference_mode == "handwritten":
+                bundle = await workflow.generate_from_handwritten_reference(image_bytes_list, paper_id=paper_id)
+            else:
+                bundle = await workflow.generate_from_printed_reference(image_bytes_list, paper_id=paper_id)
+        expected_ids = parse_question_ids(expected_question_ids)
+        if expected_ids and require_solution_content:
+            validate_rubric_solution_content(bundle, expected_ids)
+    except GradingSystemError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=_error_detail(
+                error_code="UPSTREAM_UNAVAILABLE",
+                message=f"Rubric bundle generation upstream unavailable: {str(exc)}",
+                retryable=True,
+                retry_hint="retry_submit",
+                next_action="retry_upload",
+            ),
+        ) from exc
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=_error_detail(
+                error_code="UPSTREAM_UNAVAILABLE",
+                message=f"Rubric bundle generation failed: {str(exc)}",
+                retryable=True,
+                retry_hint="retry_submit",
+                next_action="retry_upload",
+            ),
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=_error_detail(
+                error_code="RUBRIC_BUNDLE_INVALID",
+                message=str(exc),
+                retryable=False,
+                next_action="inspect_reference_pdf",
+            ),
+        ) from exc
+
+    source_fingerprint = _compute_source_fingerprint(files_data)
+    await save_rubric_bundle(
+        db_path,
+        bundle_id=bundle_id,
+        paper_id=bundle.paper_id,
+        bundle_json=bundle.model_dump(),
+        source_fingerprint=source_fingerprint,
+    )
+    return RubricBundleGenerateResponse(
+        bundle_id=bundle_id,
+        paper_id=bundle.paper_id,
+        question_count=len(bundle.rubrics),
+        source_file_count=len(files),
+        bundle_json=bundle.model_dump(),
     )
 
 

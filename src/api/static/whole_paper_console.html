@@ -1,0 +1,412 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>整卷批改</title>
+  <style>
+    :root {
+      --blue: #4f6df5;
+      --blue-dark: #3f5be8;
+      --cyan: #4ecdc4;
+      --orange: #ff9f43;
+      --bg: #f7f9fc;
+      --card: #ffffff;
+      --text: #111827;
+      --muted: #5f6b7a;
+      --line: #e7ecf3;
+      --soft-blue: #eef3ff;
+      --soft-orange: #fff4e8;
+      --ok: #16a34a;
+      --err: #dc2626;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; }
+    .topbar { height: 64px; background: linear-gradient(135deg, var(--blue), #6282ff); color: #fff; display: flex; align-items: center; justify-content: center; position: sticky; top: 0; z-index: 10; box-shadow: 0 4px 16px rgba(79,109,245,.18); }
+    .back { position: absolute; left: 18px; color: #fff; text-decoration: none; font-size: 24px; line-height: 1; }
+    .topbar h1 { margin: 0; font-size: 24px; letter-spacing: .5px; }
+    .wrap { max-width: 1040px; margin: 0 auto; padding: 28px 18px 44px; }
+    .hero { display: grid; grid-template-columns: minmax(0, 1fr) 132px; gap: 20px; align-items: center; }
+    .hero h2 { margin: 0 0 8px; font-size: 28px; }
+    .hero p { margin: 0; color: var(--muted); line-height: 1.6; }
+    .ring { width: 92px; height: 92px; border-radius: 50%; background: conic-gradient(var(--blue) 72%, #edf1f8 0); display: grid; place-items: center; justify-self: end; }
+    .ring span { width: 76px; height: 76px; border-radius: 50%; background: #fff; display: grid; place-items: center; color: var(--blue); font-size: 20px; font-weight: 800; }
+    .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin: 26px 0; }
+    .stat { background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 18px; box-shadow: 0 5px 18px rgba(15,23,42,.07); }
+    .stat strong { display: block; color: var(--blue); font-size: 24px; margin-bottom: 8px; }
+    .stat span { color: #3f4a5a; font-size: 13px; }
+    .quick { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-bottom: 26px; }
+    .quick-card { background: #fff; border: 1px solid var(--line); border-radius: 16px; padding: 26px; text-align: center; box-shadow: 0 5px 18px rgba(15,23,42,.06); }
+    .quick-card .icon { font-size: 30px; color: var(--blue); margin-bottom: 10px; }
+    .tabs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; background: #f1f3f7; padding: 6px; border-radius: 10px; margin-bottom: 22px; }
+    .tab { border: 0; background: transparent; color: #536071; border-radius: 9px; padding: 12px; font-weight: 700; cursor: pointer; }
+    .tab.active { background: #fff; color: var(--blue); box-shadow: 0 4px 12px rgba(15,23,42,.08); }
+    .panel { display: none; }
+    .panel.active { display: block; }
+    .card { background: #fff; border: 1px solid var(--line); border-radius: 16px; padding: 24px; box-shadow: 0 5px 18px rgba(15,23,42,.06); margin-bottom: 20px; }
+    .card h3 { margin: 0 0 8px; font-size: 20px; }
+    .desc { margin: 0 0 18px; color: var(--muted); line-height: 1.6; }
+    .ai-note { background: linear-gradient(135deg, #e8fbfb, #eef3ff); border: 1px solid #cdefff; border-radius: 12px; padding: 16px; margin-bottom: 18px; line-height: 1.7; }
+    .ai-note strong { color: #1f3f7a; }
+    .form-grid { display: grid; grid-template-columns: 180px minmax(0, 1fr); gap: 14px; align-items: center; margin: 14px 0; }
+    label { color: #344054; font-weight: 700; }
+    input[type="text"], input[type="file"], select { width: 100%; padding: 11px 12px; border: 1px solid #d5dce8; border-radius: 10px; background: #fff; font: inherit; }
+    .upload-zone { border: 1.5px dashed #b7c7ff; background: #fbfcff; border-radius: 16px; padding: 34px 22px; text-align: center; margin: 16px 0; }
+    .upload-zone.orange { border-color: #ffd2a1; background: #fffaf5; }
+    .cloud { width: 56px; height: 42px; border-radius: 22px; background: var(--blue); color: #fff; display: inline-grid; place-items: center; font-size: 24px; margin-bottom: 12px; }
+    .orange .cloud { background: var(--orange); }
+    .actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 16px; }
+    button { border: 0; border-radius: 10px; padding: 11px 18px; background: var(--blue); color: #fff; font-weight: 800; cursor: pointer; box-shadow: 0 4px 10px rgba(79,109,245,.24); }
+    button.secondary { background: #eef3ff; color: var(--blue); box-shadow: none; }
+    button.orange { background: var(--orange); box-shadow: 0 4px 10px rgba(255,159,67,.25); }
+    button:disabled { opacity: .65; cursor: wait; }
+    .result { white-space: pre-wrap; overflow-wrap: anywhere; background: #0f172a; color: #dbeafe; border-radius: 12px; padding: 14px; min-height: 64px; margin-top: 14px; font: 12px/1.6 Consolas, monospace; }
+    .result.ok { background: #f0fdf4; color: #166534; border: 1px solid #bbf7d0; }
+    .result.err { background: #fff1f2; color: #be123c; border: 1px solid #fecdd3; }
+    .paper-card { border-left: 4px solid var(--orange); }
+    .progress-line { height: 8px; background: #eef1f7; border-radius: 999px; overflow: hidden; margin-top: 12px; }
+    .progress-line div { height: 100%; width: 0%; background: linear-gradient(90deg, #ff6b6b, var(--orange)); transition: width .25s ease; }
+    .badges { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+    .badge { padding: 5px 9px; border-radius: 999px; font-size: 12px; font-weight: 800; background: var(--soft-blue); color: var(--blue); }
+    .badge.orange { background: var(--soft-orange); color: #f97316; }
+    .report-grid { display: grid; gap: 14px; margin-top: 16px; }
+    .question-card { border: 1px solid var(--line); border-radius: 14px; padding: 16px; background: #fbfdff; }
+    .question-head { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; }
+    .question-head strong { font-size: 18px; color: #1f2a44; }
+    .mini-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin: 10px 0; }
+    .mini { border: 1px solid #edf1f7; border-radius: 10px; background: #fff; padding: 10px; }
+    .mini span { display: block; color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+    .mini strong { color: var(--blue); }
+    .text-block { white-space: pre-wrap; overflow-wrap: anywhere; border: 1px solid #edf1f7; border-radius: 10px; background: #fff; padding: 10px; color: #263447; line-height: 1.6; font-size: 13px; }
+    .warning-list { color: #b45309; font-size: 13px; margin-top: 8px; }
+    @media (max-width: 760px) {
+      .hero { grid-template-columns: 1fr; }
+      .ring { justify-self: start; }
+      .stats, .quick { grid-template-columns: 1fr 1fr; }
+      .form-grid { grid-template-columns: 1fr; }
+      .tabs { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <a class="back" href="/student-console">‹</a>
+    <h1>整卷批改</h1>
+  </header>
+
+  <main class="wrap">
+    <section class="hero">
+      <div>
+        <h2>高中物理 · 整卷链路</h2>
+        <p>教师端上传整份 printed / handwritten 标准答案，学生端上传未切割整卷；系统自动切题、识别作答、进入异步评分和复核。</p>
+      </div>
+      <div class="ring"><span id="progressRing">0%</span></div>
+    </section>
+
+    <section class="stats">
+      <div class="stat"><strong id="statQuestions">-</strong><span>Rubric 题数</span></div>
+      <div class="stat"><strong id="statAnswered">-</strong><span>已识别作答</span></div>
+      <div class="stat"><strong id="statWarnings">0</strong><span>链路警告</span></div>
+      <div class="stat"><strong id="statReview">-</strong><span>人工复核</span></div>
+    </section>
+
+    <section class="quick">
+      <div class="quick-card"><div class="icon">📄</div><strong>生成整卷标准答案</strong><p class="desc">输出 RubricBundle</p></div>
+      <div class="quick-card"><div class="icon">📊</div><strong>整卷批改报告</strong><p class="desc">查看逐题结果</p></div>
+    </section>
+
+    <nav class="tabs">
+      <button class="tab active" data-tab="bundle">📄 标准答案</button>
+      <button class="tab" data-tab="submit">☁️ 提交整卷</button>
+      <button class="tab" data-tab="report">📈 任务报告</button>
+    </nav>
+
+    <section id="panel-bundle" class="panel active">
+      <div class="ai-note"><strong>AI学习建议：</strong>printed 标准答案中的图表会优先转为高密度文本描述；handwritten 标准答案会按题切图后 OCR，并与学生作答按 parent question 对齐。</div>
+      <div class="card">
+        <h3>生成 RubricBundle</h3>
+        <p class="desc">上传整份教师标准答案。生成成功后，bundle_id 会自动填入下方整卷提交表单。</p>
+        <div class="form-grid">
+          <label for="referenceMode">标准答案类型</label>
+          <select id="referenceMode">
+            <option value="printed">printed：电子/打印版</option>
+            <option value="handwritten">handwritten：教师手写版</option>
+          </select>
+        </div>
+        <div class="form-grid">
+          <label for="expectedQuestionIds">期望题号</label>
+          <input id="expectedQuestionIds" type="text" placeholder="可选，例如 2,5,18；用于 PDF 抽取质量门禁" />
+        </div>
+        <label class="desc" style="display:flex;gap:8px;align-items:center;margin:10px 0 14px;">
+          <input id="requireSolutionContent" type="checkbox" checked />
+          要求期望题号必须抽取到答案/详解内容，缺失时拒绝生成
+        </label>
+        <div class="upload-zone">
+          <div class="cloud">☁</div>
+          <h3>上传标准答案图片/PDF</h3>
+          <p class="desc">支持多页 PDF、JPG、PNG</p>
+          <input id="referenceFiles" type="file" multiple accept=".jpg,.jpeg,.png,.pdf" />
+        </div>
+        <div class="actions">
+          <button id="generateBundleBtn">生成整卷 RubricBundle</button>
+          <button class="secondary" id="copyBundleBtn" type="button">复制 bundle_id</button>
+        </div>
+        <div id="bundleResult" class="result">等待生成 RubricBundle...</div>
+      </div>
+    </section>
+
+    <section id="panel-submit" class="panel">
+      <div class="card">
+        <h3>提交学生整卷</h3>
+        <p class="desc">上传未切割学生整卷，系统会通过 Redis 分发 Celery worker 异步处理。</p>
+        <div class="form-grid">
+          <label for="bundleId">bundle_id</label>
+          <input id="bundleId" type="text" placeholder="先生成或粘贴 RubricBundle ID" />
+        </div>
+        <div class="form-grid">
+          <label for="studentId">学生标识</label>
+          <input id="studentId" type="text" placeholder="例如 stu_017_020" />
+        </div>
+        <div class="form-grid">
+          <label for="questionIds">本次题号子集</label>
+          <input id="questionIds" type="text" placeholder="可选，例如 2,5,18；预切题时按此顺序匹配上传文件" />
+        </div>
+        <label class="desc" style="display:flex;gap:8px;align-items:center;margin:10px 0 14px;">
+          <input id="presegmentedMode" type="checkbox" />
+          已按题上传：文件顺序与本次题号子集 / RubricBundle 题号顺序一致（用于真实子集联调）
+        </label>
+        <div class="upload-zone orange">
+          <div class="cloud">☁</div>
+          <h3>上传学生整卷</h3>
+          <p class="desc">支持多页 PDF、JPG、PNG；本测试可上传 17–20 题 crop</p>
+          <input id="studentFiles" type="file" multiple accept=".jpg,.jpeg,.png,.pdf" />
+        </div>
+        <div class="actions">
+          <button class="orange" id="submitPaperBtn">提交整卷批改</button>
+          <button class="secondary" id="pollBtn" type="button">刷新任务状态</button>
+        </div>
+        <div id="submitResult" class="result">等待提交任务...</div>
+      </div>
+    </section>
+
+    <section id="panel-report" class="panel">
+      <div class="card paper-card">
+        <h3>异步任务状态</h3>
+        <p class="desc">这里展示 FastAPI → Redis → Celery worker → DB 的结果回读。</p>
+        <div class="form-grid">
+          <label for="taskId">task_id</label>
+          <input id="taskId" type="text" placeholder="提交后自动填充" />
+        </div>
+        <div class="badges">
+          <span class="badge" id="statusBadge">未提交</span>
+          <span class="badge orange" id="modeBadge">paper_submission</span>
+        </div>
+        <div class="progress-line"><div id="bar"></div></div>
+        <div class="actions">
+          <button id="openReportBtn" type="button">打开报告页</button>
+          <button class="secondary" id="openReviewBtn" type="button">进入复核台</button>
+        </div>
+        <div id="statusResult" class="result">等待任务状态...</div>
+        <div id="paperPreview" class="report-grid"></div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const token = localStorage.getItem("grader_token");
+    const authHeaders = token ? { "Authorization": "Bearer " + token } : {};
+    const $ = (id) => document.getElementById(id);
+    let currentTaskId = "";
+    let timer = null;
+
+    function authFetch(url, opts = {}) {
+      opts.headers = Object.assign({}, authHeaders, opts.headers || {});
+      return fetch(url, opts);
+    }
+    async function parse(resp) {
+      const text = await resp.text();
+      try { return JSON.parse(text); } catch { return { message: text || "empty response" }; }
+    }
+    function render(id, data, cls = "") {
+      const el = $(id);
+      el.className = ("result " + cls).trim();
+      el.textContent = typeof data === "string" ? data : JSON.stringify(data, null, 2);
+    }
+    function esc(value) {
+      return String(value ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    }
+    function setBusy(id, busy, text) {
+      const btn = $(id);
+      btn.disabled = busy;
+      if (text) btn.textContent = text;
+    }
+    function activate(tab) {
+      document.querySelectorAll(".tab").forEach((item) => item.classList.toggle("active", item.dataset.tab === tab));
+      document.querySelectorAll(".panel").forEach((item) => item.classList.toggle("active", item.id === "panel-" + tab));
+    }
+    document.querySelectorAll(".tab").forEach((item) => item.addEventListener("click", () => activate(item.dataset.tab)));
+
+    async function generateBundle() {
+      const files = $("referenceFiles").files;
+      if (!files.length) { render("bundleResult", "请先选择标准答案文件。", "err"); return; }
+      setBusy("generateBundleBtn", true, "生成中...");
+      try {
+        const fd = new FormData();
+        for (const file of files) fd.append("files", file);
+        fd.append("reference_mode", $("referenceMode").value);
+        const expectedQuestionIds = $("expectedQuestionIds").value.trim();
+        if (expectedQuestionIds) fd.append("expected_question_ids", expectedQuestionIds);
+        if ($("requireSolutionContent").checked) fd.append("require_solution_content", "true");
+        const resp = await authFetch("/api/v1/rubric/bundle/generate", { method: "POST", body: fd });
+        const data = await parse(resp);
+        if (!resp.ok) { render("bundleResult", data, "err"); return; }
+        $("bundleId").value = data.bundle_id || "";
+        $("statQuestions").textContent = String(data.question_count || 0);
+        render("bundleResult", {
+          bundle_id: data.bundle_id,
+          paper_id: data.paper_id,
+          question_count: data.question_count,
+          next: "已填入整卷提交表单，可切换到“提交整卷”。"
+        }, "ok");
+        activate("submit");
+      } catch (err) {
+        render("bundleResult", { error: String(err) }, "err");
+      } finally {
+        setBusy("generateBundleBtn", false, "生成整卷 RubricBundle");
+      }
+    }
+
+    async function submitPaper() {
+      const bundleId = $("bundleId").value.trim();
+      const files = $("studentFiles").files;
+      if (!bundleId) { render("submitResult", "请先填写 bundle_id。", "err"); return; }
+      if (!files.length) { render("submitResult", "请先选择学生整卷文件。", "err"); return; }
+      setBusy("submitPaperBtn", true, "提交中...");
+      try {
+        const fd = new FormData();
+        for (const file of files) fd.append("files", file);
+        fd.append("bundle_id", bundleId);
+        if ($("studentId").value.trim()) fd.append("student_id", $("studentId").value.trim());
+        if ($("presegmentedMode").checked) fd.append("presegmented", "true");
+        if ($("questionIds").value.trim()) fd.append("question_ids", $("questionIds").value.trim());
+        const resp = await authFetch("/api/v1/grade/paper/submit", { method: "POST", body: fd });
+        const data = await parse(resp);
+        if (!resp.ok) { render("submitResult", data, "err"); return; }
+        currentTaskId = data.task_id;
+        $("taskId").value = currentTaskId;
+        render("submitResult", data, "ok");
+        activate("report");
+        await pollStatus();
+      } catch (err) {
+        render("submitResult", { error: String(err) }, "err");
+      } finally {
+        setBusy("submitPaperBtn", false, "提交整卷批改");
+      }
+    }
+
+    function renderPaperPreview(data) {
+      const box = $("paperPreview");
+      const payload = data.results && data.results[0] ? data.results[0] : null;
+      const report = payload && payload.paper_report ? payload.paper_report : null;
+      if (!report) {
+        box.innerHTML = "";
+        return;
+      }
+      const answers = report.student_answer_bundle && Array.isArray(report.student_answer_bundle.answers)
+        ? report.student_answer_bundle.answers
+        : [];
+      const answerByQuestion = new Map(answers.map((item) => [String(item.question_id || ""), item]));
+      const perQuestion = report.per_question && typeof report.per_question === "object" ? report.per_question : {};
+      const questionIds = Object.keys(perQuestion);
+      const warnings = Array.isArray(report.warnings) ? report.warnings : [];
+      const warningHtml = warnings.length
+        ? `<div class="warning-list">卷级警告：${warnings.map(esc).join("；")}</div>`
+        : "";
+      const cards = questionIds.map((questionId) => {
+        const item = perQuestion[questionId] || {};
+        const answer = answerByQuestion.get(String(questionId)) || {};
+        const steps = Array.isArray(item.step_evaluations) ? item.step_evaluations : [];
+        const wrongSteps = steps.filter((step) => step && step.is_correct === false);
+        const answerWarnings = Array.isArray(answer.extraction_warnings) ? answer.extraction_warnings : [];
+        const statusClass = item.requires_human_review ? "orange" : "";
+        return `
+          <div class="question-card">
+            <div class="question-head">
+              <strong>题号 ${esc(questionId)}</strong>
+              <div class="badges">
+                <span class="badge">${esc(item.status || "SCORED")}</span>
+                <span class="badge ${statusClass}">${item.requires_human_review ? "建议复核" : "无需复核"}</span>
+              </div>
+            </div>
+            <div class="mini-grid">
+              <div class="mini"><span>扣分</span><strong>${Number(item.total_score_deduction || 0).toFixed(2)}</strong></div>
+              <div class="mini"><span>置信度</span><strong>${Math.round(Number(item.system_confidence || 0) * 100)}%</strong></div>
+              <div class="mini"><span>扣分点</span><strong>${wrongSteps.length}</strong></div>
+              <div class="mini"><span>作答状态</span><strong>${answer.is_blank ? "空白/未识别" : "已抽取"}</strong></div>
+            </div>
+            <div class="text-block"><strong>评分反馈</strong>\n${esc(item.overall_feedback || "暂无反馈")}</div>
+            <div class="text-block" style="margin-top:10px;"><strong>学生作答 answer_text</strong>\n${esc(answer.answer_text || "未抽取到作答文本")}</div>
+            ${answerWarnings.length ? `<div class="warning-list">作答抽取警告：${answerWarnings.map(esc).join("；")}</div>` : ""}
+          </div>
+        `;
+      }).join("");
+      box.innerHTML = `
+        <div class="question-card">
+          <div class="question-head">
+            <strong>整卷汇总</strong>
+            <div class="badges">
+              <span class="badge">题数 ${Number(report.total_questions || questionIds.length)}</span>
+              <span class="badge">已识别 ${Number(report.answered_questions || 0)}</span>
+              <span class="badge orange">总扣分 ${Number(report.total_score_deduction || 0).toFixed(2)}</span>
+              <span class="badge ${report.requires_human_review ? "orange" : ""}">${report.requires_human_review ? "建议人工复核" : "无需人工复核"}</span>
+            </div>
+          </div>
+          ${warningHtml || '<div class="desc" style="margin:0;">没有卷级警告。</div>'}
+        </div>
+        ${cards || '<div class="question-card">暂无逐题结果。</div>'}
+      `;
+    }
+
+    async function pollStatus() {
+      const taskId = $("taskId").value.trim() || currentTaskId;
+      if (!taskId) { render("statusResult", "请先提交任务或填写 task_id。", "err"); return; }
+      currentTaskId = taskId;
+      clearTimeout(timer);
+      const resp = await authFetch("/api/v1/grade/" + encodeURIComponent(taskId));
+      const data = await parse(resp);
+      if (!resp.ok) { render("statusResult", data, "err"); return; }
+      const progress = Math.max(0, Math.min(1, Number(data.progress || 0)));
+      $("progressRing").textContent = Math.round(progress * 100) + "%";
+      $("bar").style.width = Math.round(progress * 100) + "%";
+      $("statusBadge").textContent = data.status || "-";
+      $("statAnswered").textContent = String(data.result_count || "-");
+      const report = data.results && data.results[0] && data.results[0].paper_report ? data.results[0].paper_report : null;
+      if (report) {
+        $("statQuestions").textContent = String(report.total_questions || "-");
+        $("statAnswered").textContent = String(report.answered_questions || "-");
+        $("statWarnings").textContent = String((report.warnings || []).length);
+        $("statReview").textContent = report.requires_human_review ? "需要" : "否";
+      }
+      renderPaperPreview(data);
+      render("statusResult", data, data.status === "FAILED" ? "err" : "ok");
+      if (!["COMPLETED", "FAILED", "CANCELLED"].includes(String(data.status || ""))) {
+        timer = setTimeout(pollStatus, Math.max(2, Number(data.suggested_poll_interval_seconds || 2)) * 1000);
+      }
+    }
+
+    $("generateBundleBtn").addEventListener("click", generateBundle);
+    $("submitPaperBtn").addEventListener("click", submitPaper);
+    $("pollBtn").addEventListener("click", pollStatus);
+    $("copyBundleBtn").addEventListener("click", () => navigator.clipboard.writeText($("bundleId").value || ""));
+    $("openReportBtn").addEventListener("click", () => { if (currentTaskId || $("taskId").value) location.href = "/whole-paper-report?task_id=" + encodeURIComponent(currentTaskId || $("taskId").value); });
+    $("openReviewBtn").addEventListener("click", () => { if (currentTaskId || $("taskId").value) location.href = "/review-console?task_id=" + encodeURIComponent(currentTaskId || $("taskId").value); });
+    const params = new URLSearchParams(location.search);
+    if (params.get("task_id")) {
+      currentTaskId = params.get("task_id");
+      $("taskId").value = currentTaskId;
+      activate("report");
+      pollStatus();
+    }
+  </script>
+</body>
+</html>

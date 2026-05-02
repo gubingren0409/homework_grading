@@ -155,6 +155,12 @@
               <p>不先生成 rubric，直接把参考答案和整班作答一起提交做新一轮批量测试。</p>
               <div class="mode-meta">接口：<code>/api/v1/grade/submit-batch-with-reference</code></div>
             </label>
+            <label class="mode-card" data-mode-card="whole_paper">
+              <input type="radio" name="taskMode" value="whole_paper" />
+              <strong>整卷批改（未切题试卷）</strong>
+              <p>上传整份标准答案生成 RubricBundle，再提交学生整卷，由系统自动切题、识别和逐题评分。</p>
+              <div class="mode-meta">接口：<code>/api/v1/grade/paper/submit</code></div>
+            </label>
           </div>
           <div id="modeNotice" class="notice info" style="margin-top:14px;"></div>
         </section>
@@ -163,6 +169,22 @@
           <div class="step"><span class="step-num">2</span>确认评分标准来源</div>
           <h2>先生成评分标准，或绑定已有 rubric</h2>
           <p class="desc">对于“单名学生”与“班级批量（已有 rubric）”两类模式，这一步决定本次任务使用哪套评分标准。</p>
+
+          <div id="wholePaperBundleOptions" class="hidden">
+            <div class="section-title">整卷 RubricBundle 设置</div>
+            <div class="row">
+              <label>标准答案类型</label>
+              <select id="referenceMode">
+                <option value="printed">printed：电子/打印版标准答案</option>
+                <option value="handwritten">handwritten：教师手写标准答案</option>
+              </select>
+            </div>
+            <div class="row">
+              <label>已有 bundle_id</label>
+              <input id="bundleIdInput" type="text" placeholder="可粘贴已有 RubricBundle ID，或生成后自动填入" />
+            </div>
+            <div class="hint">整卷模式使用 <code>RubricBundle</code>，不是单题 rubric。生成后会自动绑定到后续整卷学生作答提交。</div>
+          </div>
 
           <div class="section-title">2A / 生成新评分标准</div>
           <div class="row">
@@ -587,7 +609,17 @@
       return sel.value ? String(sel.value) : "";
     }
 
+    function selectedBundleId() {
+      const input = $("bundleIdInput");
+      return input && input.value ? String(input.value).trim() : "";
+    }
+
     function syncSelectedRubricTag() {
+      if (selectedMode() === "whole_paper") {
+        $("selectedRubric").textContent = selectedBundleId() || "未选择";
+        updateSummary();
+        return;
+      }
       const rid = selectedRubricId();
       $("selectedRubric").textContent = rid || "未选择";
       updateSummary();
@@ -611,26 +643,31 @@
         single: "单名学生，多页作答",
         batch: "班级批量，已有 rubric",
         batch_with_reference: "参考答案 + 学生作答一站式提交",
+        whole_paper: "整卷批改（未切题试卷）",
       }[mode];
       const endpointText = {
         single: "接口：/api/v1/grade/submit",
         batch: "接口：/api/v1/grade/submit-batch",
         batch_with_reference: "接口：/api/v1/grade/submit-batch-with-reference",
+        whole_paper: "接口：/api/v1/grade/paper/submit",
       }[mode];
       const filesText = {
         single: "支持多页图片 / PDF",
         batch: "每个图片文件视为 1 名学生",
         batch_with_reference: "参考答案 + 多名学生作答一起提交",
+        whole_paper: "学生整卷 PDF / 图片，系统自动切题",
       }[mode];
       const filesSub = {
         single: "适合补测、面批或单份多页作答。",
         batch: "适合正式班级批量批改。",
         batch_with_reference: "适合全新题目的一轮完整试跑。",
+        whole_paper: "适合真实试卷场景：教师端整卷标准答案 + 学生端未切割整卷。",
       }[mode];
       const reminderText = {
         single: "若不是调试模式，请先确认 rubric 已绑定。",
         batch: "正式班级批改建议先用标准答案生成 rubric。",
         batch_with_reference: "该模式会在后台自动生成 rubric，再继续整班批改。",
+        whole_paper: "请先生成或粘贴 RubricBundle ID，再提交学生整卷。",
       }[mode];
       $("summaryMode").textContent = modeText;
       $("summaryEndpoint").textContent = endpointText;
@@ -640,6 +677,10 @@
       if (mode === "batch_with_reference") {
         $("summaryRubric").textContent = "运行时自动生成";
         $("summaryRubricSub").textContent = "本次任务不预绑定 rubric。";
+      } else if (mode === "whole_paper") {
+        const bundleId = selectedBundleId();
+        $("summaryRubric").textContent = bundleId || "待生成 RubricBundle";
+        $("summaryRubricSub").textContent = bundleId ? "已绑定整卷 RubricBundle。" : "请先上传整卷标准答案生成 bundle，或粘贴已有 bundle_id。";
       } else if (rubricId) {
         $("summaryRubric").textContent = rubricId;
         $("summaryRubricSub").textContent = "已绑定现有评分标准，可直接提交任务。";
@@ -653,23 +694,28 @@
       const mode = selectedMode();
       const isSingle = mode === "single";
       const isOneShot = mode === "batch_with_reference";
+      const isWholePaper = mode === "whole_paper";
 
-      $("singleStudentRow").classList.toggle("hidden", !isSingle);
+      $("singleStudentRow").classList.toggle("hidden", !(isSingle || isWholePaper));
       $("referenceFilesRow").classList.toggle("hidden", !isOneShot);
       $("rubricSection").classList.toggle("hidden", isOneShot);
-      $("studentFilesLabel").textContent = isSingle ? "学生作答文件" : "学生作答文件列表";
-      $("files").accept = isSingle ? ".jpg,.jpeg,.png,.pdf" : ".jpg,.jpeg,.png";
-      $("submitBtn").textContent = isOneShot ? "一站式开始批改" : (isSingle ? "开始批改" : "开始班级批改");
+      $("wholePaperBundleOptions").classList.toggle("hidden", !isWholePaper);
+      $("studentFilesLabel").textContent = isWholePaper ? "学生整卷文件" : (isSingle ? "学生作答文件" : "学生作答文件列表");
+      $("files").accept = (isSingle || isWholePaper) ? ".jpg,.jpeg,.png,.pdf" : ".jpg,.jpeg,.png";
+      $("generateRubricBtn").textContent = isWholePaper ? "生成整卷 RubricBundle" : "生成评分标准";
+      $("submitBtn").textContent = isWholePaper ? "提交整卷批改" : (isOneShot ? "一站式开始批改" : (isSingle ? "开始批改" : "开始班级批改"));
 
       const notice = {
         single: "单名学生模式适合补测、面批与多页答题卡场景。你可以先生成 rubric，也可以直接绑定已有 rubric。",
         batch: "班级批量模式要求每个学生对应一个图片文件。系统会沿用同一 rubric 对整批学生独立评分。",
         batch_with_reference: "一站式模式会把参考答案和学生作答一起提交，适合新题试跑或全新测试集验证，不依赖历史生成 rubric。",
+        whole_paper: "整卷模式会先把教师端整份标准答案生成 RubricBundle，再把学生未切割整卷提交到自动切题与逐题评分链路。",
       }[mode];
       const submitHint = {
         single: "支持多页图片或 PDF。若填写学生标识，会随任务一起提交。",
         batch: "仅支持图片文件；每个文件默认映射为 1 名学生，学生标识会从文件名推导。",
         batch_with_reference: "请同时上传参考答案和学生作答。系统会在后台先生成 rubric，再继续批改。",
+        whole_paper: "支持学生整卷 PDF 或多页图片。系统会用已绑定 RubricBundle 自动切题、识别作答并进入整卷评分。",
       }[mode];
 
       $("modeNotice").textContent = notice;
@@ -748,8 +794,13 @@
       try {
         const fd = new FormData();
         for (const f of files) fd.append("files", f);
-        const resp = await authFetch("/api/v1/rubric/generate", { method: "POST", body: fd });
-        appendLog("info", "HTTP", `POST /api/v1/rubric/generate files=${files.length}`);
+        const isWholePaper = selectedMode() === "whole_paper";
+        const endpoint = isWholePaper ? "/api/v1/rubric/bundle/generate" : "/api/v1/rubric/generate";
+        if (isWholePaper) {
+          fd.append("reference_mode", $("referenceMode").value || "printed");
+        }
+        const resp = await authFetch(endpoint, { method: "POST", body: fd });
+        appendLog("info", "HTTP", `POST ${endpoint} files=${files.length}`);
         const data = await parseResponseSafe(resp);
         if (!resp.ok) {
           appendLog("err", "RUBRIC", data);
@@ -757,22 +808,34 @@
           return;
         }
         appendLog("ok", "RUBRIC", data);
-        setText("rubricResult", {
-          rubric_id: data.rubric_id,
-          question_id: data.question_id || "-",
-          message: "评分标准已生成并可直接绑定到当前任务。",
-        }, "ok");
-        await refreshRubrics();
-        if (data && data.rubric_id) {
-          $("rubricSelect").value = data.rubric_id;
-          syncSelectedRubricTag();
+        if (isWholePaper) {
+          $("bundleIdInput").value = data.bundle_id || "";
+          $("selectedRubric").textContent = data.bundle_id || "未选择";
+          setText("rubricResult", {
+            bundle_id: data.bundle_id,
+            paper_id: data.paper_id,
+            question_count: data.question_count,
+            message: "整卷 RubricBundle 已生成并绑定到当前任务。",
+          }, "ok");
+          updateSummary();
+        } else {
+          setText("rubricResult", {
+            rubric_id: data.rubric_id,
+            question_id: data.question_id || "-",
+            message: "评分标准已生成并可直接绑定到当前任务。",
+          }, "ok");
+          await refreshRubrics();
+          if (data && data.rubric_id) {
+            $("rubricSelect").value = data.rubric_id;
+            syncSelectedRubricTag();
+          }
         }
       } catch (err) {
         appendLog("err", "RUBRIC", String(err));
         setText("rubricResult", { error_code: "NETWORK_ERROR", message: String(err) }, "err");
       } finally {
         rubricInFlight = false;
-        setButtonBusy("generateRubricBtn", false, "生成中...", "生成评分标准");
+        setButtonBusy("generateRubricBtn", false, "生成中...", selectedMode() === "whole_paper" ? "生成整卷 RubricBundle" : "生成评分标准");
       }
     }
 
@@ -787,6 +850,7 @@
       const referenceFiles = $("referenceFiles").files;
       const allowNoRubric = $("debugNoRubric").checked;
       const rubricId = selectedRubricId();
+      const bundleId = selectedBundleId();
 
       if (!files || files.length === 0) {
         setText("submitResult", "请选择学生作答文件。", "err");
@@ -796,7 +860,11 @@
         setText("submitResult", "一站式模式必须同时上传参考答案文件。", "err");
         return;
       }
-      if (mode !== "batch_with_reference" && !allowNoRubric && !rubricId) {
+      if (mode === "whole_paper" && !bundleId) {
+        setText("submitResult", "整卷模式请先生成或粘贴 RubricBundle ID。", "err");
+        return;
+      }
+      if (mode !== "batch_with_reference" && mode !== "whole_paper" && !allowNoRubric && !rubricId) {
         setText("submitResult", "请先在步骤 2 生成或选择 rubric。", "err");
         return;
       }
@@ -824,6 +892,14 @@
           logLabel = "batch";
           if (rubricId) {
             fd.append("rubric_id", rubricId);
+          }
+        } else if (mode === "whole_paper") {
+          endpoint = "/api/v1/grade/paper/submit";
+          logLabel = "whole_paper";
+          fd.append("bundle_id", bundleId);
+          const studentId = $("studentId").value.trim();
+          if (studentId) {
+            fd.append("student_id", studentId);
           }
         } else {
           endpoint = "/api/v1/grade/submit-batch-with-reference";
@@ -994,6 +1070,8 @@
     $("generateRubricBtn").addEventListener("click", generateRubric);
     $("refreshRubricBtn").addEventListener("click", refreshRubrics);
     $("rubricSelect").addEventListener("change", syncSelectedRubricTag);
+    $("bundleIdInput").addEventListener("input", syncSelectedRubricTag);
+    $("referenceMode").addEventListener("change", updateSummary);
     $("submitBtn").addEventListener("click", submit);
     $("pollBtn").addEventListener("click", () => loadStatus(false));
     $("openProgressBtn").addEventListener("click", openProgressPage);

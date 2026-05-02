@@ -170,6 +170,7 @@ class GradeFlowGuideResponse(BaseModel):
     submit_endpoint: str
     batch_submit_endpoint: Optional[str] = None
     batch_submit_with_reference_endpoint: Optional[str] = None
+    paper_submit_endpoint: Optional[str] = None
     status_endpoint_template: str
     stream_endpoint_template: str
     task_status_enum: List[str]
@@ -184,6 +185,22 @@ class RubricGenerateResponse(BaseModel):
     grading_points_count: int
     source_file_count: int
     reused_from_cache: bool = False
+
+
+class RubricBundleGenerateResponse(BaseModel):
+    bundle_id: str
+    paper_id: str
+    question_count: int
+    source_file_count: int
+    bundle_json: Dict[str, Any]
+
+
+class PaperGradeResponse(BaseModel):
+    task_id: str
+    bundle_id: str
+    paper_id: str
+    question_count: int
+    report_json: Dict[str, Any]
 
 
 class RubricGenerateAuditItem(BaseModel):

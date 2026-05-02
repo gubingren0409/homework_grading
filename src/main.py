@@ -140,6 +140,16 @@ async def student_console_batch() -> FileResponse:
     return _serve_console_page("student_console_batch.html")
 
 
+@app.get("/whole-paper-console", include_in_schema=False)
+async def whole_paper_console() -> FileResponse:
+    return _serve_console_page("whole_paper_console.html")
+
+
+@app.get("/whole-paper-report", include_in_schema=False)
+async def whole_paper_report() -> FileResponse:
+    return _serve_console_page("whole_paper_report.html")
+
+
 @app.get("/review-console", include_in_schema=False)
 async def review_console() -> FileResponse:
     return _serve_console_page("review_workbench.html")

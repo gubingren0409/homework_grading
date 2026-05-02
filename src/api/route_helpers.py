@@ -4,6 +4,7 @@ import json
 import logging
 import math
 import tempfile
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -54,7 +55,8 @@ def error_detail(
 
 
 async def store_upload_file_with_limits(task_id: str, upload: UploadFile) -> str:
-    filename = upload.filename or "upload.bin"
+    original_filename = Path(upload.filename or "upload.bin").name or "upload.bin"
+    filename = f"{uuid.uuid4().hex}_{original_filename}"
     total_bytes = 0
     try:
         with tempfile.SpooledTemporaryFile(

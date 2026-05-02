@@ -17,6 +17,7 @@ Usage:
     celery -A src.worker.main worker --loglevel=info --pool=solo --concurrency=1
 """
 import asyncio
+import concurrent.futures
 import json
 import logging
 import math
@@ -34,15 +35,17 @@ from src.core.storage_adapter import storage
 from src.db.client import insert_grading_results, update_task_progress, update_task_status, save_grading_result
 from src.db.client import create_hygiene_interception_record
 from src.db.client import upsert_task_runtime_telemetry
-from src.db.client import get_recent_rubric_by_fingerprint, get_rubric, save_rubric, set_task_rubric_id
+from src.db.client import get_recent_rubric_by_fingerprint, get_rubric, get_rubric_bundle, save_rubric, set_task_rubric_id
+from src.db.client import save_paper_grading_report
 from src.db.client import touch_task_heartbeat
 from src.db.client import get_task as _get_task_from_db
+from src.orchestration.paper_workflow import PaperGradingWorkflow
 from src.orchestration.workflow import GradingWorkflow
 from src.perception.factory import create_perception_engine
 from src.cognitive.engines.deepseek_engine import DeepSeekCognitiveEngine
 from src.core.trace_context import bind_context, reset_context, get_trace_id
 from src.core.json_logging import configure_json_logging
-from src.schemas.rubric_ir import TeacherRubric
+from src.schemas.rubric_ir import RubricBundle, TeacherRubric
 from src.schemas.cognitive_ir import EvaluationReport
 from src.skills.service import SkillService
 from src.utils.file_parsers import process_multiple_files
@@ -75,6 +78,21 @@ def _get_worker_task_loop() -> asyncio.AbstractEventLoop:
     if _WORKER_TASK_LOOP is None or _WORKER_TASK_LOOP.is_closed():
         _WORKER_TASK_LOOP = asyncio.new_event_loop()
     return _WORKER_TASK_LOOP
+
+
+def _run_coroutine_in_isolated_thread(coro):
+    def _runner():
+        loop = asyncio.new_event_loop()
+        try:
+            asyncio.set_event_loop(loop)
+            return loop.run_until_complete(coro)
+        finally:
+            loop.run_until_complete(loop.shutdown_asyncgens())
+            asyncio.set_event_loop(None)
+            loop.close()
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        return executor.submit(_runner).result()
 
 
 # Celery Application Initialization
@@ -156,9 +174,20 @@ def _build_workflow() -> GradingWorkflow:
     )
 
 
+def _build_paper_workflow(db_path: str) -> PaperGradingWorkflow:
+    perception_engine = create_perception_engine()
+    cognitive_agent = DeepSeekCognitiveEngine()
+    return PaperGradingWorkflow(
+        perception_engine=perception_engine,
+        cognitive_agent=cognitive_agent,
+        skill_service=SkillService(db_path=db_path),
+    )
+
+
 @app.task(bind=True, max_retries=2, default_retry_delay=10,
-         soft_time_limit=settings.celery_task_soft_time_limit_seconds,
-         time_limit=settings.celery_task_hard_time_limit_seconds)
+          soft_time_limit=settings.celery_task_soft_time_limit_seconds,
+          time_limit=settings.celery_task_hard_time_limit_seconds,
+          ignore_result=True)
 def grade_homework_task(
     self,
     task_id: str,
@@ -189,7 +218,13 @@ def grade_homework_task(
         component="worker",
     )
     task_loop = _get_worker_task_loop()
-    asyncio.set_event_loop(task_loop)
+    try:
+        asyncio.get_running_loop()
+        has_running_loop = True
+    except RuntimeError:
+        has_running_loop = False
+    if not has_running_loop:
+        asyncio.set_event_loop(task_loop)
     task_started_at = time.monotonic()
     eta_bootstrap_per_item_seconds = 28.0
     eta_bootstrap_overhead_seconds = 50.0
@@ -197,6 +232,8 @@ def grade_homework_task(
     total_input_count = max(1, len(payload_file_refs) if isinstance(payload_file_refs, list) else 1)
 
     def run_async(coro):
+        if has_running_loop:
+            return _run_coroutine_in_isolated_thread(coro)
         return task_loop.run_until_complete(coro)
 
     def estimate_eta_seconds(*, completed_items: int = 0, total_items: int | None = None, floor_seconds: int = 5) -> int:
@@ -218,6 +255,14 @@ def grade_homework_task(
             return max(floor_seconds, int(math.ceil(blended_remaining)))
         expected_total = eta_bootstrap_overhead_seconds + eta_bootstrap_per_item_seconds * safe_total
         return max(floor_seconds, int(math.ceil(max(0.0, expected_total - elapsed))))
+
+    def _presegmented_fast_path_images(files_data: List[Tuple[bytes, str]]) -> List[bytes] | None:
+        image_exts = {".jpg", ".jpeg", ".png"}
+        if not files_data:
+            return []
+        if all(os.path.splitext(filename)[1].lower() in image_exts for _, filename in files_data):
+            return [file_bytes for file_bytes, _ in files_data]
+        return None
     
     try:
         logger.info("worker_task_pulled")
@@ -243,15 +288,8 @@ def grade_homework_task(
         # Step 2: Retrieve files from storage backend (Phase 32)
         file_refs = payload.get("file_refs", [])
         reconstructed_files = storage.retrieve_files(file_refs)
-        run_async(update_task_progress(db_path, task_id, progress=0.05, eta_seconds=estimate_eta_seconds(floor_seconds=25)))
-        run_async(_publish_status(task_id, "PROCESSING", progress=0.05, eta_seconds=estimate_eta_seconds(floor_seconds=25)))
 
-        # Step 3: Initialize workflow (worker-local instance)
-        workflow = _build_workflow()
-        run_async(update_task_progress(db_path, task_id, progress=0.07, eta_seconds=estimate_eta_seconds(floor_seconds=20)))
-        run_async(_publish_status(task_id, "PROCESSING", progress=0.07, eta_seconds=estimate_eta_seconds(floor_seconds=20)))
-
-        # Step 4: Execute core grading pipeline (with optional rubric binding)
+        # Step 3: Execute core grading pipeline (with optional rubric binding)
         rubric_obj = None
         rubric_json = payload.get("rubric_json")
         if rubric_json is not None:
@@ -310,13 +348,91 @@ def grade_homework_task(
         run_async(update_task_progress(db_path, task_id, progress=0.10, eta_seconds=estimate_eta_seconds(floor_seconds=15)))
         run_async(_publish_status(task_id, "PROCESSING", progress=0.10, eta_seconds=estimate_eta_seconds(floor_seconds=15)))
 
+        workflow = None
         report = None
         reports: List[Any] = []
         runtime_telemetry = None
-        cognitive_agent = getattr(workflow, "_cognitive_agent", None)
+        cognitive_agent = None
         validation_service = SkillService(db_path=db_path)
+        question_input_file_refs: Dict[str, List[str]] = {}
+        question_input_filenames: Dict[str, List[str]] = {}
 
-        if mode == "batch_single_page":
+        if mode == "paper_submission":
+            bundle_payload = payload.get("rubric_bundle_json")
+            bundle_id = str(payload.get("bundle_id") or "").strip()
+            if bundle_payload is None:
+                if not bundle_id:
+                    raise ValueError("paper_submission mode requires bundle_id or rubric_bundle_json")
+                bundle_row = run_async(get_rubric_bundle(db_path, bundle_id))
+                if not bundle_row:
+                    raise ValueError(f"Rubric bundle not found: {bundle_id}")
+                bundle_raw = bundle_row.get("bundle_json")
+                bundle_payload = json.loads(bundle_raw) if isinstance(bundle_raw, str) else bundle_raw
+            if not bundle_id:
+                bundle_id = str(payload.get("bundle_id") or uuid.uuid4())
+
+            paper_workflow = _build_paper_workflow(db_path)
+            bundle = RubricBundle.model_validate(bundle_payload)
+            presegmented_question_ids = payload.get("presegmented_question_ids")
+            if presegmented_question_ids:
+                if not isinstance(presegmented_question_ids, list):
+                    raise ValueError("presegmented_question_ids must be a list")
+                question_ids = [str(question_id) for question_id in presegmented_question_ids]
+                image_bytes_list = _presegmented_fast_path_images(reconstructed_files)
+                if image_bytes_list is None:
+                    image_bytes_list = run_async(process_multiple_files(reconstructed_files))
+                paper_report = run_async(
+                    paper_workflow.run_pipeline_with_presegmented_images(
+                        image_bytes_list,
+                        bundle,
+                        presegmented_question_ids=question_ids,
+                    )
+                )
+                question_input_file_refs = {
+                    question_id: [file_refs[idx]]
+                    for idx, question_id in enumerate(question_ids)
+                    if idx < len(file_refs)
+                }
+                question_input_filenames = {
+                    question_id: [reconstructed_files[idx][1]]
+                    for idx, question_id in enumerate(question_ids)
+                    if idx < len(reconstructed_files)
+                }
+            else:
+                paper_report = run_async(paper_workflow.run_pipeline(reconstructed_files, bundle))
+                question_input_file_refs = {
+                    question_id: list(file_refs)
+                    for question_id in paper_report.per_question
+                }
+                question_input_filenames = {
+                    question_id: [filename for _, filename in reconstructed_files]
+                    for question_id in paper_report.per_question
+                }
+            cognitive_agent = getattr(paper_workflow, "_cognitive_agent", None)
+            student_id = student_id_override or (
+                os.path.splitext(reconstructed_files[0][1])[0] if reconstructed_files else task_id
+            )
+            run_async(
+                save_paper_grading_report(
+                    db_path,
+                    task_id,
+                    student_id,
+                    bundle_id,
+                    paper_report,
+                    question_input_file_refs=question_input_file_refs,
+                    question_input_filenames=question_input_filenames,
+                )
+            )
+            pipeline_status = "COMPLETED"
+            grading_status = "SCORED"
+            review_status = "PENDING_REVIEW" if paper_report.requires_human_review else "NOT_REQUIRED"
+            if cognitive_agent is not None:
+                telemetry_fn = getattr(cognitive_agent, "get_last_runtime_telemetry", None)
+                if callable(telemetry_fn):
+                    runtime_telemetry = telemetry_fn()
+        elif mode == "batch_single_page":
+            workflow = _build_workflow()
+            cognitive_agent = getattr(workflow, "_cognitive_agent", None)
             if not reconstructed_files:
                 raise ValueError("batch_single_page mode requires at least one file")
             batch_student_ids = (
@@ -547,6 +663,8 @@ def grade_homework_task(
             grading_status, review_status = _project_batch_task_summary(reports)
             pipeline_status = "COMPLETED"
         else:
+            workflow = _build_workflow()
+            cognitive_agent = getattr(workflow, "_cognitive_agent", None)
             perception_snapshot = None
             cognitive_snapshot = None
             try:
@@ -647,8 +765,6 @@ def grade_homework_task(
                 )
             )
 
-        run_async(update_task_progress(db_path, task_id, progress=0.98, eta_seconds=estimate_eta_seconds(completed_items=total_input_count, total_items=total_input_count, floor_seconds=0)))
-        run_async(_publish_status(task_id, "PROCESSING", progress=0.98, eta_seconds=estimate_eta_seconds(completed_items=total_input_count, total_items=total_input_count, floor_seconds=0)))
         run_async(
             update_task_status(
                 db_path,
@@ -783,6 +899,7 @@ def grade_homework_task(
         import traceback as _tb
         _exc_type = type(e).__name__
         _error_summary = f"{_exc_type}: {str(e)[:300]}"
+        will_retry = self.request.retries < self.max_retries
         logger.error(
             "task_execution_failed",
             extra={"extra_fields": {
@@ -794,6 +911,18 @@ def grade_homework_task(
             }},
             exc_info=True,
         )
+        if will_retry:
+            run_async(
+                _publish_status(
+                    task_id,
+                    "PROCESSING",
+                    error=_error_summary,
+                    progress=0.1,
+                    eta_seconds=estimate_eta_seconds(floor_seconds=15),
+                )
+            )
+            raise self.retry(exc=e)
+
         run_async(update_task_status(db_path, task_id, "FAILED", error=_error_summary))
         run_async(update_task_progress(db_path, task_id, progress=1.0, eta_seconds=0))
         logger.info("task_status_persisted", extra={"extra_fields": {"status": "FAILED"}})
@@ -809,10 +938,6 @@ def grade_homework_task(
             
             logger.critical(f"[Worker] Task {task_id} permanently failed and routed to DLQ")
             return {"status": "failed", "error": _error_summary}
-
-        # Retry if attempts remain
-        if self.request.retries < self.max_retries:
-            raise self.retry(exc=e)
 
         # Permanent failure after max retries
         logger.critical(f"[Worker] Task {task_id} permanently failed after {self.max_retries} retries")

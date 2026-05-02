@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from src.core.config import settings
 from src.db.client import (
     get_prompt_cache_level_stats,
     get_runtime_telemetry_fallback_stats,
@@ -20,8 +21,8 @@ async def test_upsert_runtime_telemetry_and_aggregate(tmp_path: Path):
         db_path,
         task_id="t1",
         trace_id="trace-1",
-        requested_model="deepseek-reasoner",
-        model_used="deepseek-chat",
+        requested_model=settings.deepseek_model_name,
+        model_used=settings.deepseek_fallback_model_name,
         route_reason="network_error_threshold",
         fallback_used=True,
         fallback_reason="network_error_threshold",
@@ -36,8 +37,8 @@ async def test_upsert_runtime_telemetry_and_aggregate(tmp_path: Path):
         db_path,
         task_id="t2",
         trace_id="trace-2",
-        requested_model="deepseek-reasoner",
-        model_used="deepseek-reasoner",
+        requested_model=settings.deepseek_model_name,
+        model_used=settings.deepseek_model_name,
         route_reason="default",
         fallback_used=False,
         fallback_reason=None,
@@ -50,8 +51,7 @@ async def test_upsert_runtime_telemetry_and_aggregate(tmp_path: Path):
     )
 
     model_hits = await get_runtime_telemetry_model_hits(db_path)
-    assert model_hits["deepseek-chat"] == 1
-    assert model_hits["deepseek-reasoner"] == 1
+    assert model_hits[settings.deepseek_model_name] == 2
 
     fallback_stats = await get_runtime_telemetry_fallback_stats(db_path)
     assert fallback_stats["total_count"] == 2

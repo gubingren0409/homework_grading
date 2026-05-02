@@ -308,7 +308,7 @@ async def get_provider_benchmark(
         throughput_tasks_per_hour=throughput,
         cognitive_router={
             "requested_model": settings.deepseek_model_name,
-            "fallback_model": "deepseek-chat",
+            "fallback_model": settings.deepseek_fallback_model_name,
             "sample_count": int(router_snapshot.get("sample_count", 0)),
             "failure_rate": failure_rate,
             "fallback_rate": fallback_rate,
@@ -340,7 +340,7 @@ async def get_router_policy():
             "min_samples": settings.auto_circuit_min_samples,
             "budget_token_limit": settings.router_budget_token_limit,
             "default_model": settings.deepseek_model_name,
-            "fallback_model": "deepseek-chat",
+            "fallback_model": settings.deepseek_fallback_model_name,
         },
         live_snapshot=live,
         notes=[

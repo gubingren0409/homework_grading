@@ -144,6 +144,35 @@ CREATE TABLE IF NOT EXISTS skill_validation_records (
     FOREIGN KEY(task_id) REFERENCES tasks(task_id)
 );
 
+CREATE TABLE IF NOT EXISTS paper_tasks (
+    task_id TEXT PRIMARY KEY,
+    student_id TEXT,
+    bundle_id TEXT,
+    paper_id TEXT NOT NULL,
+    total_questions INTEGER NOT NULL CHECK (total_questions >= 0),
+    answered_questions INTEGER NOT NULL CHECK (answered_questions >= 0),
+    total_score_deduction REAL NOT NULL CHECK (total_score_deduction >= 0.0),
+    requires_human_review INTEGER NOT NULL CHECK (requires_human_review IN (0, 1)),
+    report_json TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(task_id) REFERENCES tasks(task_id)
+);
+
+CREATE TABLE IF NOT EXISTS paper_question_results (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT NOT NULL,
+    student_id TEXT,
+    question_id TEXT NOT NULL,
+    page_indexes_json TEXT,
+    total_deduction REAL NOT NULL CHECK (total_deduction >= 0.0),
+    status TEXT NOT NULL,
+    requires_human_review INTEGER NOT NULL CHECK (requires_human_review IN (0, 1)),
+    report_json TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(task_id) REFERENCES tasks(task_id)
+);
+
 CREATE TABLE IF NOT EXISTS rubrics (
     rubric_id TEXT PRIMARY KEY,
     question_id TEXT,
@@ -176,6 +205,11 @@ CREATE INDEX IF NOT EXISTS idx_prompt_ops_created_at ON prompt_ops_audit_log(cre
 CREATE INDEX IF NOT EXISTS idx_prompt_ops_prompt_key ON prompt_ops_audit_log(prompt_key);
 CREATE INDEX IF NOT EXISTS idx_skill_validation_task_id ON skill_validation_records(task_id);
 CREATE INDEX IF NOT EXISTS idx_skill_validation_checker ON skill_validation_records(checker);
+CREATE INDEX IF NOT EXISTS idx_paper_tasks_student_id ON paper_tasks(student_id);
+CREATE INDEX IF NOT EXISTS idx_paper_tasks_bundle_id ON paper_tasks(bundle_id);
+CREATE INDEX IF NOT EXISTS idx_paper_tasks_paper_id ON paper_tasks(paper_id);
+CREATE INDEX IF NOT EXISTS idx_paper_question_results_task_id ON paper_question_results(task_id);
+CREATE INDEX IF NOT EXISTS idx_paper_question_results_question_id ON paper_question_results(question_id);
 CREATE INDEX IF NOT EXISTS idx_rubrics_created_at ON rubrics(created_at);
 CREATE INDEX IF NOT EXISTS idx_rubrics_source_fingerprint ON rubrics(source_fingerprint);
 CREATE INDEX IF NOT EXISTS idx_rubric_generate_audit_created_at ON rubric_generate_audit(created_at);
