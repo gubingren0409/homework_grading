@@ -50,6 +50,7 @@ class DeepSeekCognitiveEngine(BaseCognitiveAgent):
                 max_retries=0 # Manual failover
             ) for key in keys
         }
+        self._api_semaphore = asyncio.Semaphore(settings.effective_deepseek_api_max_concurrency)
         
         # Phase 33: Global circuit breaker for DeepSeek API service
         self._circuit_breaker = CircuitBreaker(
@@ -135,6 +136,8 @@ class DeepSeekCognitiveEngine(BaseCognitiveAgent):
         """Evaluate student work with configurable stream strategy and deterministic fallback."""
         if not settings.llm_egress_enabled:
             raise GradingSystemError("LLM egress disabled by configuration (LLM_EGRESS_ENABLED=false)")
+        if not hasattr(self, "_api_semaphore"):
+            self._api_semaphore = asyncio.Semaphore(settings.effective_deepseek_api_max_concurrency)
         ir_json_input = perception_data.model_dump_json()
         target_schema = json.dumps(EvaluationReport.model_json_schema(), indent=2)
         rubric_json = rubric.model_dump_json() if rubric is not None else ""
@@ -185,12 +188,13 @@ class DeepSeekCognitiveEngine(BaseCognitiveAgent):
                     if connection_error_count >= MAX_CONNECTION_ERRORS and not route_decision.force_degrade_to_chat:
                         fallback_reason = "network_error_threshold"
                     logger.warning(
-                        "Switching to deepseek-chat fallback (attempt=%s, net_failures=%s, reason=%s).",
+                        "Switching to DeepSeek fallback model %s (attempt=%s, net_failures=%s, reason=%s).",
+                        settings.deepseek_fallback_model_name,
                         attempt + 1,
                         connection_error_count,
                         fallback_reason,
                     )
-                    model_to_use = "deepseek-chat"
+                    model_to_use = settings.deepseek_fallback_model_name
                     use_stream = False
                 else:
                     fallback_reason = None
@@ -214,23 +218,24 @@ class DeepSeekCognitiveEngine(BaseCognitiveAgent):
                             stream=True
                         )
                     
-                    stream = await _protected_stream_call()
-                    
-                    content_acc = ""
-                    reasoning_acc = ""
-                    async for chunk in stream:
-                        choices = getattr(chunk, "choices", None) or []
-                        if not choices:
-                            continue
-                        delta = getattr(choices[0], "delta", None)
-                        if not delta:
-                            continue
-                        reasoning_piece = getattr(delta, "reasoning_content", None)
-                        content_piece = getattr(delta, "content", None)
-                        if reasoning_piece:
-                            reasoning_acc += reasoning_piece
-                        if content_piece:
-                            content_acc += content_piece
+                    async with self._api_semaphore:
+                        stream = await _protected_stream_call()
+
+                        content_acc = ""
+                        reasoning_acc = ""
+                        async for chunk in stream:
+                            choices = getattr(chunk, "choices", None) or []
+                            if not choices:
+                                continue
+                            delta = getattr(choices[0], "delta", None)
+                            if not delta:
+                                continue
+                            reasoning_piece = getattr(delta, "reasoning_content", None)
+                            content_piece = getattr(delta, "content", None)
+                            if reasoning_piece:
+                                reasoning_acc += reasoning_piece
+                            if content_piece:
+                                content_acc += content_piece
 
                     if reasoning_acc:
                         full_raw_text += f"<think>\n{reasoning_acc}\n</think>\n"
@@ -251,7 +256,8 @@ class DeepSeekCognitiveEngine(BaseCognitiveAgent):
                             timeout=90.0
                         )
                     
-                    response = await _protected_call()
+                    async with self._api_semaphore:
+                        response = await _protected_call()
                     full_raw_text = response.choices[0].message.content or ""
 
                 connection_error_count = 0
@@ -268,14 +274,14 @@ class DeepSeekCognitiveEngine(BaseCognitiveAgent):
                     model=model_to_use,
                     success=True,
                     token_estimate=token_estimate,
-                    fallback_used=(model_to_use == "deepseek-chat"),
+                    fallback_used=(model_to_use == settings.deepseek_fallback_model_name),
                     reason="ok",
                 )
                 self._last_runtime_telemetry = {
                     "requested_model": settings.deepseek_model_name,
                     "model_used": model_to_use,
                     "route_reason": fallback_reason if should_degrade else "default",
-                    "fallback_used": bool(model_to_use == "deepseek-chat"),
+                    "fallback_used": bool(model_to_use == settings.deepseek_fallback_model_name),
                     "fallback_reason": fallback_reason if should_degrade else None,
                     "prompt_key": "deepseek.cognitive.evaluate",
                     "prompt_asset_version": str(prompt_bundle.asset_version),
@@ -370,6 +376,52 @@ class DeepSeekCognitiveEngine(BaseCognitiveAgent):
                 await asyncio.sleep(2.0)
                 continue
 
+            except openai.APIStatusError as api_err:
+                status_code = int(getattr(api_err, "status_code", 0) or 0)
+                last_error_message = str(api_err)
+                if status_code in {400, 401, 402, 403}:
+                    reason = f"non_retryable_api_status_{status_code}"
+                    logger.error("DeepSeek non-retryable API status: %s", api_err)
+                    runtime_router.record_event(
+                        model=settings.deepseek_model_name,
+                        success=False,
+                        token_estimate=token_estimate,
+                        fallback_used=False,
+                        reason=reason,
+                    )
+                    self._last_runtime_telemetry = {
+                        "requested_model": settings.deepseek_model_name,
+                        "model_used": model_to_use,
+                        "route_reason": reason,
+                        "fallback_used": False,
+                        "fallback_reason": reason,
+                        "prompt_key": "deepseek.cognitive.evaluate",
+                        "prompt_asset_version": str(prompt_bundle.asset_version),
+                        "prompt_variant_id": str(prompt_bundle.variant_id),
+                        "prompt_cache_level": str(prompt_bundle.cache_level),
+                        "prompt_token_estimate": int(prompt_bundle.token_estimate),
+                        "succeeded": False,
+                    }
+                    raise GradingSystemError(
+                        f"DeepSeek API non-retryable error (status={status_code}): {api_err}"
+                    )
+                connection_error_count += 1
+                logger.warning(
+                    "API status error (attempt=%s, net_failures=%s): %s",
+                    attempt + 1,
+                    connection_error_count,
+                    api_err,
+                )
+                runtime_router.record_event(
+                    model=settings.deepseek_model_name,
+                    success=False,
+                    token_estimate=token_estimate,
+                    fallback_used=False,
+                    reason="api_status_error",
+                )
+                await asyncio.sleep(2.0)
+                continue
+
             except openai.APIError as api_err:
                 connection_error_count += 1
                 last_error_message = str(api_err)
@@ -394,13 +446,13 @@ class DeepSeekCognitiveEngine(BaseCognitiveAgent):
                 logger.error(
                     "Response parse/validation failed (attempt=%s, model=%s): %s",
                     attempt + 1,
-                    settings.deepseek_model_name if not should_degrade else "deepseek-chat",
+                    settings.deepseek_model_name if not should_degrade else settings.deepseek_fallback_model_name,
                     parse_err,
                 )
                 logger.error("Raw Output Snippet: %s", full_raw_text[:200])
                 connection_error_count += 1
                 runtime_router.record_event(
-                    model=settings.deepseek_model_name if not should_degrade else "deepseek-chat",
+                    model=settings.deepseek_model_name if not should_degrade else settings.deepseek_fallback_model_name,
                     success=False,
                     token_estimate=token_estimate,
                     fallback_used=should_degrade,

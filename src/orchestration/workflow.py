@@ -150,6 +150,14 @@ class GradingWorkflow:
     ) -> tuple[EvaluationReport, dict[str, Any], dict[str, Any]]:
         return await self._evaluate_from_images(image_bytes_list, rubric=rubric)
 
+    async def grade_question_from_preprocessed_images(
+        self,
+        image_bytes_list: list[bytes],
+        rubric: TeacherRubric | None = None,
+    ) -> EvaluationReport:
+        report, _, _ = await self._evaluate_from_images(image_bytes_list, rubric=rubric)
+        return report
+
     async def generate_rubric_pipeline(
         self,
         files_data: list[tuple[bytes, str]],

@@ -132,7 +132,7 @@ def _valid_eval_wrapped_json() -> str:
 
 
 @pytest.mark.asyncio
-async def test_parse_failure_triggers_v3_fallback():
+async def test_parse_failure_uses_configured_v4_flash_fallback():
     original_use_stream = settings.deepseek_use_stream
     settings.deepseek_use_stream = True
 
@@ -151,13 +151,13 @@ async def test_parse_failure_triggers_v3_fallback():
         assert len(completions.calls) == 2
         assert completions.calls[0]["stream"] is True
         assert completions.calls[1]["stream"] is False
-        assert completions.calls[1]["model"] == "deepseek-chat"
+        assert completions.calls[1]["model"] == settings.deepseek_fallback_model_name
     finally:
         settings.deepseek_use_stream = original_use_stream
 
 
 @pytest.mark.asyncio
-async def test_heavily_altered_bypasses_reasoner_to_v3():
+async def test_heavily_altered_uses_configured_v4_flash_fallback():
     original_use_stream = settings.deepseek_use_stream
     settings.deepseek_use_stream = True
 
@@ -172,13 +172,13 @@ async def test_heavily_altered_bypasses_reasoner_to_v3():
         assert report.is_fully_correct is True
         assert len(completions.calls) == 1
         assert completions.calls[0]["stream"] is False
-        assert completions.calls[0]["model"] == "deepseek-chat"
+        assert completions.calls[0]["model"] == settings.deepseek_fallback_model_name
     finally:
         settings.deepseek_use_stream = original_use_stream
 
 
 @pytest.mark.asyncio
-async def test_incomplete_chunked_read_triggers_v3_fallback():
+async def test_incomplete_chunked_read_uses_configured_v4_flash_fallback():
     original_use_stream = settings.deepseek_use_stream
     settings.deepseek_use_stream = True
 
@@ -199,6 +199,6 @@ async def test_incomplete_chunked_read_triggers_v3_fallback():
         assert len(completions.calls) == 2
         assert completions.calls[0]["stream"] is True
         assert completions.calls[1]["stream"] is False
-        assert completions.calls[1]["model"] == "deepseek-chat"
+        assert completions.calls[1]["model"] == settings.deepseek_fallback_model_name
     finally:
         settings.deepseek_use_stream = original_use_stream

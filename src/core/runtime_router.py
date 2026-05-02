@@ -102,7 +102,7 @@ class RuntimeRouterController:
 
         if readability_status == "HEAVILY_ALTERED":
             return RuntimeRouterDecision(
-                cognitive_model="deepseek-chat",
+                cognitive_model=settings.deepseek_fallback_model_name,
                 stream=False,
                 force_degrade_to_chat=True,
                 reason="readability_heavily_altered",
@@ -115,7 +115,7 @@ class RuntimeRouterController:
 
         if sample_count >= settings.auto_circuit_min_samples and failure_rate >= settings.auto_circuit_failure_rate_threshold:
             return RuntimeRouterDecision(
-                cognitive_model="deepseek-chat",
+                cognitive_model=settings.deepseek_fallback_model_name,
                 stream=False,
                 force_degrade_to_chat=True,
                 reason="failure_rate_threshold",
@@ -127,7 +127,7 @@ class RuntimeRouterController:
             and float(incoming_token_estimate) >= token_median * settings.auto_circuit_token_spike_threshold
         ):
             return RuntimeRouterDecision(
-                cognitive_model="deepseek-chat",
+                cognitive_model=settings.deepseek_fallback_model_name,
                 stream=False,
                 force_degrade_to_chat=True,
                 reason="token_spike_threshold",
@@ -138,7 +138,7 @@ class RuntimeRouterController:
             and incoming_token_estimate > settings.router_budget_token_limit
         ):
             return RuntimeRouterDecision(
-                cognitive_model="deepseek-chat",
+                cognitive_model=settings.deepseek_fallback_model_name,
                 stream=False,
                 force_degrade_to_chat=True,
                 reason="budget_token_limit",

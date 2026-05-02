@@ -118,3 +118,40 @@ async def test_e05_stream_limit_hits_413_without_buffer_join():
         with pytest.raises(Exception) as exc_info:
             await _store_upload_file_with_limits("task-big", upload)  # type: ignore[arg-type]
         assert getattr(exc_info.value, "status_code", None) == 413
+
+
+@pytest.mark.asyncio
+async def test_upload_storage_filename_is_uniqued_to_prevent_overwrite():
+    class FakeUploadFile:
+        filename = "stu_ans_03.png"
+
+        def __init__(self, payload: bytes):
+            self.parts = [payload, b""]
+            self.idx = 0
+
+        async def read(self, size=-1):
+            chunk = self.parts[self.idx]
+            self.idx += 1
+            return chunk
+
+        async def close(self):
+            return None
+
+    stored_filenames = []
+
+    def fake_store_fileobj(task_id, spool, filename):
+        del task_id, spool
+        stored_filenames.append(filename)
+        return f"file:///tmp/{filename}"
+
+    with patch("src.api.route_helpers.storage.store_fileobj", side_effect=fake_store_fileobj), patch(
+        "src.api.route_helpers.settings.request_body_read_timeout_seconds", 1.0
+    ), patch("src.api.route_helpers.settings.max_request_body_bytes", 1024), patch(
+        "src.api.route_helpers.settings.upload_chunk_size_bytes", 8
+    ), patch("src.api.route_helpers.settings.upload_spool_max_size_bytes", 16):
+        await _store_upload_file_with_limits("same-task", FakeUploadFile(b"one"))  # type: ignore[arg-type]
+        await _store_upload_file_with_limits("same-task", FakeUploadFile(b"two"))  # type: ignore[arg-type]
+
+    assert len(stored_filenames) == 2
+    assert stored_filenames[0] != stored_filenames[1]
+    assert all(name.endswith("_stu_ans_03.png") for name in stored_filenames)

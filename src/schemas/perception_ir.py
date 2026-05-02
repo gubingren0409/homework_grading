@@ -111,3 +111,25 @@ class LayoutIR(BaseModel):
                 "image_width/image_height must be injected by host via model_validate(context=...)."
             )
         return self
+
+
+class QuestionAnchor(BaseModel):
+    raw_label: str
+    question_no: str = Field(..., min_length=1)
+    page_index: int = Field(default=0, ge=0)
+    order_index: int = Field(..., ge=0)
+    source: Literal["perception", "layout"] = "perception"
+    bbox: BoundingBox
+
+
+class QuestionAnchorSet(BaseModel):
+    page_index: int = Field(default=0, ge=0)
+    anchors: List[QuestionAnchor] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
+
+
+class StudentAnswerRegion(BaseModel):
+    question_no: str = Field(..., min_length=1)
+    page_index: int = Field(default=0, ge=0)
+    bbox: BoundingBox
+    cropped_image_bytes: bytes

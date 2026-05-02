@@ -5,7 +5,7 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, Mapping, Sequence, Optional
 
-from src.prompts.cache_memory import InMemoryPromptCache
+from src.prompts.cache_memory import InMemoryPromptCache, NoopPromptCache
 from src.prompts.cache_redis import RedisPromptCache
 from src.prompts.exceptions import PromptAssetNotFound
 from src.prompts.guards import validate_budget_or_raise
@@ -36,7 +36,7 @@ class PromptProviderService:
         *,
         source: FilePromptSource,
         l1_cache: InMemoryPromptCache,
-        l2_cache: RedisPromptCache,
+        l2_cache: RedisPromptCache | NoopPromptCache,
         invalidation_bus=None,
         pull_interval_seconds: int = 30,
         l2_ttl_seconds: int = 1800,
@@ -461,7 +461,11 @@ class PromptProviderService:
 def build_default_prompt_provider() -> PromptProviderService:
     source = FilePromptSource(base_dir=Path(settings.prompts_dir).resolve())
     l1 = InMemoryPromptCache(ttl_seconds=settings.prompt_l1_ttl_seconds, swr_seconds=settings.prompt_l1_swr_seconds)
-    l2 = RedisPromptCache(redis_url=settings.redis_url, key_prefix=settings.prompt_l2_key_prefix)
+    l2 = (
+        RedisPromptCache(redis_url=settings.redis_url, key_prefix=settings.prompt_l2_key_prefix)
+        if settings.prompt_l2_cache_enabled
+        else NoopPromptCache()
+    )
     bus = None
     if settings.prompt_invalidation_bus_enabled:
         from src.prompts.invalidation_redis import RedisInvalidationBus

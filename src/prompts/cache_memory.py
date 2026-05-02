@@ -64,3 +64,16 @@ class InMemoryPromptCache:
             for k in keys:
                 self._data.pop(k, None)
             return len(keys)
+
+
+class NoopPromptCache:
+    async def get(self, key: str) -> PromptResolveResult | None:
+        del key
+        return None
+
+    async def set(self, key: str, value: PromptResolveResult, ttl_seconds: int) -> None:
+        del key, value, ttl_seconds
+
+    async def invalidate_prefix(self, prefix: str) -> int:
+        del prefix
+        return 0

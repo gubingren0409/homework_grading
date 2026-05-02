@@ -1,4 +1,6 @@
 from abc import ABC, abstractmethod
+import asyncio
+
 from src.schemas.perception_ir import PerceptionOutput
 
 
@@ -26,3 +28,18 @@ class BasePerceptionEngine(ABC):
             PerceptionOutput: Standardized intermediate representation of the image content.
         """
         pass
+
+    async def process_images(
+        self,
+        image_bytes_list: list[bytes],
+        *,
+        context_type: str = "student_homework",
+    ) -> list[PerceptionOutput]:
+        """
+        Batch perception hook. Engines that support multi-image VLM calls can override this
+        to reduce model invocations; the default preserves existing behavior.
+        """
+        del context_type
+        return await asyncio.gather(
+            *[self.process_image(image_bytes) for image_bytes in image_bytes_list]
+        )

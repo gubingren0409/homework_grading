@@ -7,6 +7,7 @@ import requests
 
 from src.core.config import settings
 from src.skills.interfaces import LayoutParseResult, LayoutParserSkill, LayoutRegion
+from src.skills.layout_mineru import MinerULayoutSkill
 
 
 logger = logging.getLogger(__name__)
@@ -121,6 +122,14 @@ def build_layout_parser_from_settings() -> Optional[LayoutParserSkill]:
     if not settings.skill_layout_parser_enabled:
         return None
     provider = settings.skill_layout_parser_provider
+    if provider == "mineru":
+        if not settings.skill_layout_parser_api_url:
+            logger.warning("mineru layout parser enabled but api url is missing")
+            return None
+        return MinerULayoutSkill(
+            api_url=settings.skill_layout_parser_api_url,
+            timeout_seconds=settings.skill_layout_parser_timeout_seconds,
+        )
     if provider not in {"llamaparse", "unstructured"}:
         logger.warning("layout parser provider is not supported: %s", provider)
         return None

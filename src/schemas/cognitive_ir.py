@@ -1,10 +1,26 @@
-from typing import List, Literal, Optional
+from typing import Dict, List, Literal, Optional
 from pydantic import BaseModel, Field
+
+from src.schemas.answer_ir import StudentAnswerBundle
 
 
 class StepEvaluation(BaseModel):
     """Evaluation output for a single step of the work."""
 
+    grading_point_id: Optional[str] = Field(
+        default=None,
+        description="Optional rubric grading point id when this evaluation maps to a TeacherRubric.grading_points item.",
+    )
+    grading_point_score: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        description="Optional full score of the mapped grading point.",
+    )
+    awarded_score: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        description="Optional score awarded for the mapped grading point.",
+    )
     reference_element_id: str = Field(
         ..., description="The unique element_id from PerceptionOutput that this evaluation maps to."
     )
@@ -40,3 +56,14 @@ class EvaluationReport(BaseModel):
     requires_human_review: bool = Field(
         ..., description="遇到异常解法或高熵状态时为True，强制人工介入标记"
     )
+
+
+class PaperEvaluationReport(BaseModel):
+    paper_id: str
+    total_questions: int = Field(..., ge=0)
+    answered_questions: int = Field(..., ge=0)
+    total_score_deduction: float = Field(..., ge=0.0)
+    requires_human_review: bool
+    warnings: List[str] = Field(default_factory=list)
+    per_question: Dict[str, EvaluationReport] = Field(default_factory=dict)
+    student_answer_bundle: Optional[StudentAnswerBundle] = None

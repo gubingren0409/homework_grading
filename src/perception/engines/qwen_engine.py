@@ -14,6 +14,7 @@ from src.core.exceptions import GradingSystemError
 from src.core.circuit_breaker import CircuitBreaker, CircuitBreakerOpenError  # Phase 33
 from src.core.trace_context import outbound_trace_headers, get_task_id, get_trace_id
 from src.perception.base import BasePerceptionEngine
+from src.orchestration.reference_image_description import reference_output_to_dense_description
 from src.schemas.perception_ir import PerceptionOutput, LayoutIR
 from src.prompts.provider import get_prompt_provider
 from src.prompts.schemas import PromptResolveRequest, PromptVariable
@@ -50,8 +51,7 @@ class QwenVLMPerceptionEngine(BasePerceptionEngine):
         }
 
         self._prompt_provider = get_prompt_provider()
-        # Throttling: Max 3 concurrent physical connections to Qwen API
-        self._api_semaphore = asyncio.Semaphore(3)
+        self._api_semaphore = asyncio.Semaphore(settings.effective_qwen_api_max_concurrency)
         
         # Phase 33: Global circuit breaker for Qwen API service
         self._circuit_breaker = CircuitBreaker(
@@ -66,6 +66,12 @@ class QwenVLMPerceptionEngine(BasePerceptionEngine):
                 openai.InternalServerError,
             ),
         )
+        self._batch_fallback_events: list[dict[str, Any]] = []
+
+    def drain_batch_fallback_events(self) -> list[dict[str, Any]]:
+        events = list(self._batch_fallback_events)
+        self._batch_fallback_events.clear()
+        return events
 
     def _encode_image(self, image_bytes: bytes) -> str:
         """Converts raw image bytes to a base64-encoded string."""
@@ -111,8 +117,16 @@ class QwenVLMPerceptionEngine(BasePerceptionEngine):
         """Intercepts and clips VLM hallucinated coordinates."""
         if "elements" not in data or not isinstance(data["elements"], list):
             return data
-            
+        sanitized_elements = []
         for elem in data["elements"]:
+            if not isinstance(elem, dict):
+                continue
+            content = str(elem.get("raw_content") or "").strip()
+            content_type = str(elem.get("content_type") or "")
+            if content_type in {"image_diagram", "image", "table"} and len(content) < 10:
+                if not content:
+                    continue
+                elem["content_type"] = "plain_text"
             if "bbox" in elem and elem["bbox"]:
                 if isinstance(elem["bbox"], list):
                     elem["bbox"] = [max(0.0, min(1.0, float(c))) for c in elem["bbox"]]
@@ -120,6 +134,8 @@ class QwenVLMPerceptionEngine(BasePerceptionEngine):
                     for k, v in elem["bbox"].items():
                         if isinstance(v, (int, float)):
                             elem["bbox"][k] = max(0.0, min(1.0, float(v)))
+            sanitized_elements.append(elem)
+        data["elements"] = sanitized_elements
         return data
 
     def _image_dimensions(self, image_bytes: bytes) -> tuple[int, int]:
@@ -211,6 +227,7 @@ class QwenVLMPerceptionEngine(BasePerceptionEngine):
         prompt_variables: Sequence[PromptVariable],
         max_tokens: int | None = None,
         temperature: float = 0.0,
+        timeout_seconds: float | None = None,
     ) -> Dict[str, Any]:
         """
         Shared low-level JSON call for Phase 35 dual-mode perception.
@@ -227,7 +244,8 @@ class QwenVLMPerceptionEngine(BasePerceptionEngine):
             variables=prompt_variables,
         )
 
-        for attempt in range(max_retries + 1):
+        max_attempts = max(max_retries + 1, len(self._key_pool.keys_metadata))
+        for attempt in range(max_attempts):
             try:
                 key_meta = self._key_pool.get_key_metadata()
                 current_key = key_meta["key"]
@@ -241,6 +259,9 @@ class QwenVLMPerceptionEngine(BasePerceptionEngine):
 
                     @self._circuit_breaker
                     async def _protected_call():
+                        request_options: dict[str, Any] = {}
+                        if timeout_seconds is not None:
+                            request_options["timeout"] = timeout_seconds
                         return await client.chat.completions.create(
                             model=settings.qwen_model_name,
                             extra_headers=outbound_trace_headers(),
@@ -248,6 +269,7 @@ class QwenVLMPerceptionEngine(BasePerceptionEngine):
                             temperature=temperature,
                             max_tokens=effective_max_tokens,
                             response_format={"type": "json_object"},
+                            **request_options,
                         )
 
                     response = await _protected_call()
@@ -279,6 +301,14 @@ class QwenVLMPerceptionEngine(BasePerceptionEngine):
                 self._key_pool.report_429(current_key)
                 await asyncio.sleep(0.5)
                 continue
+            except openai.BadRequestError as bad_req:
+                if _is_qwen_key_access_error(bad_req):
+                    connection_error_count = 0
+                    self._key_pool.report_429(current_key, cooldown_seconds=3600)
+                    logger.warning("qwen key access denied; cooling current key and trying next key")
+                    await asyncio.sleep(0.5)
+                    continue
+                raise GradingSystemError(f"An unexpected error occurred during perception: {str(bad_req)}")
             except (openai.APIConnectionError, openai.APITimeoutError) as net_err:
                 connection_error_count += 1
                 if connection_error_count > max_connection_errors:
@@ -329,6 +359,17 @@ class QwenVLMPerceptionEngine(BasePerceptionEngine):
         )
 
     async def process_image(self, image_bytes: bytes) -> PerceptionOutput:
+        return await self._process_image_with_context(
+            image_bytes,
+            context_type="student_homework",
+        )
+
+    async def _process_image_with_context(
+        self,
+        image_bytes: bytes,
+        *,
+        context_type: str,
+    ) -> PerceptionOutput:
         """
         Asynchronously processes raw image bytes using Qwen-VL with Circuit-Breaker pooling (Phase 22.6).
         """
@@ -336,7 +377,7 @@ class QwenVLMPerceptionEngine(BasePerceptionEngine):
         raw = await self._call_qwen_json(
             prompt_key="qwen.perception.extract",
             prompt_variables=[
-                PromptVariable(name="context_type", kind="text", value="student_homework"),
+                PromptVariable(name="context_type", kind="text", value=context_type),
                 PromptVariable(name="image_1", kind="image_base64", value=base64_image),
             ],
             temperature=0.01,
@@ -347,3 +388,100 @@ class QwenVLMPerceptionEngine(BasePerceptionEngine):
         except Exception as ve:
             logger.error(f"Schema validation failed: {ve}\nRaw Output: {raw}")
             raise GradingSystemError(f"VLM output failed schema validation: {str(ve)}")
+
+    async def process_images(
+        self,
+        image_bytes_list: list[bytes],
+        *,
+        context_type: str = "student_homework",
+    ) -> list[PerceptionOutput]:
+        if not image_bytes_list:
+            return []
+        if context_type in {"student_answer_regions", "REFERENCE"}:
+            return await asyncio.gather(
+                *[
+                    self._process_image_with_context(
+                        image_bytes,
+                        context_type=context_type,
+                    )
+                    for image_bytes in image_bytes_list
+                ]
+            )
+        if len(image_bytes_list) == 1:
+            return [
+                await self._process_image_with_context(
+                    image_bytes_list[0],
+                    context_type=context_type,
+                )
+            ]
+
+        prompt_variables = [
+            PromptVariable(name="context_type", kind="text", value=context_type),
+            PromptVariable(name="image_count", kind="text", value=str(len(image_bytes_list))),
+            PromptVariable(
+                name="image_manifest",
+                kind="text",
+                value="\n".join(
+                    f"image_{index}: crop_index={index}"
+                    for index in range(1, len(image_bytes_list) + 1)
+                ),
+            ),
+        ]
+        prompt_variables.extend(
+            PromptVariable(
+                name=f"image_{index}",
+                kind="image_base64",
+                value=self._encode_image(image_bytes),
+            )
+            for index, image_bytes in enumerate(image_bytes_list, start=1)
+        )
+
+        try:
+            raw = await self._call_qwen_json(
+                prompt_key="qwen.perception.batch_extract",
+                prompt_variables=prompt_variables,
+                temperature=0.01,
+                timeout_seconds=settings.qwen_batch_api_timeout_seconds,
+            )
+            outputs = raw.get("outputs")
+            if not isinstance(outputs, list) or len(outputs) != len(image_bytes_list):
+                raise GradingSystemError(
+                    "Qwen batch perception output count does not match input image count"
+                )
+            perception_outputs: list[PerceptionOutput] = []
+            for output in outputs:
+                if not isinstance(output, dict):
+                    raise GradingSystemError("Qwen batch perception output item is not an object")
+                perception_outputs.append(
+                    PerceptionOutput.model_validate(self._sanitize_coordinates(output))
+                )
+            return perception_outputs
+        except (GradingSystemError, TypeError, ValueError, KeyError) as exc:
+            logger.warning("qwen batch perception failed, falling back to per-image calls: %s", exc)
+            self._batch_fallback_events.append(
+                {
+                    "context_type": context_type,
+                    "image_count": len(image_bytes_list),
+                    "reason": str(exc),
+                }
+            )
+            await self._circuit_breaker.reset()
+            return await asyncio.gather(
+                *[
+                    self._process_image_with_context(image_bytes, context_type=context_type)
+                    for image_bytes in image_bytes_list
+                ]
+            )
+
+    async def describe_reference_images(self, image_bytes_list: list[bytes]) -> list[str]:
+        outputs = await self.process_images(image_bytes_list, context_type="REFERENCE")
+        return [reference_output_to_dense_description(output) for output in outputs]
+
+    @staticmethod
+    def reference_output_to_dense_description(output: PerceptionOutput) -> str:
+        return reference_output_to_dense_description(output)
+
+
+def _is_qwen_key_access_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return "access denied" in text or "account is in good standing" in text

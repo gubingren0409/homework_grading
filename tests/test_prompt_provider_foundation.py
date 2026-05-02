@@ -112,6 +112,161 @@ async def test_multimodal_render_builds_openai_content():
 
 
 @pytest.mark.asyncio
+async def test_qwen_extract_prompt_preserves_handwritten_chinese_prose():
+    provider = _make_provider(Path("configs/prompts"))
+    await provider.start()
+    req = _base_req(
+        "qwen.perception.extract",
+        vars_=[
+            PromptVariable(name="context_type", kind="text", value="student_answer_regions"),
+            PromptVariable(name="image_1", kind="image_base64", value="ZmFrZQ=="),
+        ],
+    )
+    result = await provider.resolve(req)
+    system_text = result.messages[0]["content"]
+    user_content = result.messages[1]["content"]
+    user_text = next(item["text"] for item in user_content if item.get("type") == "text")
+
+    assert "手写文字完整转录" in system_text
+    assert "绝对禁止只转录公式而忽略" in system_text
+    assert "手写分式数字精读" in system_text
+    assert "区分 4 与 7" in system_text
+    assert "handwritten Chinese prose" in user_text
+    await provider.stop()
+
+
+@pytest.mark.asyncio
+async def test_qwen_extract_prompt_requires_explicit_null_for_blank_slots():
+    provider = _make_provider(Path("configs/prompts"))
+    await provider.start()
+    req = _base_req(
+        "qwen.perception.extract",
+        vars_=[
+            PromptVariable(name="context_type", kind="text", value="student_answer_regions"),
+            PromptVariable(name="image_1", kind="image_base64", value="ZmFrZQ=="),
+        ],
+    )
+    result = await provider.resolve(req)
+    system_text = result.messages[0]["content"]
+    user_content = result.messages[1]["content"]
+    user_text = next(item["text"] for item in user_content if item.get("type") == "text")
+
+    assert "优先使用 `<student>null</student>`" in system_text
+    assert "禁止输出空标签 `<student></student>`" in system_text
+    assert "emit `<student>null</student>`" in user_text
+    assert "<student></student>" in user_text
+    await provider.stop()
+
+
+@pytest.mark.asyncio
+async def test_qwen_extract_prompt_handles_subtle_revisions():
+    provider = _make_provider(Path("configs/prompts"))
+    await provider.start()
+    req = _base_req(
+        "qwen.perception.extract",
+        vars_=[
+            PromptVariable(name="context_type", kind="text", value="student_answer_regions"),
+            PromptVariable(name="image_1", kind="image_base64", value="ZmFrZQ=="),
+        ],
+    )
+    result = await provider.resolve(req)
+    system_text = result.messages[0]["content"]
+    user_content = result.messages[1]["content"]
+    user_text = next(item["text"] for item in user_content if item.get("type") == "text")
+
+    assert "轻度涂改识别" in system_text
+    assert "局部反复描粗" in system_text
+    assert "旧答案残影与新答案拼接成一个 student token" in system_text
+    assert "调协谐" in system_text
+    assert "解调振谐" in system_text
+    assert "一空一层原则" in system_text
+    assert "同层字符自检" in system_text
+    assert "lightly cancelled" in user_text
+    assert "Do not concatenate abandoned and retained answers" in user_text
+    assert "调协谐" in user_text
+    assert "prefer omission over fusion" in user_text
+    assert "same retained stroke layer" in user_text
+    await provider.stop()
+
+
+@pytest.mark.asyncio
+async def test_qwen_extract_prompt_allows_local_worked_solution_block_tag():
+    provider = _make_provider(Path("configs/prompts"))
+    await provider.start()
+    req = _base_req(
+        "qwen.perception.extract",
+        vars_=[
+            PromptVariable(name="context_type", kind="text", value="student_answer_regions"),
+            PromptVariable(name="image_1", kind="image_base64", value="ZmFrZQ=="),
+        ],
+    )
+    result = await provider.resolve(req)
+    system_text = result.messages[0]["content"]
+    user_content = result.messages[1]["content"]
+    user_text = next(item["text"] for item in user_content if item.get("type") == "text")
+
+    assert "局部解答块标记" in system_text
+    assert "单个 `<student>...</student>` 首尾包裹" in system_text
+    assert "不适用于填空槽位、选择标记或短答案序列" in system_text
+    assert "continuous multi-line handwritten solution block" in user_text
+    assert "you may wrap that local student-written block" in user_text
+    assert "Do not use this block-tag rule for fill-blank or choice-slot sequences" in user_text
+    await provider.stop()
+
+
+@pytest.mark.asyncio
+async def test_deepseek_evaluate_prompt_requires_per_grading_point_output():
+    provider = _make_provider(Path("configs/prompts"))
+    await provider.start()
+    req = _base_req(
+        "deepseek.cognitive.evaluate",
+        vars_=[
+            PromptVariable(name="perception_ir_json", kind="text", value="{}"),
+            PromptVariable(name="target_json_schema", kind="text", value="{}"),
+            PromptVariable(name="rubric_json", kind="text", value='{"grading_points": []}'),
+        ],
+    )
+    result = await provider.resolve(req)
+    system_text = result.messages[0]["content"]
+
+    assert "逐给分点输出规则" in system_text
+    assert "grading_point_id" in system_text
+    assert "total_score_deduction 必须等于" in system_text
+    assert "atomic grading_points" in system_text
+    assert "后续正确公式、代入或最终结果已经唯一覆盖该单元" in system_text
+    assert "description 简短或受噪声污染" in system_text
+    assert "解答题乱序容忍" in system_text
+    assert "跨小问错位的人工复核出口" in system_text
+    assert "同一子问内部的局部乱序容忍" in system_text
+    assert "REJECTED_UNREADABLE" in system_text
+    assert "局部解答块提示" in system_text
+    assert "worked_solution_block_detected=true" in system_text
+    await provider.stop()
+
+
+@pytest.mark.asyncio
+async def test_deepseek_rubric_prompt_requires_atomic_score_points():
+    provider = _make_provider(Path("configs/prompts"))
+    await provider.start()
+    req = _base_req(
+        "deepseek.cognitive.rubric",
+        vars_=[
+            PromptVariable(name="perception_ir_json", kind="text", value="{}"),
+            PromptVariable(name="target_json_schema", kind="text", value="{}"),
+        ],
+    )
+    result = await provider.resolve(req)
+    system_text = result.messages[0]["content"]
+
+    assert "给分点拆分规则" in system_text
+    assert "1 分 atomic grading_points" in system_text
+    assert "禁止把多个 1 分步骤压缩成一个概括性大点" in system_text
+    assert "绝对不要输出只有“2”“π”“�”这类碎片或乱码" in system_text
+    assert "方法二/等价方法" in system_text
+    await provider.stop()
+
+
+@pytest.mark.asyncio
 async def test_prompt_cache_key_is_bound_to_variables():
     provider = _make_provider(Path("configs/prompts"))
     await provider.start()
@@ -170,7 +325,7 @@ async def test_ab_bucket_uses_bucket_key_not_trace_id():
     ]
     req1 = PromptResolveRequest(
         prompt_key="deepseek.cognitive.evaluate",
-        model="deepseek-reasoner",
+        model="deepseek-v4-flash",
         trace_id="trace-A",
         bucket_key="fixed-user-1",
         locale="zh-CN",
@@ -180,7 +335,7 @@ async def test_ab_bucket_uses_bucket_key_not_trace_id():
     )
     req2 = PromptResolveRequest(
         prompt_key="deepseek.cognitive.evaluate",
-        model="deepseek-reasoner",
+        model="deepseek-v4-flash",
         trace_id="trace-B",
         bucket_key="fixed-user-1",
         locale="zh-CN",
@@ -231,7 +386,7 @@ async def test_forced_variant_and_lkg_mode_controls():
     ]
     req = PromptResolveRequest(
         prompt_key="deepseek.cognitive.evaluate",
-        model="deepseek-reasoner",
+        model="deepseek-v4-flash",
         trace_id="trace-force",
         bucket_key="bucket-force",
         locale="zh-CN",

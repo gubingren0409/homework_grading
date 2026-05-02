@@ -4,6 +4,7 @@ import pytest
 import requests
 
 from src.skills.layout_http import HttpLayoutParserSkill
+from src.skills.layout_mineru import MinerULayoutSkill
 from src.skills.validation_http import HttpValidationExecutionSkill
 from src.skills.interfaces import ValidationInput
 
@@ -56,3 +57,63 @@ async def test_validation_http_adapter_maps_unauthorized():
                     rubric_payload={},
                 )
             )
+
+
+@pytest.mark.asyncio
+async def test_mineru_layout_skill_maps_middle_json_blocks():
+    skill = MinerULayoutSkill(
+        api_url="http://localhost:18082",
+        timeout_seconds=5.0,
+    )
+
+    submit_response = Mock()
+    submit_response.raise_for_status.return_value = None
+    submit_response.json.return_value = {
+        "status_url": "http://localhost:18082/tasks/t-1",
+        "result_url": "http://localhost:18082/tasks/t-1/result",
+    }
+
+    status_response = Mock()
+    status_response.raise_for_status.return_value = None
+    status_response.json.return_value = {"status": "completed"}
+
+    result_response = Mock()
+    result_response.raise_for_status.return_value = None
+    result_response.json.return_value = {
+        "results": {
+            "page.jpg": {
+                "middle_json": (
+                    '{"pdf_info":[{"preproc_blocks":[{"index":1,"type":"title","bbox":[10,20,110,70],'
+                    '"lines":[{"spans":[{"content":"1．试题标题"}]}]}]}]}'
+                )
+            }
+        }
+    }
+
+    captured_post_data = {}
+
+    def _fake_post(*args, **kwargs):
+        captured_post_data["data"] = kwargs.get("data")
+        return submit_response
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            requests,
+            "post",
+            _fake_post,
+        )
+        responses = iter([status_response, result_response])
+        mp.setattr(
+            requests,
+            "get",
+            lambda *args, **kwargs: next(responses),
+        )
+        layout = await skill.parse_layout(
+            b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00 \x00\x00\x00 \x08\x02\x00\x00\x00\xfc\x18\xed\xa3\x00\x00\x00\x16IDATx\x9cc`\xa0\x1f\x00\x00\x00D\x00\x01\xe2!\xbc3\x00\x00\x00\x00IEND\xaeB`\x82",
+            context_type="REFERENCE",
+        )
+
+    assert layout.regions[0].region_type == "title"
+    assert layout.regions[0].question_no == "1"
+    assert layout.regions[0].bbox["x_min"] == 0.3125
+    assert ("formula_enable", "true") in captured_post_data["data"]

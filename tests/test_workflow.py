@@ -86,3 +86,16 @@ async def test_generate_rubric_pipeline_happy_path():
     rubric = await workflow.generate_rubric_pipeline([(_make_test_image_bytes(), "reference.jpg")])
     assert rubric.question_id
     assert len(rubric.grading_points) >= 1
+
+
+@pytest.mark.asyncio
+async def test_grade_question_from_preprocessed_images_exposes_single_question_entry():
+    workflow = GradingWorkflow(
+        perception_engine=MockPerceptionEngine(),
+        cognitive_agent=MockCognitiveAgent(),
+    )
+
+    report = await workflow.grade_question_from_preprocessed_images([_make_test_image_bytes()])
+
+    assert isinstance(report, EvaluationReport)
+    assert report.total_score_deduction == 2.0

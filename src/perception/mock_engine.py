@@ -37,6 +37,37 @@ class MockPerceptionEngine(BasePerceptionEngine):
             trigger_short_circuit=False
         )
 
+    async def process_images(
+        self,
+        image_bytes_list: list[bytes],
+        *,
+        context_type: str = "student_homework",
+    ) -> list[PerceptionOutput]:
+        if context_type != "student_answer_regions":
+            return await super().process_images(image_bytes_list, context_type=context_type)
+        return [
+            PerceptionOutput(
+                readability_status="CLEAR",
+                elements=[
+                    PerceptionNode(
+                        element_id=f"answer_{index}",
+                        content_type="plain_text",
+                        raw_content=f"<student>mock answer {index}</student>",
+                        confidence_score=0.99,
+                        bbox=BoundingBox(
+                            x_min=0.1,
+                            y_min=0.1,
+                            x_max=0.5,
+                            y_max=0.2,
+                        ),
+                    )
+                ],
+                global_confidence=0.98,
+                trigger_short_circuit=False,
+            )
+            for index, _ in enumerate(image_bytes_list, start=1)
+        ]
+
     async def extract_layout(
         self,
         image_bytes: bytes,

@@ -20,7 +20,8 @@ class Settings(BaseSettings):
     # DeepSeek Configuration
     deepseek_api_key: str | None = None # Legacy support
     deepseek_api_keys: str | None = None # Comma-separated keys
-    deepseek_model_name: str = "deepseek-reasoner"
+    deepseek_model_name: str = "deepseek-v4-flash"
+    deepseek_fallback_model_name: str = "deepseek-v4-flash"
     deepseek_use_stream: bool = False
     llm_egress_enabled: bool = True
 
@@ -34,6 +35,7 @@ class Settings(BaseSettings):
     batch_progress_update_step: int = 2
     batch_progress_min_interval_seconds: float = 1.5
     file_preprocess_concurrency: int = 3
+    enable_page_deskew_preprocess: bool = True
 
     # SSE runtime behavior
     sse_stream_timeout_seconds: int = 1800
@@ -71,9 +73,10 @@ class Settings(BaseSettings):
     prompt_l1_swr_seconds: int = 30
     prompt_l2_ttl_seconds: int = 1800
     prompt_pull_interval_seconds: int = 30
+    prompt_l2_cache_enabled: bool = False
     prompt_l2_key_prefix: str = "prompt:l2:"
     prompt_invalidation_channel: str = "prompt:invalidate"
-    prompt_invalidation_bus_enabled: bool = True
+    prompt_invalidation_bus_enabled: bool = False
     prompt_max_input_tokens: int = 32768
     prompt_reserve_output_tokens: int = 1024
 
@@ -83,6 +86,7 @@ class Settings(BaseSettings):
     auto_circuit_token_spike_threshold: float = 1.80
     auto_circuit_min_samples: int = 20
     router_budget_token_limit: int = 9000
+    circuit_breaker_redis_enabled: bool = False
 
     # Phase E1: environment and feature-flag governance
     deployment_environment: str = "dev"  # dev | staging | prod
@@ -92,7 +96,7 @@ class Settings(BaseSettings):
 
     # Optional external skills (Phase 43)
     skill_layout_parser_enabled: bool = False
-    skill_layout_parser_provider: str = "none"  # none | llamaparse | unstructured
+    skill_layout_parser_provider: str = "none"  # none | llamaparse | unstructured | mineru
     skill_layout_parser_api_url: str | None = None
     skill_layout_parser_api_key: str | None = None
     skill_layout_parser_timeout_seconds: float = 20.0
@@ -115,10 +119,20 @@ class Settings(BaseSettings):
 
     # Phase 10: LLM API robustness controls (configurable to prevent timeout death spiral)
     qwen_api_timeout_seconds: float = 120.0
+    qwen_api_max_concurrency: int = 0  # 0 = derive from Qwen key count
+    qwen_api_auto_max_concurrency: int = 8
+    qwen_batch_api_timeout_seconds: float = 240.0
     qwen_max_output_tokens: int = 16384
     qwen_max_retries: int = 3
     qwen_max_connection_errors: int = 3
+    qwen_answer_region_strategy: str = "auto"  # auto | fixed
+    qwen_batch_max_images: int = 2
+    qwen_single_image_concurrency: int = 1
+    qwen_answer_region_batch_concurrency: int = 1
+    qwen_answer_region_max_side: int = 1100
     deepseek_api_timeout_seconds: float = 180.0
+    deepseek_api_max_concurrency: int = 0  # 0 = derive from DeepSeek key count
+    deepseek_api_auto_max_concurrency: int = 3
     deepseek_max_output_tokens: int = 8192
     deepseek_max_retries: int = 4
 
@@ -155,12 +169,40 @@ class Settings(BaseSettings):
             return []
         return [k.strip() for k in source.split(",") if k.strip()]
 
+    @property
+    def effective_qwen_api_max_concurrency(self) -> int:
+        configured = int(self.qwen_api_max_concurrency)
+        if configured > 0:
+            return configured
+        key_count = len(self.parsed_qwen_keys)
+        if key_count <= 0:
+            return 1
+        return max(1, min(key_count, int(self.qwen_api_auto_max_concurrency)))
+
+    @property
+    def effective_deepseek_api_max_concurrency(self) -> int:
+        configured = int(self.deepseek_api_max_concurrency)
+        if configured > 0:
+            return configured
+        key_count = len(self.parsed_deepseek_keys)
+        if key_count <= 0:
+            return 1
+        return max(1, min(key_count, int(self.deepseek_api_auto_max_concurrency)))
+
     @field_validator("perception_provider")
     @classmethod
     def _normalize_perception_provider(cls, value: str) -> str:
         normalized = (value or "").strip().lower()
         if not normalized:
             raise ValueError("perception_provider must be a non-empty string")
+        return normalized
+
+    @field_validator("qwen_answer_region_strategy")
+    @classmethod
+    def _normalize_qwen_answer_region_strategy(cls, value: str) -> str:
+        normalized = (value or "").strip().lower()
+        if normalized not in {"auto", "fixed"}:
+            raise ValueError("qwen_answer_region_strategy must be one of: auto, fixed")
         return normalized
 
     @field_validator("skill_layout_parser_provider", "skill_validation_provider")
@@ -204,6 +246,7 @@ class Settings(BaseSettings):
         "batch_postprocess_concurrency",
         "batch_progress_update_step",
         "file_preprocess_concurrency",
+        "qwen_api_auto_max_concurrency",
     )
     @classmethod
     def _validate_positive_int(cls, value: int) -> int:
@@ -211,7 +254,14 @@ class Settings(BaseSettings):
             raise ValueError("value must be positive")
         return value
 
-    @field_validator("batch_progress_min_interval_seconds")
+    @field_validator("qwen_api_max_concurrency")
+    @classmethod
+    def _validate_qwen_api_max_concurrency(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("qwen_api_max_concurrency must be non-negative")
+        return value
+
+    @field_validator("batch_progress_min_interval_seconds", "qwen_api_timeout_seconds", "qwen_batch_api_timeout_seconds")
     @classmethod
     def _validate_positive_float(cls, value: float) -> float:
         if value <= 0:
@@ -230,6 +280,27 @@ class Settings(BaseSettings):
     def _validate_prompt_reserve_output_tokens(cls, value: int) -> int:
         if value < 0:
             raise ValueError("prompt_reserve_output_tokens cannot be negative")
+        return value
+
+    @field_validator("qwen_batch_max_images")
+    @classmethod
+    def _validate_qwen_batch_max_images(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("qwen_batch_max_images must be positive")
+        return value
+
+    @field_validator("qwen_single_image_concurrency")
+    @classmethod
+    def _validate_qwen_single_image_concurrency(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("qwen_single_image_concurrency must be positive")
+        return value
+
+    @field_validator("qwen_answer_region_batch_concurrency")
+    @classmethod
+    def _validate_qwen_answer_region_batch_concurrency(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("qwen_answer_region_batch_concurrency must be positive")
         return value
 
     @field_validator("deployment_environment")

@@ -67,7 +67,7 @@ class CircuitBreaker:
 
         self._redis_client = redis_client
         self._own_client = redis_client is None
-        self._local_fallback_mode = False
+        self._local_fallback_mode = not settings.circuit_breaker_redis_enabled
         self._local_probe_in_progress = False
         self._local_last_failure_ts: float | None = None
         # Compatibility mirrors for existing callers/tests; source of truth is Redis.
