@@ -2,11 +2,15 @@ import asyncio
 import io
 from unittest.mock import Mock, patch
 
+import pytest
+from fastapi import BackgroundTasks, HTTPException
 from fastapi.testclient import TestClient
 from PIL import Image
 
 from src.api.dependencies import get_db_path
+from src.api.routers.grade import _dispatch_grading_task
 from src.cognitive.mock_agent import MockCognitiveAgent
+from src.core.config import settings
 from src.core.storage_adapter import storage
 from src.db.client import (
     create_task,
@@ -167,6 +171,45 @@ def test_submit_grade_paper_endpoint_enqueues_worker_payload(tmp_path):
         assert queued_payload["student_id"] == "student-async"
     finally:
         app.dependency_overrides.clear()
+
+
+def test_dispatch_grading_task_marks_single_node_local_fallback_payload():
+    payload = {"mode": "paper_submission"}
+    background_tasks = BackgroundTasks()
+
+    with patch("src.api.routers.grade._check_redis_health", return_value=(False, "redis down")):
+        celery_task_id, dispatch_mode = _dispatch_grading_task(
+            task_id="paper-local-fallback",
+            payload=payload,
+            db_path="test.db",
+            trace_id="trace-local",
+            background_tasks=background_tasks,
+        )
+
+    assert celery_task_id == "local:paper-local-fallback"
+    assert dispatch_mode == "local_fallback"
+    assert payload["dispatch_mode"] == "local_fallback"
+    assert payload["fallback_reason"] == "LOCAL_FALLBACK_SINGLE_NODE_ONLY"
+    assert payload["fallback_detail"] == "redis down"
+    assert len(background_tasks.tasks) == 1
+
+
+def test_dispatch_grading_task_rejects_local_fallback_when_disabled(monkeypatch):
+    monkeypatch.setattr(settings, "allow_local_task_fallback", False)
+
+    with (
+        patch("src.api.routers.grade._check_redis_health", return_value=(False, "redis down")),
+        pytest.raises(HTTPException) as exc_info,
+    ):
+        _dispatch_grading_task(
+            task_id="paper-local-disabled",
+            payload={"mode": "paper_submission"},
+            db_path="test.db",
+            trace_id="trace-local",
+            background_tasks=BackgroundTasks(),
+        )
+
+    assert getattr(exc_info.value, "status_code", None) == 503
 
 
 def test_submit_grade_paper_endpoint_enqueues_presegmented_question_ids(tmp_path):
@@ -422,6 +465,7 @@ def test_paper_reports_endpoint_lists_all_students_for_bundle(tmp_path):
                 overall_feedback="deduct",
                 system_confidence=0.8,
                 requires_human_review=True,
+                review_reasons=["MODEL_REQUESTED_HUMAN_REVIEW"],
             )
         },
         student_answer_bundle=StudentAnswerBundle(
@@ -436,6 +480,7 @@ def test_paper_reports_endpoint_lists_all_students_for_bundle(tmp_path):
                             source_question_no="1",
                             text="student answer with printed context",
                             answer_text="student answer",
+                            crop_path=storage.store_file("paper-task-b", _make_test_image_bytes(), "q1-crop.png"),
                             elements=[
                                 PerceptionNode(
                                     element_id="raw-step",
@@ -481,14 +526,39 @@ def test_paper_reports_endpoint_lists_all_students_for_bundle(tmp_path):
         assert payload["completed_count"] == 2
         assert payload["review_count"] == 1
         assert payload["question_ids"] == ["1"]
+        assert payload["question_stats"] == [
+            {
+                "question_id": "1",
+                "student_count": 2,
+                "answered_count": 1,
+                "review_count": 1,
+                "fully_correct_count": 1,
+                "average_deduction": 0.5,
+            }
+        ]
+        assert payload["review_reason_counts"] == {"MODEL_REQUESTED_HUMAN_REVIEW": 1}
         assert [item["student_id"] for item in payload["students"]] == ["student-a", "student-b"]
         assert len(payload["students"][0]["question_results"]) == 1
         step = payload["students"][1]["paper_report"]["per_question"]["1"]["step_evaluations"][0]
         assert step["evidence_snippet"] == "10 / 2 = 4"
+        assert payload["students"][1]["paper_report"]["per_question"]["1"]["review_reasons"] == [
+            "MODEL_REQUESTED_HUMAN_REVIEW"
+        ]
         image_item = payload["students"][1]["paper_report"]["input_images_by_question"]["1"][0]
-        assert image_item["name"] == "q1.png"
+        assert image_item["name"].startswith("作答切图")
+        assert "asset_kind=crop" in image_item["url"]
         image_response = client.get(image_item["url"])
         assert image_response.status_code == 200
         assert image_response.headers["content-type"] == "image/png"
+        csv_response = client.get("/api/v1/grade/paper/reports?bundle_id=bundle-class&format=csv")
+        assert csv_response.status_code == 200
+        assert csv_response.headers["content-type"].startswith("text/csv")
+        assert "student_id,task_id,task_status,total_score_deduction" in csv_response.text
+        assert "student-b,paper-task-b,COMPLETED,1.0,Y,MODEL_REQUESTED_HUMAN_REVIEW" in csv_response.text
+        md_response = client.get("/api/v1/grade/paper/reports?bundle_id=bundle-class&format=md")
+        assert md_response.status_code == 200
+        assert md_response.headers["content-type"].startswith("text/markdown")
+        assert "# 整卷汇总：bundle-class" in md_response.text
+        assert "| 1 | 1 | 1 | 1 | 0.50 |" in md_response.text
     finally:
         app.dependency_overrides.clear()

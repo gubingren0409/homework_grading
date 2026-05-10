@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from src.core.storage_adapter import storage
-from src.db.client import create_task, get_paper_task, init_db, list_paper_question_results, save_rubric_bundle
+from src.db.client import create_task, get_paper_task, get_task, init_db, list_paper_question_results, save_rubric_bundle, update_task_status
 from src.schemas.cognitive_ir import EvaluationReport, PaperEvaluationReport
 from src.schemas.rubric_ir import RubricBundle, TeacherRubric
 from src.worker.main import grade_homework_task
@@ -151,3 +151,73 @@ def test_worker_paper_submission_presegmented_mode_uses_question_order(tmp_path)
     process_mock.assert_not_awaited()
     question_rows = asyncio.run(list_paper_question_results(db_path, "paper-task-presegmented"))
     assert len(question_rows) == 2
+
+
+def test_worker_persists_local_fallback_reason(tmp_path):
+    db_path = str(tmp_path / "paper_worker_fallback.db")
+    asyncio.run(init_db(db_path))
+    asyncio.run(create_task(db_path, "paper-task-fallback"))
+    bundle = RubricBundle(
+        paper_id="paper-1",
+        rubrics=[TeacherRubric(question_id="1", correct_answer="A")],
+        question_tree=[],
+    )
+    asyncio.run(
+        save_rubric_bundle(
+            db_path,
+            bundle_id="bundle-1",
+            paper_id=bundle.paper_id,
+            bundle_json=bundle.model_dump(),
+        )
+    )
+
+    file_ref = storage.store_file("paper-task-fallback", b"fake-paper-bytes", "paper.png")
+    payload = storage.prepare_payload([file_ref])
+    payload["mode"] = "paper_submission"
+    payload["bundle_id"] = "bundle-1"
+    payload["student_id"] = "student-1"
+    payload["fallback_reason"] = "LOCAL_FALLBACK_SINGLE_NODE_ONLY"
+
+    with (
+        patch("src.worker.main._build_workflow", side_effect=AssertionError("paper mode should not build generic workflow")),
+        patch("src.worker.main._build_paper_workflow", return_value=_FakePaperWorkflow()),
+        patch("src.worker.main._publish_status", _noop_publish),
+    ):
+        result = grade_homework_task("paper-task-fallback", payload, db_path)
+
+    assert result["status"] == "success"
+    task_row = asyncio.run(get_task(db_path, "paper-task-fallback"))
+    assert task_row is not None
+    assert task_row["fallback_reason"] == "LOCAL_FALLBACK_SINGLE_NODE_ONLY"
+
+
+def test_worker_skips_already_completed_task(tmp_path):
+    db_path = str(tmp_path / "paper_worker_completed.db")
+    asyncio.run(init_db(db_path))
+    asyncio.run(create_task(db_path, "paper-task-completed"))
+    asyncio.run(update_task_status(db_path, "paper-task-completed", "COMPLETED", grading_status="SCORED"))
+
+    with (
+        patch("src.worker.main._build_workflow", side_effect=AssertionError("completed task should not rebuild workflow")),
+        patch("src.worker.main._build_paper_workflow", side_effect=AssertionError("completed task should not rebuild paper workflow")),
+    ):
+        result = grade_homework_task("paper-task-completed", {}, db_path)
+
+    assert result["status"] == "success"
+    assert result["reason"] == "already_completed"
+
+
+def test_worker_skips_duplicate_fresh_processing_task(tmp_path):
+    db_path = str(tmp_path / "paper_worker_processing.db")
+    asyncio.run(init_db(db_path))
+    asyncio.run(create_task(db_path, "paper-task-processing"))
+    asyncio.run(update_task_status(db_path, "paper-task-processing", "PROCESSING"))
+
+    with (
+        patch("src.worker.main._build_workflow", side_effect=AssertionError("processing task should not rebuild workflow")),
+        patch("src.worker.main._build_paper_workflow", side_effect=AssertionError("processing task should not rebuild paper workflow")),
+    ):
+        result = grade_homework_task("paper-task-processing", {}, db_path)
+
+    assert result["status"] == "skipped"
+    assert result["reason"] == "already_processing"

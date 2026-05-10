@@ -3,6 +3,8 @@ import json
 import logging
 import hashlib
 import math
+import csv
+import io
 import asyncio
 import tempfile
 import mimetypes
@@ -86,6 +88,7 @@ from src.utils.file_parsers import UnsupportedFormatError, process_multiple_file
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+_LOCAL_FALLBACK_REASON = "LOCAL_FALLBACK_SINGLE_NODE_ONLY"
 
 
 def _derive_paper_student_id(files: List[UploadFile], explicit_student_id: Optional[str]) -> str:
@@ -107,6 +110,207 @@ def _json_response_safe(value: Any) -> Any:
             for key, item in value.items()
         }
     return value
+
+
+def _task_not_found() -> HTTPException:
+    return HTTPException(
+        status_code=404,
+        detail=_error_detail(
+            error_code="TASK_NOT_FOUND",
+            message="Task not found",
+            retryable=False,
+            next_action="submit_new_task",
+        ),
+    )
+
+
+def _teacher_can_access_task(task: Dict[str, Any], teacher: TeacherIdentity) -> bool:
+    if not settings.auth_enabled:
+        return True
+    return str(task.get("teacher_id") or "").strip() == teacher.teacher_id
+
+
+async def _require_task_for_teacher(
+    db_path: str,
+    task_id: str,
+    teacher: TeacherIdentity,
+) -> Dict[str, Any]:
+    task = await get_task(db_path, task_id)
+    if not task or not _teacher_can_access_task(task, teacher):
+        raise _task_not_found()
+    return task
+
+
+def _paper_report_answered_question_ids(paper_report: dict[str, Any]) -> set[str]:
+    bundle = paper_report.get("student_answer_bundle")
+    if not isinstance(bundle, dict):
+        return set()
+    answers = bundle.get("answers")
+    if not isinstance(answers, list):
+        return set()
+    return {
+        str(answer.get("question_id"))
+        for answer in answers
+        if isinstance(answer, dict) and str(answer.get("question_id") or "").strip()
+    }
+
+
+def _paper_report_question_stats(
+    students: list[dict[str, Any]],
+    question_ids: list[str],
+) -> list[dict[str, Any]]:
+    stats: list[dict[str, Any]] = []
+    for question_id in question_ids:
+        student_count = 0
+        answered_count = 0
+        review_count = 0
+        fully_correct_count = 0
+        total_deduction = 0.0
+        for student in students:
+            paper_report = student.get("paper_report")
+            if not isinstance(paper_report, dict):
+                continue
+            per_question = paper_report.get("per_question")
+            if not isinstance(per_question, dict):
+                continue
+            item = per_question.get(str(question_id))
+            if not isinstance(item, dict):
+                continue
+            student_count += 1
+            if str(question_id) in _paper_report_answered_question_ids(paper_report):
+                answered_count += 1
+            if bool(item.get("requires_human_review")):
+                review_count += 1
+            if item.get("is_fully_correct") is True:
+                fully_correct_count += 1
+            total_deduction += float(item.get("total_score_deduction") or 0.0)
+        stats.append(
+            {
+                "question_id": str(question_id),
+                "student_count": student_count,
+                "answered_count": answered_count,
+                "review_count": review_count,
+                "fully_correct_count": fully_correct_count,
+                "average_deduction": (total_deduction / student_count) if student_count else 0.0,
+            }
+        )
+    return stats
+
+
+def _paper_report_review_reason_counts(students: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for student in students:
+        paper_report = student.get("paper_report")
+        if not isinstance(paper_report, dict):
+            continue
+        per_question = paper_report.get("per_question")
+        if not isinstance(per_question, dict):
+            continue
+        for item in per_question.values():
+            if not isinstance(item, dict):
+                continue
+            review_reasons = item.get("review_reasons")
+            if not isinstance(review_reasons, list):
+                continue
+            for reason in review_reasons:
+                key = str(reason or "").strip()
+                if not key:
+                    continue
+                counts[key] = counts.get(key, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def _paper_reports_csv(payload: dict[str, Any]) -> str:
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    question_ids = [str(question_id) for question_id in payload.get("question_ids", [])]
+    header = [
+        "student_id",
+        "task_id",
+        "task_status",
+        "total_score_deduction",
+        "requires_human_review",
+        "review_reasons",
+    ]
+    for question_id in question_ids:
+        header.extend(
+            [
+                f"{question_id}_status",
+                f"{question_id}_deduction",
+                f"{question_id}_review",
+                f"{question_id}_review_reasons",
+            ]
+        )
+    writer.writerow(header)
+
+    for student in payload.get("students", []):
+        paper_report = student.get("paper_report")
+        per_question = paper_report.get("per_question") if isinstance(paper_report, dict) else {}
+        summary_review_reasons: list[str] = []
+        if isinstance(paper_report, dict):
+            for reason in paper_report.get("review_reasons", []):
+                reason_text = str(reason or "").strip()
+                if reason_text and reason_text not in summary_review_reasons:
+                    summary_review_reasons.append(reason_text)
+        if isinstance(per_question, dict):
+            for item in per_question.values():
+                if not isinstance(item, dict):
+                    continue
+                for reason in item.get("review_reasons", []):
+                    reason_text = str(reason or "").strip()
+                    if reason_text and reason_text not in summary_review_reasons:
+                        summary_review_reasons.append(reason_text)
+        row = [
+            student.get("student_id"),
+            student.get("task_id"),
+            student.get("task_status"),
+            student.get("total_score_deduction"),
+            "Y" if student.get("requires_human_review") else "N",
+            "；".join(summary_review_reasons),
+        ]
+        for question_id in question_ids:
+            item = per_question.get(question_id) if isinstance(per_question, dict) else {}
+            review_reasons = item.get("review_reasons") if isinstance(item, dict) else []
+            row.extend(
+                [
+                    item.get("status") if isinstance(item, dict) else "",
+                    item.get("total_score_deduction") if isinstance(item, dict) else "",
+                    "Y" if isinstance(item, dict) and item.get("requires_human_review") else "N",
+                    "；".join(str(reason) for reason in review_reasons) if isinstance(review_reasons, list) else "",
+                ]
+            )
+        writer.writerow(row)
+    return buffer.getvalue()
+
+
+def _paper_reports_markdown(payload: dict[str, Any]) -> str:
+    lines = [
+        f"# 整卷汇总：{payload.get('bundle_id') or '-'}",
+        "",
+        f"- 学生数：{payload.get('student_count', 0)}",
+        f"- 已完成：{payload.get('completed_count', 0)}",
+        f"- 需复核：{payload.get('review_count', 0)}",
+        f"- 平均扣分：{float(payload.get('average_deduction') or 0.0):.2f}",
+        "",
+        "## 题目汇总",
+        "",
+        "| 题号 | 已作答 | 需复核 | 全对数 | 平均扣分 |",
+        "| --- | ---: | ---: | ---: | ---: |",
+    ]
+    for item in payload.get("question_stats", []):
+        lines.append(
+            f"| {item.get('question_id')} | {item.get('answered_count', 0)} | "
+            f"{item.get('review_count', 0)} | {item.get('fully_correct_count', 0)} | "
+            f"{float(item.get('average_deduction') or 0.0):.2f} |"
+        )
+    lines.extend(["", "## 学生明细", "", "| 学生 | 状态 | 总扣分 | 需复核 |", "| --- | --- | ---: | --- |"])
+    for student in payload.get("students", []):
+        lines.append(
+            f"| {student.get('student_id') or '-'} | {student.get('task_status') or '-'} | "
+            f"{float(student.get('total_score_deduction') or 0.0):.2f} | "
+            f"{'是' if student.get('requires_human_review') else '否'} |"
+        )
+    return "\n".join(lines) + "\n"
 
 
 def _paper_question_row_to_report_card(row: Dict[str, Any]) -> ReportCardItem:
@@ -226,6 +430,25 @@ def _enrich_paper_report_evidence(paper_report: Any) -> Any:
 
 
 def _paper_report_input_images(task_id: str, paper_report: Dict[str, Any]) -> Dict[str, List[Dict[str, str]]]:
+    crop_files_by_question = _paper_report_crop_files(paper_report)
+    if crop_files_by_question:
+        images: Dict[str, List[Dict[str, str]]] = {}
+        for question_id, crop_files in crop_files_by_question.items():
+            image_items = [
+                {
+                    "name": name,
+                    "url": (
+                        f"/api/v1/grade/paper/inputs?task_id={quote(task_id)}"
+                        f"&question_id={quote(question_id, safe='')}&index={idx}&asset_kind=crop"
+                    ),
+                }
+                for idx, (name, _) in enumerate(crop_files)
+            ]
+            if image_items:
+                images[question_id] = image_items
+        if images:
+            return images
+
     refs_by_question = paper_report.get("input_file_refs_by_question")
     names_by_question = paper_report.get("input_filenames_by_question")
     if not isinstance(refs_by_question, dict):
@@ -262,6 +485,43 @@ def _paper_report_input_images(task_id: str, paper_report: Dict[str, Any]) -> Di
     return images
 
 
+def _paper_report_crop_files(paper_report: Dict[str, Any]) -> Dict[str, List[tuple[str, str]]]:
+    bundle = paper_report.get("student_answer_bundle")
+    if not isinstance(bundle, dict):
+        return {}
+    answers = bundle.get("answers")
+    if not isinstance(answers, list):
+        return {}
+
+    crops: Dict[str, List[tuple[str, str]]] = {}
+    for answer in answers:
+        if not isinstance(answer, dict):
+            continue
+        question_id = str(answer.get("question_id") or "").strip()
+        parts = answer.get("parts")
+        if not question_id or not isinstance(parts, list):
+            continue
+
+        crop_items: List[tuple[str, str]] = []
+        for index, part in enumerate(parts, start=1):
+            if not isinstance(part, dict):
+                continue
+            crop_path = str(part.get("crop_path") or "").strip()
+            if not crop_path:
+                continue
+            crop_index = part.get("crop_index")
+            if not isinstance(crop_index, int) or crop_index <= 0:
+                crop_index = index
+            page_index = part.get("page_index")
+            label = f"作答切图 {crop_index}"
+            if isinstance(page_index, int) and page_index >= 0:
+                label = f"{label}（第{page_index + 1}页）"
+            crop_items.append((label, crop_path))
+        if crop_items:
+            crops[question_id] = crop_items
+    return crops
+
+
 def _local_file_response_from_ref(file_ref: str) -> FileResponse:
     parsed = urlparse(file_ref)
     if parsed.scheme != "file":
@@ -292,6 +552,13 @@ def _run_task_locally(task_id: str, payload: Dict[str, Any], db_path: str, trace
     )
 
 
+def _mark_local_fallback_payload(payload: Dict[str, Any], reason_detail: str | None) -> None:
+    payload["dispatch_mode"] = "local_fallback"
+    payload["fallback_reason"] = _LOCAL_FALLBACK_REASON
+    if reason_detail:
+        payload["fallback_detail"] = str(reason_detail)
+
+
 def _dispatch_grading_task(
     *,
     task_id: str,
@@ -304,6 +571,20 @@ def _dispatch_grading_task(
     # Without this, a down Redis may cause silent message loss.
     redis_ok, redis_err = _check_redis_health()
     if not redis_ok:
+        if not settings.allow_local_task_fallback:
+            raise HTTPException(
+                status_code=503,
+                detail=_error_detail(
+                    error_code="QUEUE_UNAVAILABLE",
+                    message=(
+                        "Redis unavailable and local fallback disabled. "
+                        "Single-node local fallback is only safe on one API instance."
+                    ),
+                    retryable=True,
+                    retry_hint="retry_submit",
+                    next_action="restore_queue_or_enable_local_fallback",
+                ),
+            )
         logger.warning(
             "queue_dispatch_redis_unreachable",
             extra={
@@ -315,10 +596,12 @@ def _dispatch_grading_task(
             },
         )
         # Fall back to local execution rather than dropping the task
+        _mark_local_fallback_payload(payload, redis_err)
         background_tasks.add_task(_run_task_locally, task_id, payload, db_path, trace_id)
         return f"local:{task_id}", "local_fallback"
 
     try:
+        payload["dispatch_mode"] = "celery"
         celery_result = grade_homework_task.apply_async(
             args=[task_id, payload, db_path],
             task_id=task_id,
@@ -338,6 +621,21 @@ def _dispatch_grading_task(
                 }
             },
         )
+        if not settings.allow_local_task_fallback:
+            raise HTTPException(
+                status_code=503,
+                detail=_error_detail(
+                    error_code="QUEUE_UNAVAILABLE",
+                    message=(
+                        "Queue dispatch failed and local fallback is disabled. "
+                        "Single-node local fallback is only safe on one API instance."
+                    ),
+                    retryable=True,
+                    retry_hint="retry_submit",
+                    next_action="restore_queue_or_enable_local_fallback",
+                ),
+            )
+        _mark_local_fallback_payload(payload, str(exc))
         background_tasks.add_task(_run_task_locally, task_id, payload, db_path, trace_id)
         return f"local:{task_id}", "local_fallback"
 
@@ -945,7 +1243,8 @@ async def get_job_status_and_results(
     request: Request,
     response: Response,
     task_id: str,
-    db_path: str = Depends(get_db_path)
+    db_path: str = Depends(get_db_path),
+    teacher: TeacherIdentity = Depends(get_current_teacher),
 ):
     """
     Phase 32: HTTP cache negotiation with ETag/Last-Modified headers.
@@ -965,17 +1264,7 @@ async def get_job_status_and_results(
     
     Rate limited to 30/min to prevent polling storms (prefer SSE for real-time).
     """
-    task = await get_task(db_path, task_id)
-    if not task:
-        raise HTTPException(
-            status_code=404,
-            detail=_error_detail(
-                error_code="TASK_NOT_FOUND",
-                message="Task not found",
-                retryable=False,
-                next_action="submit_new_task",
-            ),
-        )
+    task = await _require_task_for_teacher(db_path, task_id, teacher)
     
     # Base response structure
     response_data = {
@@ -1168,12 +1457,14 @@ async def get_batch_job_status_and_results(
     response: Response,
     task_id: str,
     db_path: str = Depends(get_db_path),
+    teacher: TeacherIdentity = Depends(get_current_teacher),
 ):
     return await get_job_status_and_results(
         request=request,
         response=response,
         task_id=task_id,
         db_path=db_path,
+        teacher=teacher,
     )
 
 
@@ -1182,6 +1473,7 @@ async def list_paper_reports(
     bundle_id: Optional[str] = Query(default=None),
     task_id: Optional[str] = Query(default=None),
     limit: int = Query(100, ge=1, le=200),
+    format: str = Query(default="json", pattern="^(json|csv|md)$"),
     db_path: str = Depends(get_db_path),
     teacher: TeacherIdentity = Depends(get_current_teacher),
 ):
@@ -1340,7 +1632,7 @@ async def list_paper_reports(
     completed_count = sum(1 for item in students if item.get("task_status") == "COMPLETED")
     review_count = sum(1 for item in students if item.get("requires_human_review"))
     total_deduction = sum(float(item.get("total_score_deduction") or 0.0) for item in students)
-    return {
+    payload = {
         "bundle_id": selected_bundle_id,
         "paper_id": students[0]["paper_id"] if students else None,
         "task_count": len(students),
@@ -1350,8 +1642,27 @@ async def list_paper_reports(
         "review_count": review_count,
         "average_deduction": (total_deduction / len(students)) if students else 0.0,
         "question_ids": question_ids,
+        "question_stats": _paper_report_question_stats(students, question_ids),
+        "review_reason_counts": _paper_report_review_reason_counts(students),
         "students": students,
     }
+    if format == "csv":
+        return Response(
+            content=_paper_reports_csv(payload),
+            media_type="text/csv",
+            headers={
+                "Content-Disposition": f'attachment; filename="paper_reports_{selected_bundle_id}.csv"'
+            },
+        )
+    if format == "md":
+        return Response(
+            content=_paper_reports_markdown(payload),
+            media_type="text/markdown",
+            headers={
+                "Content-Disposition": f'attachment; filename="paper_reports_{selected_bundle_id}.md"'
+            },
+        )
+    return payload
 
 
 @router.get("/grade/paper/inputs")
@@ -1359,6 +1670,7 @@ async def get_paper_input_asset(
     task_id: str = Query(...),
     question_id: str = Query(...),
     index: int = Query(0, ge=0),
+    asset_kind: str = Query(default="input", pattern="^(input|crop)$"),
     db_path: str = Depends(get_db_path),
     teacher: TeacherIdentity = Depends(get_current_teacher),
 ):
@@ -1389,8 +1701,13 @@ async def get_paper_input_asset(
         paper_report = json.loads(row["report_json"] or "{}")
     except Exception:
         paper_report = {}
-    refs_by_question = paper_report.get("input_file_refs_by_question")
-    refs = refs_by_question.get(question_id) if isinstance(refs_by_question, dict) else None
+    refs: list[str] | None = None
+    if asset_kind == "crop":
+        crop_files = _paper_report_crop_files(paper_report).get(question_id, [])
+        refs = [file_ref for _, file_ref in crop_files]
+    else:
+        refs_by_question = paper_report.get("input_file_refs_by_question")
+        refs = refs_by_question.get(question_id) if isinstance(refs_by_question, dict) else None
     if not isinstance(refs, list) or index >= len(refs):
         raise HTTPException(status_code=404, detail="input asset not found")
 
@@ -1403,7 +1720,8 @@ async def get_paper_input_asset(
 @router.get("/tasks/{task_id}/stream")
 async def stream_task_status(
     task_id: str,
-    db_path: str = Depends(get_db_path)
+    db_path: str = Depends(get_db_path),
+    teacher: TeacherIdentity = Depends(get_current_teacher),
 ):
     """
     Phase 32: Server-Sent Events (SSE) - Real-time task status push.
@@ -1433,17 +1751,7 @@ async def stream_task_status(
         EventSourceResponse with text/event-stream content-type
     """
     # Verify task exists before opening SSE stream
-    task = await get_task(db_path, task_id)
-    if not task:
-        raise HTTPException(
-            status_code=404,
-            detail=_error_detail(
-                error_code="TASK_NOT_FOUND",
-                message="Task not found",
-                retryable=False,
-                next_action="submit_new_task",
-            ),
-        )
+    task = await _require_task_for_teacher(db_path, task_id, teacher)
     
     return create_sse_response(db_path, task_id)
 
@@ -1453,21 +1761,12 @@ async def get_all_results(
     task_id: Optional[str] = Query(default=None),
     page: int = Query(1, ge=1),
     limit: int = Query(10, ge=1, le=100),
-    db_path: str = Depends(get_db_path)
+    db_path: str = Depends(get_db_path),
+    teacher: TeacherIdentity = Depends(get_current_teacher),
 ):
     """Paginated result retrieval."""
     if task_id:
-        task = await get_task(db_path, task_id)
-        if not task:
-            raise HTTPException(
-                status_code=404,
-                detail=_error_detail(
-                    error_code="TASK_NOT_FOUND",
-                    message="Task not found",
-                    retryable=False,
-                    next_action="submit_new_task",
-                ),
-            )
+        task = await _require_task_for_teacher(db_path, task_id, teacher)
         if task.get("status") != "COMPLETED":
             raise HTTPException(
                 status_code=409,
@@ -1497,6 +1796,24 @@ async def get_all_results(
             ) as cursor:
                 rows = await cursor.fetchall()
                 results = [dict(r) for r in rows]
+    elif settings.auth_enabled:
+        from src.db.client import _open_connection, aiosqlite
+
+        async with _open_connection(db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                """
+                SELECT gr.*
+                FROM grading_results gr
+                JOIN tasks t ON t.task_id = gr.task_id
+                WHERE t.teacher_id = ?
+                ORDER BY gr.created_at DESC
+                LIMIT ? OFFSET ?
+                """,
+                (teacher.teacher_id, limit, offset),
+            ) as cursor:
+                rows = await cursor.fetchall()
+                results = [dict(r) for r in rows]
     else:
         results = await fetch_results(db_path, limit, offset)
     return [GradingResultItem(**r) for r in results]
@@ -1507,14 +1824,25 @@ async def get_result_input_asset(
     result_id: int,
     index: int,
     db_path: str = Depends(get_db_path),
+    teacher: TeacherIdentity = Depends(get_current_teacher),
 ):
     from src.db.client import _open_connection, aiosqlite
 
     async with _open_connection(db_path) as db:
         db.row_factory = aiosqlite.Row
+        where = ["gr.id = ?"]
+        params: List[Any] = [result_id]
+        if settings.auth_enabled:
+            where.append("t.teacher_id = ?")
+            params.append(teacher.teacher_id)
         async with db.execute(
-            "SELECT report_json FROM grading_results WHERE id = ?",
-            (result_id,),
+            f"""
+            SELECT gr.report_json
+            FROM grading_results gr
+            JOIN tasks t ON t.task_id = gr.task_id
+            WHERE {' AND '.join(where)}
+            """,
+            tuple(params),
         ) as cursor:
             row = await cursor.fetchone()
 
@@ -1591,18 +1919,9 @@ async def get_task_history(
 async def get_task_report(
     task_id: str,
     db_path: str = Depends(get_db_path),
+    teacher: TeacherIdentity = Depends(get_current_teacher),
 ):
-    task = await get_task(db_path, task_id)
-    if not task:
-        raise HTTPException(
-            status_code=404,
-            detail=_error_detail(
-                error_code="TASK_NOT_FOUND",
-                message="Task not found",
-                retryable=False,
-                next_action="submit_new_task",
-            ),
-        )
+    task = await _require_task_for_teacher(db_path, task_id, teacher)
     if task.get("status") != "COMPLETED":
         raise HTTPException(
             status_code=409,
@@ -1645,18 +1964,9 @@ async def get_task_report(
 async def get_task_insights(
     task_id: str,
     db_path: str = Depends(get_db_path),
+    teacher: TeacherIdentity = Depends(get_current_teacher),
 ):
-    task = await get_task(db_path, task_id)
-    if not task:
-        raise HTTPException(
-            status_code=404,
-            detail=_error_detail(
-                error_code="TASK_NOT_FOUND",
-                message="Task not found",
-                retryable=False,
-                next_action="submit_new_task",
-            ),
-        )
+    task = await _require_task_for_teacher(db_path, task_id, teacher)
 
     rows = await fetch_results_by_task(db_path, task_id)
     cards = [_to_report_card(record) for record in rows]
@@ -1688,17 +1998,7 @@ async def cancel_task(
     3. Mark the task CANCELLED in DB.
     4. Publish CANCELLED event via Redis PubSub for SSE listeners.
     """
-    task = await get_task(db_path, task_id)
-    if not task:
-        raise HTTPException(
-            status_code=404,
-            detail=_error_detail(
-                error_code="TASK_NOT_FOUND",
-                message="任务不存在",
-                retryable=False,
-                next_action="submit_new_task",
-            ),
-        )
+    task = await _require_task_for_teacher(db_path, task_id, teacher)
 
     current_status = str(task.get("status") or "")
     if current_status not in {"PENDING", "PROCESSING"}:

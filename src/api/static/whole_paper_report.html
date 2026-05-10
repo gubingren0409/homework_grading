@@ -237,6 +237,8 @@
         const steps = Array.isArray(item.step_evaluations) ? item.step_evaluations : [];
         const wrongSteps = steps.filter((step) => step && step.is_correct === false);
         const extractionWarnings = Array.isArray(answer.extraction_warnings) ? answer.extraction_warnings : [];
+        const imageWarnings = Array.isArray(answer.image_warnings) ? answer.image_warnings : [];
+        const reviewReasons = Array.isArray(item.review_reasons) ? item.review_reasons : [];
         const inputImages = Array.isArray(inputImagesByQuestion[String(questionId)]) ? inputImagesByQuestion[String(questionId)] : [];
         const imageHtml = inputImages.length ? `
           <div class="image-grid">
@@ -280,7 +282,9 @@ ${wrongSteps.map((step, idx) => {
             ${wrongStepHtml}
             ${renderedBlock("学生作答文本", answer.answer_text)}
             ${renderedBlock("原始 OCR 文本", answer.ocr_text)}
+            ${reviewReasons.length ? `<div class="notice">复核原因：${reviewReasons.map(esc).join("；")}</div>` : ""}
             ${extractionWarnings.length ? `<div class="notice">作答抽取警告：${extractionWarnings.map(esc).join("；")}</div>` : ""}
+            ${imageWarnings.length ? `<div class="notice">图像质量警告：${imageWarnings.map(esc).join("；")}</div>` : ""}
           </div>
         `;
       }).join("");

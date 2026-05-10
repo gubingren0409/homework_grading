@@ -69,6 +69,7 @@ class ReportCardItem(BaseModel):
     overall_feedback: str = ""
     system_confidence: float = 0.0
     requires_human_review: bool = False
+    review_reasons: List[str] = Field(default_factory=list)
     deductions: List[ReportDeductionItem] = Field(default_factory=list)
     evidence_snippets: List[str] = Field(default_factory=list)
     suggestions: List[str] = Field(default_factory=list)

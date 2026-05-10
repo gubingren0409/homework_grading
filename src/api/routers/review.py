@@ -6,6 +6,7 @@ from typing import List, Optional, Dict, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
+from src.api.auth import TeacherIdentity, get_current_teacher
 from src.api.dependencies import get_db_path, limiter
 from src.core.config import settings
 from src.db.client import (
@@ -65,6 +66,46 @@ from src.api.route_models import (
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+
+def _teacher_can_access_task(task: Dict[str, Any], teacher: TeacherIdentity) -> bool:
+    if not settings.auth_enabled:
+        return True
+    return str(task.get("teacher_id") or "").strip() == teacher.teacher_id
+
+
+async def _require_task_for_teacher(
+    db_path: str,
+    task_id: str,
+    teacher: TeacherIdentity,
+) -> Dict[str, Any]:
+    task = await get_task(db_path, task_id)
+    if not task or not _teacher_can_access_task(task, teacher):
+        raise HTTPException(
+            status_code=404,
+            detail=_error_detail(
+                error_code="TASK_NOT_FOUND",
+                message="Task not found",
+                retryable=False,
+                next_action="refresh_review_queue",
+            ),
+        )
+    return task
+
+
+async def _visible_task_ids(
+    db_path: str,
+    teacher: TeacherIdentity,
+    task_ids: List[str],
+) -> set[str]:
+    if not settings.auth_enabled:
+        return {str(task_id) for task_id in task_ids if str(task_id).strip()}
+    visible: set[str] = set()
+    for task_id in {str(task_id) for task_id in task_ids if str(task_id).strip()}:
+        task = await get_task(db_path, task_id)
+        if task and _teacher_can_access_task(task, teacher):
+            visible.add(task_id)
+    return visible
+
 def _sort_pending_review_items(
     items: List[PendingReviewTaskItem],
     *,
@@ -123,7 +164,10 @@ async def get_pending_review_tasks(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
     db_path: str = Depends(get_db_path),
+    teacher: TeacherIdentity = Depends(get_current_teacher),
 ):
+    if task_id:
+        await _require_task_for_teacher(db_path, task_id, teacher)
     offset = (page - 1) * limit
     # status query maps to grading_status filter to keep pipeline status and business status separated.
     rows = await list_pending_review_tasks(
@@ -136,7 +180,14 @@ async def get_pending_review_tasks(
         offset=offset,
     )
     normalized = []
+    visible_ids = await _visible_task_ids(
+        db_path,
+        teacher,
+        [str(row.get("task_id") or "") for row in rows],
+    )
     for row in rows:
+        if str(row.get("task_id") or "") not in visible_ids:
+            continue
         normalized.append(PendingReviewTaskItem(**row))
     return normalized
 
@@ -151,12 +202,24 @@ async def get_pending_review_workbench(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
     db_path: str = Depends(get_db_path),
+    teacher: TeacherIdentity = Depends(get_current_teacher),
 ):
+    if task_id:
+        await _require_task_for_teacher(db_path, task_id, teacher)
     raw_rows = await list_pending_review_task_rows(
         db_path,
         task_id=task_id,
         grading_status_filter=status,
     )
+    visible_ids = await _visible_task_ids(
+        db_path,
+        teacher,
+        [str(row.get("task_id") or "") for row in raw_rows],
+    )
+    raw_rows = [
+        row for row in raw_rows
+        if str(row.get("task_id") or "") in visible_ids
+    ]
     decision_counts = await get_teacher_review_decision_counts(
         db_path,
         task_ids=[str(row.get("task_id") or "") for row in raw_rows],
@@ -195,18 +258,9 @@ async def get_pending_review_workbench(
 async def get_review_workbench_task(
     task_id: str,
     db_path: str = Depends(get_db_path),
+    teacher: TeacherIdentity = Depends(get_current_teacher),
 ):
-    task = await get_task(db_path, task_id)
-    if not task:
-        raise HTTPException(
-            status_code=404,
-            detail=_error_detail(
-                error_code="TASK_NOT_FOUND",
-                message="Task not found",
-                retryable=False,
-                next_action="refresh_review_queue",
-            ),
-        )
+    task = await _require_task_for_teacher(db_path, task_id, teacher)
 
     rows = await fetch_results_by_task(db_path, task_id)
     decision_rows = await list_teacher_review_decisions(db_path, task_id=task_id, limit=500, offset=0)
@@ -285,7 +339,9 @@ async def get_review_decisions(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
     db_path: str = Depends(get_db_path),
+    teacher: TeacherIdentity = Depends(get_current_teacher),
 ):
+    await _require_task_for_teacher(db_path, task_id, teacher)
     offset = (page - 1) * limit
     rows = await list_teacher_review_decisions(
         db_path,
@@ -305,18 +361,9 @@ async def get_review_decisions(
 async def upsert_review_decision(
     payload: ReviewDecisionUpsertRequest,
     db_path: str = Depends(get_db_path),
+    teacher: TeacherIdentity = Depends(get_current_teacher),
 ):
-    task = await get_task(db_path, payload.task_id)
-    if not task:
-        raise HTTPException(
-            status_code=404,
-            detail=_error_detail(
-                error_code="TASK_NOT_FOUND",
-                message="Task not found",
-                retryable=False,
-                next_action="refresh_review_queue",
-            ),
-        )
+    await _require_task_for_teacher(db_path, payload.task_id, teacher)
 
     await upsert_teacher_review_decision(
         db_path,
@@ -347,18 +394,9 @@ async def update_review_task_status(
     task_id: str,
     payload: ReviewTaskStatusUpdateRequest,
     db_path: str = Depends(get_db_path),
+    teacher: TeacherIdentity = Depends(get_current_teacher),
 ):
-    task = await get_task(db_path, task_id)
-    if not task:
-        raise HTTPException(
-            status_code=404,
-            detail=_error_detail(
-                error_code="TASK_NOT_FOUND",
-                message="Task not found",
-                retryable=False,
-                next_action="refresh_review_queue",
-            ),
-        )
+    task = await _require_task_for_teacher(db_path, task_id, teacher)
     await set_task_review_status(db_path, task_id, payload.review_status)
     latest = await get_task(db_path, task_id)
     return ReviewTaskStatusResponse(
@@ -374,6 +412,7 @@ async def get_hygiene_interceptions(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
     db_path: str = Depends(get_db_path),
+    teacher: TeacherIdentity = Depends(get_current_teacher),
 ):
     offset = (page - 1) * limit
     rows = await list_hygiene_interceptions(
@@ -382,6 +421,12 @@ async def get_hygiene_interceptions(
         limit=limit,
         offset=offset,
     )
+    visible_ids = await _visible_task_ids(
+        db_path,
+        teacher,
+        [str(row.get("task_id") or "") for row in rows],
+    )
+    rows = [row for row in rows if str(row.get("task_id") or "") in visible_ids]
     return [HygieneInterceptionItem(**r) for r in rows]
 
 
@@ -390,9 +435,15 @@ async def update_hygiene_action(
     record_id: int,
     payload: HygieneActionUpdateRequest,
     db_path: str = Depends(get_db_path),
+    teacher: TeacherIdentity = Depends(get_current_teacher),
 ):
     if payload.action not in {"discard", "manual_review"}:
         raise HTTPException(status_code=422, detail="action must be discard or manual_review")
+    row = await get_hygiene_interception_by_id(db_path, record_id=record_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Hygiene interception record not found")
+    if settings.auth_enabled:
+        await _require_task_for_teacher(db_path, str(row.get("task_id") or ""), teacher)
     updated = await update_hygiene_interception_action(
         db_path,
         record_id=record_id,
@@ -410,11 +461,18 @@ async def update_hygiene_action(
 async def bulk_update_hygiene_action(
     payload: HygieneBulkActionUpdateRequest,
     db_path: str = Depends(get_db_path),
+    teacher: TeacherIdentity = Depends(get_current_teacher),
 ):
     if payload.action not in {"discard", "manual_review"}:
         raise HTTPException(status_code=422, detail="action must be discard or manual_review")
     if not payload.record_ids:
         raise HTTPException(status_code=422, detail="record_ids must not be empty")
+    if settings.auth_enabled:
+        for record_id in payload.record_ids:
+            row = await get_hygiene_interception_by_id(db_path, record_id=record_id)
+            if not row:
+                raise HTTPException(status_code=404, detail="Hygiene interception record not found")
+            await _require_task_for_teacher(db_path, str(row.get("task_id") or ""), teacher)
     affected = await bulk_update_hygiene_interception_action(
         db_path,
         record_ids=payload.record_ids,
@@ -427,10 +485,9 @@ async def bulk_update_hygiene_action(
 async def submit_annotation_feedback(
     payload: AnnotationFeedbackRequest,
     db_path: str = Depends(get_db_path),
+    teacher: TeacherIdentity = Depends(get_current_teacher),
 ):
-    task = await get_task(db_path, payload.task_id)
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
+    task = await _require_task_for_teacher(db_path, payload.task_id, teacher)
     if task.get("grading_status") != "SCORED":
         raise HTTPException(status_code=422, detail="Only SCORED tasks can produce golden annotation assets")
 
@@ -470,7 +527,10 @@ async def get_annotation_assets(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
     db_path: str = Depends(get_db_path),
+    teacher: TeacherIdentity = Depends(get_current_teacher),
 ):
+    if task_id:
+        await _require_task_for_teacher(db_path, task_id, teacher)
     offset = (page - 1) * limit
     rows = await list_golden_annotation_assets(
         db_path,
@@ -484,7 +544,14 @@ async def get_annotation_assets(
         offset=offset,
     )
     result: List[GoldenAnnotationAssetItem] = []
+    visible_ids = await _visible_task_ids(
+        db_path,
+        teacher,
+        [str(row.get("task_id") or "") for row in rows],
+    )
     for row in rows:
+        if str(row.get("task_id") or "") not in visible_ids:
+            continue
         raw_bbox = row.get("bbox_coordinates")
         bbox_coordinates: List[float] = []
         if isinstance(raw_bbox, str):
@@ -511,7 +578,10 @@ async def get_review_annotation_assets(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
     db_path: str = Depends(get_db_path),
+    teacher: TeacherIdentity = Depends(get_current_teacher),
 ):
+    if task_id:
+        await _require_task_for_teacher(db_path, task_id, teacher)
     offset = (page - 1) * limit
     rows = await list_golden_annotation_assets(
         db_path,
@@ -525,7 +595,14 @@ async def get_review_annotation_assets(
         offset=offset,
     )
     items: List[GoldenAnnotationAssetItem] = []
+    visible_ids = await _visible_task_ids(
+        db_path,
+        teacher,
+        [str(row.get("task_id") or "") for row in rows],
+    )
     for row in rows:
+        if str(row.get("task_id") or "") not in visible_ids:
+            continue
         raw_bbox = row.get("bbox_coordinates")
         bbox_coordinates: List[float] = []
         if isinstance(raw_bbox, str):
@@ -545,6 +622,7 @@ async def get_review_annotation_assets(
 async def get_review_annotation_asset_detail(
     asset_id: int,
     db_path: str = Depends(get_db_path),
+    teacher: TeacherIdentity = Depends(get_current_teacher),
 ):
     row = await get_annotation_asset_by_id(db_path, asset_id=asset_id)
     if not row:
@@ -557,6 +635,7 @@ async def get_review_annotation_asset_detail(
                 next_action="refresh_asset_list",
             ),
         )
+    await _require_task_for_teacher(db_path, str(row.get("task_id") or ""), teacher)
 
     raw_bbox = row.get("bbox_coordinates")
     bbox_coordinates: List[float] = []

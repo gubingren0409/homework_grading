@@ -18,6 +18,7 @@ Usage:
 """
 import asyncio
 import concurrent.futures
+from datetime import datetime, timezone
 import json
 import logging
 import math
@@ -78,6 +79,29 @@ def _get_worker_task_loop() -> asyncio.AbstractEventLoop:
     if _WORKER_TASK_LOOP is None or _WORKER_TASK_LOOP.is_closed():
         _WORKER_TASK_LOOP = asyncio.new_event_loop()
     return _WORKER_TASK_LOOP
+
+
+def _parse_db_timestamp(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    normalized = text.replace("Z", "+00:00")
+    try:
+        return datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+
+
+def _task_processing_is_fresh(task: Dict[str, Any]) -> bool:
+    last_seen = _parse_db_timestamp(task.get("last_heartbeat_at") or task.get("updated_at"))
+    if last_seen is None:
+        return False
+    if last_seen.tzinfo is None:
+        last_seen = last_seen.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - last_seen).total_seconds() < max(
+        1,
+        int(settings.processing_orphan_timeout_seconds),
+    )
 
 
 def _run_coroutine_in_isolated_thread(coro):
@@ -270,14 +294,23 @@ def grade_homework_task(
         # Pre-check: if task was cancelled before worker picked it up, skip.
         try:
             pre_task = run_async(_get_task_from_db(db_path, task_id))
-            if pre_task and str(pre_task.get("status", "")) == "CANCELLED":
-                logger.info("worker_task_already_cancelled", extra={"extra_fields": {"task_id": task_id}})
-                return {"task_id": task_id, "status": "CANCELLED", "reason": "cancelled_before_start"}
+            if pre_task:
+                pre_status = str(pre_task.get("status", "")).upper()
+                if pre_status == "CANCELLED":
+                    logger.info("worker_task_already_cancelled", extra={"extra_fields": {"task_id": task_id}})
+                    return {"task_id": task_id, "status": "CANCELLED", "reason": "cancelled_before_start"}
+                if pre_status == "COMPLETED":
+                    logger.info("worker_task_already_completed", extra={"extra_fields": {"task_id": task_id}})
+                    return {"task_id": task_id, "status": "success", "reason": "already_completed"}
+                if pre_status == "PROCESSING" and _task_processing_is_fresh(pre_task):
+                    logger.info("worker_task_duplicate_processing_skipped", extra={"extra_fields": {"task_id": task_id}})
+                    return {"task_id": task_id, "status": "skipped", "reason": "already_processing"}
         except RuntimeError:
             pass  # Eager mode / nested event loop — skip pre-check
 
         # Step 1: Mark task as processing
-        run_async(update_task_status(db_path, task_id, "PROCESSING"))
+        fallback_reason = str(payload.get("fallback_reason") or "").strip() or None
+        run_async(update_task_status(db_path, task_id, "PROCESSING", fallback_reason=fallback_reason))
         run_async(touch_task_heartbeat(db_path, task_id))
         run_async(update_task_progress(db_path, task_id, progress=0.02, eta_seconds=estimate_eta_seconds(floor_seconds=30)))
         logger.info("task_status_persisted", extra={"extra_fields": {"status": "PROCESSING"}})

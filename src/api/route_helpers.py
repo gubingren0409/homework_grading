@@ -468,6 +468,11 @@ def to_report_card(row: Dict[str, Any]) -> ReportCardItem:
         overall_feedback=str(evaluation.get("overall_feedback") or ""),
         system_confidence=float(evaluation.get("system_confidence", 0.0) or 0.0),
         requires_human_review=bool(evaluation.get("requires_human_review", False)),
+        review_reasons=[
+            str(reason)
+            for reason in evaluation.get("review_reasons", [])
+            if isinstance(reason, str) and reason.strip()
+        ],
         deductions=deductions,
         evidence_snippets=list(dict.fromkeys(evidence_snippets)),
         suggestions=list(dict.fromkeys(suggestions)),
