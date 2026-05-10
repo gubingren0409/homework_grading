@@ -25,11 +25,22 @@ from src.worker.dlq import (
 )
 from src.core.config import settings
 
+pytestmark = pytest.mark.requires_redis
+
 
 @pytest.fixture
 def redis_client():
     """Redis client for DLQ testing."""
-    client = redis.from_url(settings.redis_url)
+    client = redis.from_url(
+        settings.redis_url,
+        socket_connect_timeout=0.5,
+        socket_timeout=0.5,
+    )
+    try:
+        client.ping()
+    except redis.exceptions.RedisError as exc:
+        client.close()
+        pytest.skip(f"requires Redis at {settings.redis_url}: {exc}")
     # Clear DLQ before each test
     client.delete(DLQ_QUEUE_NAME)
     yield client
