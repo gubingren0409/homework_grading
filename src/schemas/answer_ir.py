@@ -22,6 +22,11 @@ class StudentAnswerPart(BaseModel):
     is_blank: bool = False
     trigger_short_circuit: bool = False
     extraction_warnings: List[str] = Field(default_factory=list)
+    image_warnings: List[str] = Field(default_factory=list, description="Image-quality warnings for this crop.")
+    image_debug: Dict[str, object] = Field(
+        default_factory=dict,
+        description="Lightweight image metrics captured for OCR/review diagnostics.",
+    )
     worked_solution_block_detected: bool = Field(
         default=False,
         description="Whether this part contains a single block-level <student> tag spanning a worked-solution answer block.",
@@ -49,6 +54,7 @@ class StudentAnswer(BaseModel):
     readability_status: Literal["CLEAR", "MINOR_ALTERATION", "HEAVILY_ALTERED", "UNREADABLE"] = "CLEAR"
     trigger_short_circuit: bool = False
     extraction_warnings: List[str] = Field(default_factory=list)
+    image_warnings: List[str] = Field(default_factory=list)
     worked_solution_block_detected: bool = Field(
         default=False,
         description="Whether any contributing answer part used a block-level <student> tag for a worked-solution segment.",

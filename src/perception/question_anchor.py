@@ -66,6 +66,36 @@ class QuestionAnchorDetector:
             anchor_sets.append(anchor_set)
         return anchor_sets
 
+    def detect_document_from_layouts(
+        self,
+        layout_results: list[LayoutParseResult],
+    ) -> list[QuestionAnchorSet]:
+        stack: list[tuple[int, str]] = []
+        seen_paths: set[tuple[str, ...]] = set()
+        numeric_seen_by_parent: set[tuple[str, ...]] = set()
+        last_numeric_question: int | None = None
+        anchor_sets: list[QuestionAnchorSet] = []
+        for layout_data in layout_results:
+            candidates, warnings = self._candidates_from_layout(layout_data)
+            (
+                anchor_set,
+                stack,
+                seen_paths,
+                numeric_seen_by_parent,
+                last_numeric_question,
+            ) = self._build_anchor_set_with_stack(
+                candidates,
+                page_index=layout_data.page_index,
+                source="layout",
+                warnings=warnings,
+                initial_stack=stack,
+                initial_seen_paths=seen_paths,
+                initial_numeric_seen_by_parent=numeric_seen_by_parent,
+                initial_last_numeric_question=last_numeric_question,
+            )
+            anchor_sets.append(anchor_set)
+        return anchor_sets
+
     def _candidates_from_perception(
         self,
         perception_data: PerceptionOutput,
@@ -94,10 +124,10 @@ class QuestionAnchorDetector:
             )
         return candidates, warnings
 
-    def detect_from_layout(
+    def _candidates_from_layout(
         self,
         layout_data: LayoutParseResult,
-    ) -> QuestionAnchorSet:
+    ) -> tuple[list[_AnchorCandidate], list[str]]:
         warnings = list(layout_data.warnings)
         candidates: list[_AnchorCandidate] = []
         for region in self._sort_regions(layout_data.regions):
@@ -112,10 +142,79 @@ class QuestionAnchorDetector:
                     bbox=BoundingBox.model_validate(region.bbox),
                 )
             )
+        return candidates, warnings
+
+    def detect_from_layout(
+        self,
+        layout_data: LayoutParseResult,
+    ) -> QuestionAnchorSet:
+        candidates, warnings = self._candidates_from_layout(layout_data)
         return self._build_anchor_set(
             candidates,
             page_index=layout_data.page_index,
             source="layout",
+            warnings=warnings,
+        )
+
+    def fuse_anchor_sets(
+        self,
+        perception_anchor_set: QuestionAnchorSet,
+        layout_anchor_set: QuestionAnchorSet,
+    ) -> QuestionAnchorSet:
+        if not perception_anchor_set.anchors:
+            return QuestionAnchorSet(
+                page_index=layout_anchor_set.page_index,
+                anchors=layout_anchor_set.anchors,
+                warnings=[*perception_anchor_set.warnings, *layout_anchor_set.warnings],
+            )
+        if not layout_anchor_set.anchors:
+            return QuestionAnchorSet(
+                page_index=perception_anchor_set.page_index,
+                anchors=perception_anchor_set.anchors,
+                warnings=[*perception_anchor_set.warnings, *layout_anchor_set.warnings],
+            )
+
+        fused_anchors = [anchor.model_copy(deep=True) for anchor in perception_anchor_set.anchors]
+        warnings = [*perception_anchor_set.warnings, *layout_anchor_set.warnings]
+        fused_by_question = {anchor.question_no: anchor for anchor in fused_anchors}
+
+        for layout_anchor in layout_anchor_set.anchors:
+            existing = fused_by_question.get(layout_anchor.question_no)
+            if existing is not None:
+                if not self._anchors_are_close(existing, layout_anchor):
+                    warnings.append(
+                        "page "
+                        f"{layout_anchor.page_index}: anchor fusion kept perception {existing.question_no} "
+                        f"over layout due to bbox mismatch"
+                    )
+                continue
+
+            conflict = next(
+                (anchor for anchor in fused_anchors if self._anchors_conflict(anchor, layout_anchor)),
+                None,
+            )
+            if conflict is not None:
+                warnings.append(
+                    "page "
+                    f"{layout_anchor.page_index}: anchor fusion conflict perception {conflict.question_no} "
+                    f"vs layout {layout_anchor.question_no}; keeping perception"
+                )
+                continue
+
+            fused_anchors.append(layout_anchor.model_copy(deep=True))
+            warnings.append(
+                f"page {layout_anchor.page_index}: anchor fusion added layout-only anchor {layout_anchor.question_no}"
+            )
+
+        fused_anchors = sorted(
+            fused_anchors,
+            key=lambda anchor: (anchor.page_index, anchor.bbox.y_min, anchor.bbox.x_min, anchor.order_index),
+        )
+        for order_index, anchor in enumerate(fused_anchors):
+            anchor.order_index = order_index
+        return QuestionAnchorSet(
+            page_index=perception_anchor_set.page_index,
+            anchors=fused_anchors,
             warnings=warnings,
         )
 
@@ -207,6 +306,29 @@ class QuestionAnchorDetector:
             return 1
         level, _ = match
         return level
+
+    def _anchors_are_close(
+        self,
+        left: QuestionAnchor,
+        right: QuestionAnchor,
+    ) -> bool:
+        return (
+            abs(left.bbox.y_min - right.bbox.y_min) <= 0.04
+            and abs(left.bbox.y_max - right.bbox.y_max) <= 0.05
+            and abs(left.bbox.x_min - right.bbox.x_min) <= 0.15
+            and abs(left.bbox.x_max - right.bbox.x_max) <= 0.15
+        )
+
+    def _anchors_conflict(
+        self,
+        left: QuestionAnchor,
+        right: QuestionAnchor,
+    ) -> bool:
+        if left.question_no == right.question_no:
+            return False
+        y_overlap = min(left.bbox.y_max, right.bbox.y_max) - max(left.bbox.y_min, right.bbox.y_min)
+        x_overlap = min(left.bbox.x_max, right.bbox.x_max) - max(left.bbox.x_min, right.bbox.x_min)
+        return y_overlap > 0.0 and x_overlap > 0.0
 
     def _sort_regions(self, regions: list[LayoutRegion]) -> list[LayoutRegion]:
         def _key(region: LayoutRegion) -> tuple[float, float, str]:

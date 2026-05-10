@@ -56,6 +56,10 @@ class EvaluationReport(BaseModel):
     requires_human_review: bool = Field(
         ..., description="遇到异常解法或高熵状态时为True，强制人工介入标记"
     )
+    review_reasons: List[str] = Field(
+        default_factory=list,
+        description="结构化人工复核原因代码列表。",
+    )
 
 
 class PaperEvaluationReport(BaseModel):
@@ -64,6 +68,8 @@ class PaperEvaluationReport(BaseModel):
     answered_questions: int = Field(..., ge=0)
     total_score_deduction: float = Field(..., ge=0.0)
     requires_human_review: bool
+    review_reasons: List[str] = Field(default_factory=list)
     warnings: List[str] = Field(default_factory=list)
     per_question: Dict[str, EvaluationReport] = Field(default_factory=dict)
     student_answer_bundle: Optional[StudentAnswerBundle] = None
+    runtime_profile: Dict[str, object] = Field(default_factory=dict)

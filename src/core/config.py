@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     redis_port: int = 6379
     redis_db: int = 0
     celery_task_always_eager: bool = False
+    allow_local_task_fallback: bool = True
     batch_internal_concurrency: int = 3
     batch_postprocess_concurrency: int = 4
     batch_progress_update_step: int = 2
@@ -128,8 +129,19 @@ class Settings(BaseSettings):
     qwen_answer_region_strategy: str = "auto"  # auto | fixed
     qwen_batch_max_images: int = 2
     qwen_single_image_concurrency: int = 1
-    qwen_answer_region_batch_concurrency: int = 1
+    qwen_answer_region_batch_concurrency: int = 2
     qwen_answer_region_max_side: int = 1100
+    paper_previous_question_bbox_tolerance: float = 0.04
+    paper_next_question_bbox_tolerance: float = 0.005
+    segmentation_current_anchor_overlap_band: float = 0.05
+    segmentation_next_anchor_overlap_band: float = 0.045
+    segmentation_horizontal_safety_margin: float = 0.08
+    segmentation_x_cut_strategy: str = "full_width"  # full_width | legacy_narrow
+    fill_blank_y_overlap_tolerance: float = 0.04
+    fill_blank_x_tolerance: float = 0.03
+    file_preprocess_max_side: int = 2048
+    file_preprocess_jpeg_quality: int = 85
+    pdf_page_render_dpi: int = 150
     deepseek_api_timeout_seconds: float = 180.0
     deepseek_api_max_concurrency: int = 0  # 0 = derive from DeepSeek key count
     deepseek_api_auto_max_concurrency: int = 3
@@ -203,6 +215,16 @@ class Settings(BaseSettings):
         normalized = (value or "").strip().lower()
         if normalized not in {"auto", "fixed"}:
             raise ValueError("qwen_answer_region_strategy must be one of: auto, fixed")
+        return normalized
+
+    @field_validator("segmentation_x_cut_strategy")
+    @classmethod
+    def _normalize_segmentation_x_cut_strategy(cls, value: str) -> str:
+        normalized = (value or "").strip().lower()
+        if normalized not in {"full_width", "legacy_narrow"}:
+            raise ValueError(
+                "segmentation_x_cut_strategy must be one of: full_width, legacy_narrow"
+            )
         return normalized
 
     @field_validator("skill_layout_parser_provider", "skill_validation_provider")

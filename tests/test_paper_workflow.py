@@ -1,5 +1,7 @@
 import asyncio
 import io
+from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 import pytest
 from PIL import Image
@@ -10,7 +12,13 @@ from src.orchestration.paper_workflow import PaperGradingWorkflow
 from src.orchestration.segmentation import AnswerRegionSplitter
 from src.perception.mock_engine import MockPerceptionEngine
 from src.schemas.cognitive_ir import EvaluationReport
-from src.schemas.perception_ir import BoundingBox, PerceptionNode, PerceptionOutput, QuestionAnchorSet
+from src.schemas.perception_ir import (
+    BoundingBox,
+    PerceptionNode,
+    PerceptionOutput,
+    QuestionAnchorSet,
+    StudentAnswerRegion,
+)
 from src.schemas.rubric_ir import RubricBundle, TeacherRubric
 from src.skills.interfaces import LayoutParseResult, LayoutRegion
 
@@ -22,7 +30,15 @@ def _make_test_image_bytes() -> bytes:
     return buffer.getvalue()
 
 
-def test_answer_region_splitter_uses_explicit_layout_question_regions():
+def _make_small_test_image_bytes() -> bytes:
+    img = Image.new("RGB", (24, 24), color=(255, 255, 255))
+    buffer = io.BytesIO()
+    img.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def test_answer_region_splitter_uses_explicit_layout_question_regions(monkeypatch):
+    monkeypatch.setattr(settings, "segmentation_x_cut_strategy", "legacy_narrow")
     result = AnswerRegionSplitter().split_document(
         [_make_test_image_bytes()],
         anchor_sets=[
@@ -56,6 +72,159 @@ def test_answer_region_splitter_uses_explicit_layout_question_regions():
     assert [region.question_no for region in result.regions] == ["1", "2"]
     assert result.regions[0].bbox.x_min == 0.1
     assert result.regions[1].bbox.x_min == 0.5
+
+
+def test_answer_region_splitter_defaults_to_full_width_bands(monkeypatch):
+    monkeypatch.setattr(settings, "segmentation_x_cut_strategy", "full_width")
+
+    result = AnswerRegionSplitter().split_document(
+        [_make_test_image_bytes()],
+        anchor_sets=[QuestionAnchorSet(page_index=0, anchors=[])],
+        layout_results=[
+            LayoutParseResult(
+                context_type="STUDENT_ANSWER",
+                page_index=0,
+                regions=[
+                    LayoutRegion(
+                        target_id="q1-region",
+                        region_type="answer_region",
+                        question_no="1",
+                        bbox={"x_min": 0.1, "y_min": 0.1, "x_max": 0.3, "y_max": 0.4},
+                    )
+                ],
+            )
+        ],
+    )
+
+    assert result.regions[0].bbox.x_min == 0.0
+    assert result.regions[0].bbox.x_max == 1.0
+
+
+def test_answer_region_splitter_can_still_use_legacy_narrow_x_cut(monkeypatch):
+    monkeypatch.setattr(settings, "segmentation_x_cut_strategy", "legacy_narrow")
+
+    result = AnswerRegionSplitter().split_document(
+        [_make_test_image_bytes()],
+        anchor_sets=[QuestionAnchorSet(page_index=0, anchors=[])],
+        layout_results=[
+            LayoutParseResult(
+                context_type="STUDENT_ANSWER",
+                page_index=0,
+                regions=[
+                    LayoutRegion(
+                        target_id="q1-region",
+                        region_type="answer_region",
+                        question_no="1",
+                        bbox={"x_min": 0.1, "y_min": 0.1, "x_max": 0.3, "y_max": 0.4},
+                    )
+                ],
+            )
+        ],
+    )
+
+    assert result.regions[0].bbox.x_min == 0.1
+    assert result.regions[0].bbox.x_max == 0.3
+
+
+def test_paper_workflow_matches_numeric_only_region_to_hierarchical_question_id():
+    workflow = PaperGradingWorkflow(
+        perception_engine=MockPerceptionEngine(),
+        cognitive_agent=MockCognitiveAgent(),
+    )
+    grouped_regions = {
+        "2": [
+            StudentAnswerRegion(
+                question_no="2",
+                page_index=0,
+                bbox=BoundingBox(x_min=0.1, y_min=0.1, x_max=0.8, y_max=0.4),
+                cropped_image_bytes=b"q2",
+            )
+        ]
+    }
+
+    regions, fallback = workflow._resolve_question_regions(grouped_regions, "一/2")
+
+    assert [region.question_no for region in regions] == ["2"]
+    assert fallback is None
+    assert workflow._aligned_region_question_no("一/2", "2") == "一/2"
+    assert workflow._is_region_covered_by_rubric("2", {"一/2"}) is True
+
+
+def test_paper_workflow_matches_compact_subquestion_regions_to_parent_question():
+    workflow = PaperGradingWorkflow(
+        perception_engine=MockPerceptionEngine(),
+        cognitive_agent=MockCognitiveAgent(),
+    )
+    grouped_regions = {
+        "18(1)": [
+            StudentAnswerRegion(
+                question_no="18(1)",
+                page_index=0,
+                bbox=BoundingBox(x_min=0.1, y_min=0.1, x_max=0.8, y_max=0.4),
+                cropped_image_bytes=b"q18-1",
+            )
+        ],
+        "18(2)": [
+            StudentAnswerRegion(
+                question_no="18(2)",
+                page_index=0,
+                bbox=BoundingBox(x_min=0.1, y_min=0.4, x_max=0.8, y_max=0.8),
+                cropped_image_bytes=b"q18-2",
+            )
+        ],
+    }
+
+    parent_regions, parent_fallback = workflow._resolve_question_regions(grouped_regions, "四/18")
+    subquestion_regions, subquestion_fallback = workflow._resolve_question_regions(grouped_regions, "四/18/(1)")
+
+    assert [region.question_no for region in parent_regions] == ["18(1)", "18(2)"]
+    assert parent_fallback is None
+    assert [region.question_no for region in subquestion_regions] == ["18(1)"]
+    assert subquestion_fallback is None
+    assert workflow._aligned_region_question_no("四/18", "18(1)") == "四/18/(1)"
+    assert workflow._is_region_covered_by_rubric("18(1)", {"四/18"}) is True
+
+
+@pytest.mark.asyncio
+async def test_paper_workflow_uses_loose_parent_region_for_hierarchical_subquestion():
+    workflow = PaperGradingWorkflow(
+        perception_engine=MockPerceptionEngine(),
+        cognitive_agent=MockCognitiveAgent(),
+        skill_service=FakeSkillService(
+            [
+                LayoutParseResult(
+                    context_type="STUDENT_ANSWER",
+                    page_index=0,
+                    regions=[
+                        LayoutRegion(
+                            target_id="q18",
+                            region_type="title",
+                            question_no="18.",
+                            bbox={"x_min": 0.10, "y_min": 0.10, "x_max": 0.20, "y_max": 0.15},
+                        ),
+                        LayoutRegion(
+                            target_id="q18-body",
+                            region_type="text",
+                            bbox={"x_min": 0.08, "y_min": 0.10, "x_max": 0.80, "y_max": 0.70},
+                        ),
+                    ],
+                )
+            ]
+        ),
+    )
+
+    report = await workflow.run_pipeline_with_preprocessed_images(
+        [_make_test_image_bytes()],
+        RubricBundle(
+            paper_id="paper-hierarchical-subquestion",
+            rubrics=[TeacherRubric(question_id="四/18/(2)", correct_answer="B")],
+            question_tree=[],
+        ),
+    )
+
+    assert report.answered_questions == 1
+    assert report.per_question["四/18/(2)"].status == "SCORED"
+    assert any("question 四/18/(2): using ancestor answer region 18" in warning for warning in report.warnings)
 
 
 class FakeSkillService:
@@ -331,6 +500,27 @@ class OverlapPerceptionEngine(MockPerceptionEngine):
         return answer_outputs[start : start + len(image_bytes_list)]
 
 
+class SparseAnchorPerceptionEngine(MockPerceptionEngine):
+    async def process_images(self, image_bytes_list: list[bytes], *, context_type: str = "student_homework"):
+        if context_type == "student_paper_pages":
+            return [
+                PerceptionOutput(
+                    readability_status="CLEAR",
+                    elements=[
+                        PerceptionNode(
+                            element_id="q1",
+                            content_type="plain_text",
+                            raw_content="1．",
+                            confidence_score=1.0,
+                            bbox=BoundingBox(x_min=0.1, y_min=0.1, x_max=0.2, y_max=0.15),
+                        ),
+                    ],
+                    global_confidence=1.0,
+                )
+            ]
+        return await super().process_images(image_bytes_list, context_type=context_type)
+
+
 class OCRInferenceWithoutStudentTagsEngine(MockPerceptionEngine):
     async def process_images(self, image_bytes_list: list[bytes], *, context_type: str = "student_homework"):
         if context_type != "student_answer_regions":
@@ -389,6 +579,7 @@ def test_numeric_equivalence_contradiction_triggers_review_gate():
     workflow._apply_numeric_equivalence_quality_gate(report)
 
     assert report.requires_human_review is True
+    assert report.review_reasons == ["NUMERIC_EQUIVALENCE_CONTRADICTION"]
     assert report.system_confidence == 0.5
     assert "0.80 与 0.800" in report.overall_feedback
 
@@ -453,6 +644,76 @@ async def test_paper_workflow_grades_each_rubric_question_from_split_regions():
 
 
 @pytest.mark.asyncio
+async def test_paper_workflow_persists_crop_artifacts_for_answer_parts(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "uploads_dir", str(tmp_path / "uploads"))
+    workflow = PaperGradingWorkflow(
+        perception_engine=MockPerceptionEngine(),
+        cognitive_agent=MockCognitiveAgent(),
+        skill_service=FakeSkillService(
+            [
+                LayoutParseResult(
+                    context_type="STUDENT_ANSWER",
+                    page_index=0,
+                    regions=[
+                        LayoutRegion(
+                            target_id="q1",
+                            region_type="title",
+                            question_no="1.",
+                            bbox={"x_min": 0.10, "y_min": 0.10, "x_max": 0.20, "y_max": 0.15},
+                        ),
+                        LayoutRegion(
+                            target_id="q1-body",
+                            region_type="text",
+                            bbox={"x_min": 0.08, "y_min": 0.10, "x_max": 0.80, "y_max": 0.48},
+                        ),
+                    ],
+                )
+            ]
+        ),
+    )
+
+    report = await workflow.run_pipeline_with_preprocessed_images(
+        [_make_test_image_bytes()],
+        RubricBundle(
+            paper_id="paper-crop",
+            rubrics=[TeacherRubric(question_id="1", correct_answer="A")],
+            question_tree=[],
+        ),
+    )
+
+    answer = report.student_answer_bundle.answers[0]
+    assert answer.parts[0].crop_path is not None
+    assert answer.parts[0].image_debug["crop_width"] > 0
+    assert answer.parts[0].image_debug["prepared_width"] > 0
+    crop_uri = answer.parts[0].crop_path
+    crop_path = Path(unquote(urlparse(crop_uri).path.lstrip("/")))
+    assert crop_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_paper_workflow_records_small_crop_image_warnings():
+    workflow = PaperGradingWorkflow(
+        perception_engine=MockPerceptionEngine(),
+        cognitive_agent=MockCognitiveAgent(),
+    )
+
+    report = await workflow.run_pipeline_with_presegmented_images(
+        [_make_small_test_image_bytes()],
+        RubricBundle(
+            paper_id="paper-small-crop",
+            rubrics=[TeacherRubric(question_id="1", correct_answer="A")],
+            question_tree=[],
+        ),
+        presegmented_question_ids=["1"],
+    )
+
+    answer = report.student_answer_bundle.answers[0]
+    assert answer.image_warnings == ["CROP_IMAGE_TOO_SMALL", "PREPARED_IMAGE_SHORT_SIDE_LOW"]
+    assert report.per_question["1"].review_reasons == ["LOW_QUALITY_CROP"]
+    assert "question 1: CROP_IMAGE_TOO_SMALL" in report.warnings
+
+
+@pytest.mark.asyncio
 async def test_paper_workflow_flags_missing_question_regions_for_review():
     workflow = PaperGradingWorkflow(
         perception_engine=MockPerceptionEngine(),
@@ -495,6 +756,8 @@ async def test_paper_workflow_flags_missing_question_regions_for_review():
     assert report.answered_questions == 1
     assert report.requires_human_review is True
     assert report.per_question["2"].status == "REJECTED_UNREADABLE"
+    assert report.per_question["2"].review_reasons == ["MISSING_ANSWER_REGION"]
+    assert report.review_reasons == ["MISSING_ANSWER_REGION"]
     assert any("question 2: no answer region matched" in warning for warning in report.warnings)
 
 
@@ -560,6 +823,63 @@ async def test_paper_workflow_uses_parent_region_for_unanchored_subquestion():
     assert report.answered_questions == 1
     assert report.per_question["16/(2)"].status == "SCORED"
     assert any("question 16/(2): using ancestor answer region 16" in warning for warning in report.warnings)
+
+
+@pytest.mark.asyncio
+async def test_paper_workflow_fuses_layout_only_anchor_into_segmentation():
+    workflow = PaperGradingWorkflow(
+        perception_engine=SparseAnchorPerceptionEngine(),
+        cognitive_agent=MockCognitiveAgent(),
+        skill_service=FakeSkillService(
+            [
+                LayoutParseResult(
+                    context_type="STUDENT_ANSWER",
+                    page_index=0,
+                    regions=[
+                        LayoutRegion(
+                            target_id="q1",
+                            region_type="title",
+                            question_no="1．",
+                            bbox={"x_min": 0.10, "y_min": 0.10, "x_max": 0.20, "y_max": 0.15},
+                        ),
+                        LayoutRegion(
+                            target_id="q1-body",
+                            region_type="text",
+                            bbox={"x_min": 0.08, "y_min": 0.10, "x_max": 0.80, "y_max": 0.40},
+                        ),
+                        LayoutRegion(
+                            target_id="q2",
+                            region_type="title",
+                            question_no="2．",
+                            bbox={"x_min": 0.10, "y_min": 0.55, "x_max": 0.20, "y_max": 0.60},
+                        ),
+                        LayoutRegion(
+                            target_id="q2-body",
+                            region_type="text",
+                            bbox={"x_min": 0.08, "y_min": 0.55, "x_max": 0.80, "y_max": 0.90},
+                        ),
+                    ],
+                )
+            ]
+        ),
+    )
+
+    report = await workflow.run_pipeline_with_preprocessed_images(
+        [_make_test_image_bytes()],
+        RubricBundle(
+            paper_id="paper-anchor-fusion",
+            rubrics=[
+                TeacherRubric(question_id="1", correct_answer="A"),
+                TeacherRubric(question_id="2", correct_answer="B"),
+            ],
+            question_tree=[],
+        ),
+    )
+
+    assert report.answered_questions == 2
+    assert report.per_question["1"].status == "SCORED"
+    assert report.per_question["2"].status == "SCORED"
+    assert any("anchor fusion added layout-only anchor 2" in warning for warning in report.warnings)
 
 
 @pytest.mark.asyncio
@@ -836,6 +1156,17 @@ async def test_paper_workflow_batches_student_answer_perception_before_grading(m
         ("student_paper_pages", 1),
         ("student_answer_regions", 2),
     ]
+    stage_seconds = report.runtime_profile["stage_seconds"]
+    assert stage_seconds["student_page_ocr"] >= 0
+    assert stage_seconds["student_page_layout"] >= 0
+    assert stage_seconds["split"] >= 0
+    assert stage_seconds["answer_region_ocr"] >= 0
+    assert stage_seconds["cognitive_evaluation"] >= 0
+    assert stage_seconds["total"] >= 0
+    assert {
+        plan["context_type"]: plan
+        for plan in report.runtime_profile["chunk_plans"]
+    }["student_answer_regions"]["image_count"] == 2
 
 
 @pytest.mark.asyncio
@@ -923,6 +1254,22 @@ async def test_paper_workflow_auto_planner_uses_two_image_batches_for_mid_sized_
         f"<student>answer-{index}</student>"
         for index in range(1, 7)
     ]
+
+
+def test_paper_workflow_default_answer_region_cap_uses_two_slots_when_api_allows(monkeypatch):
+    monkeypatch.setattr(settings, "qwen_answer_region_strategy", "auto")
+    monkeypatch.setattr(settings, "qwen_batch_max_images", 2)
+    monkeypatch.setattr(settings, "qwen_api_max_concurrency", 2)
+
+    workflow = PaperGradingWorkflow(
+        perception_engine=MockPerceptionEngine(),
+        cognitive_agent=MockCognitiveAgent(),
+    )
+
+    assert workflow._image_chunk_plan(
+        image_count=6,
+        context_type="student_answer_regions",
+    ) == (2, 2)
 
 
 @pytest.mark.asyncio

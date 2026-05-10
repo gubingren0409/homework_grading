@@ -6,12 +6,13 @@ from typing import Optional
 
 from PIL import Image
 
+from src.core.config import settings
 from src.schemas.perception_ir import BoundingBox, QuestionAnchor, QuestionAnchorSet, StudentAnswerRegion
 from src.skills.interfaces import LayoutParseResult, LayoutRegion
 
-CURRENT_ANCHOR_OVERLAP_BAND = 0.05
-NEXT_ANCHOR_OVERLAP_BAND = 0.045
-HORIZONTAL_SAFETY_MARGIN = 0.08
+CURRENT_ANCHOR_OVERLAP_BAND = settings.segmentation_current_anchor_overlap_band
+NEXT_ANCHOR_OVERLAP_BAND = settings.segmentation_next_anchor_overlap_band
+HORIZONTAL_SAFETY_MARGIN = settings.segmentation_horizontal_safety_margin
 ANCHOR_ONLY_REGION_TYPES = {"title"}
 
 
@@ -210,12 +211,18 @@ class AnswerRegionSplitter:
         page_index: int,
         bbox: BoundingBox,
     ) -> StudentAnswerRegion:
+        final_bbox = self._finalize_bbox(bbox)
         return StudentAnswerRegion(
             question_no=question_no,
             page_index=page_index,
-            bbox=bbox,
-            cropped_image_bytes=self._crop_image(image_bytes, bbox),
+            bbox=final_bbox,
+            cropped_image_bytes=self._crop_image(image_bytes, final_bbox),
         )
+
+    def _finalize_bbox(self, bbox: BoundingBox) -> BoundingBox:
+        if settings.segmentation_x_cut_strategy == "legacy_narrow":
+            return bbox
+        return BoundingBox(x_min=0.0, y_min=bbox.y_min, x_max=1.0, y_max=bbox.y_max)
 
     def _crop_image(self, image_bytes: bytes, bbox: BoundingBox) -> bytes:
         with Image.open(BytesIO(image_bytes)) as image:

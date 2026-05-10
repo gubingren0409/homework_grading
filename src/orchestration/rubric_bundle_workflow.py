@@ -13,6 +13,11 @@ from src.schemas.perception_ir import PerceptionNode, PerceptionOutput
 from src.schemas.question_ir import QuestionNumber
 from src.schemas.rubric_ir import ReferenceEvidencePart, RubricBundle, TeacherRubric
 from src.skills.interfaces import LayoutParseResult, LayoutRegion
+from src.utils.question_id_utils import (
+    extract_subquestion_slot,
+    is_subquestion_token,
+    parent_question_id,
+)
 
 
 class RubricBundleWorkflow:
@@ -82,11 +87,10 @@ class RubricBundleWorkflow:
             ]
         )
         perception_anchor_sets = self._anchor_detector.detect_document_from_perceptions(perception_outputs)
+        layout_anchor_sets = self._anchor_detector.detect_document_from_layouts(layout_results)
         anchor_sets = [
-            perception_anchor_set
-            if perception_anchor_set.anchors
-            else self._anchor_detector.detect_from_layout(layout_result)
-            for perception_anchor_set, layout_result in zip(perception_anchor_sets, layout_results)
+            self._anchor_detector.fuse_anchor_sets(perception_anchor_set, layout_anchor_set)
+            for perception_anchor_set, layout_anchor_set in zip(perception_anchor_sets, layout_anchor_sets)
         ]
         split_result = self._splitter.split_document(image_bytes_list, anchor_sets, layout_results)
         grouped_regions: OrderedDict[str, list[tuple[str, bytes]]] = OrderedDict()
@@ -463,16 +467,10 @@ class RubricBundleWorkflow:
         return slots
 
     def _parent_question_id(self, question_id: str) -> str:
-        parts = [part for part in question_id.split("/") if part]
-        if len(parts) > 1 and self._is_subquestion_token(parts[-1]):
-            return "/".join(parts[:-1])
-        return question_id
+        return parent_question_id(question_id)
 
     def _subquestion_slot_from_id(self, question_id: str) -> str | None:
-        parts = [part for part in question_id.split("/") if part]
-        if parts and self._is_subquestion_token(parts[-1]):
-            return parts[-1]
-        return None
+        return extract_subquestion_slot(question_id)
 
     def _is_rubric_question_id(self, question_id: str) -> bool:
         parts = [part for part in question_id.split("/") if part]
@@ -488,8 +486,4 @@ class RubricBundleWorkflow:
         )
 
     def _is_subquestion_token(self, token: str) -> bool:
-        return (
-            token.startswith("(")
-            and token.endswith(")")
-            and token[1:-1].isdigit()
-        ) or token in "①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳"
+        return is_subquestion_token(token)

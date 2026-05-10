@@ -12,8 +12,8 @@ class UnsupportedFormatError(Exception):
 
 def _downsample_and_compress(img_bytes: bytes) -> bytes:
     """
-    Standardizes image dimensions to max 2048x2048, strips EXIF,
-    and compresses to JPEG 85 quality.
+    Standardizes image dimensions to the configured max size, strips EXIF,
+    and compresses to the configured JPEG quality.
     """
     with Image.open(io.BytesIO(img_bytes)) as img:
         # Strip EXIF and convert to RGB (ensure JPEG compatibility)
@@ -25,13 +25,14 @@ def _downsample_and_compress(img_bytes: bytes) -> bytes:
         if settings.enable_page_deskew_preprocess:
             img = _deskew_image(img)
         
-        # Resize if dimension exceeds 2048px
-        max_size = (2048, 2048)
+        # Resize if dimension exceeds configured max size
+        max_side = max(1, int(settings.file_preprocess_max_side))
+        max_size = (max_side, max_side)
         img.thumbnail(max_size, Image.Resampling.LANCZOS)
         
         # Save to buffer with quality compression and no EXIF
         buffer = io.BytesIO()
-        img.save(buffer, format="JPEG", quality=85, optimize=True)
+        img.save(buffer, format="JPEG", quality=max(1, int(settings.file_preprocess_jpeg_quality)), optimize=True)
         return buffer.getvalue()
 
 
@@ -99,7 +100,7 @@ def _normalize_to_images_sync(file_bytes: bytes, filename: str) -> list[bytes]:
     if filename.lower().endswith(".pdf"):
         with fitz.open(stream=file_bytes, filetype="pdf") as doc:
             for page in doc:
-                pix = page.get_pixmap(dpi=150)
+                pix = page.get_pixmap(dpi=max(36, int(settings.pdf_page_render_dpi)))
                 page_bytes = pix.tobytes("jpeg")
                 normalized_images.append(_downsample_and_compress(page_bytes))
     

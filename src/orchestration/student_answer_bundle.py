@@ -4,9 +4,15 @@ import re
 from collections import OrderedDict
 from typing import Iterable, Mapping
 
+from src.core.config import settings
 from src.schemas.answer_ir import StudentAnswer, StudentAnswerBundle, StudentAnswerPart
 from src.schemas.perception_ir import PerceptionNode, PerceptionOutput
 from src.schemas.question_ir import QuestionNumber
+from src.utils.question_id_utils import (
+    extract_subquestion_slot as _subquestion_slot_from_id,
+    is_subquestion_token as _is_subquestion_token,
+    parent_question_id as _parent_question_id,
+)
 
 _READABILITY_PRIORITY = {
     "CLEAR": 0,
@@ -51,6 +57,11 @@ def build_student_answer_bundle(
             for part in normalized_parts
             for warning in part.extraction_warnings
         ]
+        image_warnings = [
+            warning
+            for part in normalized_parts
+            for warning in part.image_warnings
+        ]
         extraction_warnings.extend(slot_warnings)
         answers.append(
             StudentAnswer(
@@ -70,6 +81,7 @@ def build_student_answer_bundle(
                 readability_status=worst_readability_status,
                 trigger_short_circuit=any(part.trigger_short_circuit for part in normalized_parts),
                 extraction_warnings=extraction_warnings,
+                image_warnings=image_warnings,
                 worked_solution_block_detected=any(
                     part.worked_solution_block_detected for part in normalized_parts
                 ),
@@ -230,12 +242,16 @@ def _containing_blank_index(
         if blank_element.bbox is None:
             continue
         y_overlap = (
-            student_element.bbox.y_min <= blank_element.bbox.y_max + 0.04
-            and student_element.bbox.y_max >= blank_element.bbox.y_min - 0.04
+            student_element.bbox.y_min <= blank_element.bbox.y_max + settings.fill_blank_y_overlap_tolerance
+            and student_element.bbox.y_max >= blank_element.bbox.y_min - settings.fill_blank_y_overlap_tolerance
         )
         if not y_overlap:
             continue
-        if not (blank_element.bbox.x_min - 0.03 <= student_center_x <= blank_element.bbox.x_max + 0.03):
+        if not (
+            blank_element.bbox.x_min - settings.fill_blank_x_tolerance
+            <= student_center_x
+            <= blank_element.bbox.x_max + settings.fill_blank_x_tolerance
+        ):
             continue
         blank_center_x = (blank_element.bbox.x_min + blank_element.bbox.x_max) / 2
         candidates.append((abs(student_center_x - blank_center_x), index))
@@ -463,7 +479,6 @@ def _with_extracted_answer_text(part: StudentAnswerPart) -> StudentAnswerPart:
             warnings.append("ANSWER_TEXT_INFERRED_FROM_OCR_WITHOUT_STUDENT_TAGS")
     if not extracted and part.text.strip() and not part.is_blank:
         warnings.append("NO_STUDENT_TAGS_FOUND")
-
     return part.model_copy(
         update={
             "answer_text": extracted,
@@ -597,25 +612,3 @@ def _build_question_tree(question_ids: Iterable[str]) -> list[QuestionNumber]:
             else:
                 nodes_by_path[tuple(parts[: depth - 1])].children.append(node)
     return roots
-
-
-def _parent_question_id(question_id: str) -> str:
-    parts = [part for part in question_id.split("/") if part]
-    if len(parts) > 1 and _is_subquestion_token(parts[-1]):
-        return "/".join(parts[:-1])
-    return question_id
-
-
-def _subquestion_slot_from_id(question_id: str) -> str | None:
-    parts = [part for part in question_id.split("/") if part]
-    if parts and _is_subquestion_token(parts[-1]):
-        return parts[-1]
-    return None
-
-
-def _is_subquestion_token(token: str) -> bool:
-    return (
-        token.startswith("(")
-        and token.endswith(")")
-        and token[1:-1].isdigit()
-    ) or token in "①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳"

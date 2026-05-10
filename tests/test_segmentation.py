@@ -1,7 +1,9 @@
 from io import BytesIO
 
+import pytest
 from PIL import Image
 
+from src.core.config import settings
 from src.orchestration.segmentation import (
     CURRENT_ANCHOR_OVERLAP_BAND,
     NEXT_ANCHOR_OVERLAP_BAND,
@@ -69,6 +71,60 @@ def test_answer_region_splitter_slices_single_page_by_anchor_bands():
     assert [region.question_no for region in result.regions] == ["1", "2"]
     assert result.regions[0].bbox.y_min == 0.10 - CURRENT_ANCHOR_OVERLAP_BAND
     assert result.regions[0].bbox.y_max == 0.60 + NEXT_ANCHOR_OVERLAP_BAND
+    assert result.regions[0].bbox.x_min == 0.0
+    assert result.regions[0].bbox.x_max == 1.0
+    assert result.regions[1].bbox.x_min == 0.0
+    assert result.regions[1].bbox.x_max == 1.0
+    assert _crop_size(result.regions[0].cropped_image_bytes) == (100, 59)
+
+
+def test_answer_region_splitter_can_use_legacy_narrow_x_cut_for_anchor_bands(monkeypatch):
+    monkeypatch.setattr(settings, "segmentation_x_cut_strategy", "legacy_narrow")
+    splitter = AnswerRegionSplitter()
+    image_bytes = _page_bytes()
+    anchor_set = QuestionAnchorSet(
+        page_index=0,
+        anchors=[
+            QuestionAnchor(
+                raw_label="1.",
+                question_no="1",
+                page_index=0,
+                order_index=0,
+                source="perception",
+                bbox=BoundingBox(x_min=0.10, y_min=0.10, x_max=0.20, y_max=0.15),
+            ),
+            QuestionAnchor(
+                raw_label="2.",
+                question_no="2",
+                page_index=0,
+                order_index=1,
+                source="perception",
+                bbox=BoundingBox(x_min=0.12, y_min=0.60, x_max=0.22, y_max=0.65),
+            ),
+        ],
+    )
+    layout = LayoutParseResult(
+        context_type="STUDENT_ANSWER",
+        page_index=0,
+        regions=[
+            LayoutRegion(
+                target_id="b1",
+                region_type="text",
+                bbox={"x_min": 0.08, "y_min": 0.10, "x_max": 0.72, "y_max": 0.52},
+            ),
+            LayoutRegion(
+                target_id="b2",
+                region_type="text",
+                bbox={"x_min": 0.14, "y_min": 0.60, "x_max": 0.80, "y_max": 0.92},
+            ),
+        ],
+    )
+
+    result = splitter.split_document([image_bytes], [anchor_set], [layout])
+
+    assert result.regions[0].bbox.x_min == 0.0
+    assert result.regions[0].bbox.x_max == 0.88
+    assert result.regions[1].bbox.x_min == pytest.approx(0.04)
     assert result.regions[1].bbox.x_max == 0.88
     assert _crop_size(result.regions[0].cropped_image_bytes) == (88, 59)
 
@@ -161,4 +217,6 @@ def test_answer_region_splitter_carries_last_question_across_pages_without_ancho
     assert result.regions[1].page_index == 1
     assert result.regions[1].bbox.y_min == 0.0
     assert result.regions[1].bbox.y_max == 1.0
-    assert _crop_size(result.regions[1].cropped_image_bytes) == (82, 100)
+    assert result.regions[1].bbox.x_min == 0.0
+    assert result.regions[1].bbox.x_max == 1.0
+    assert _crop_size(result.regions[1].cropped_image_bytes) == (100, 100)

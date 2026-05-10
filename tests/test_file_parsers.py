@@ -4,6 +4,7 @@ import fitz
 import pytest
 from PIL import Image
 
+from src.core.config import settings
 from src.utils.file_parsers import process_multiple_files, UnsupportedFormatError
 
 
@@ -34,6 +35,15 @@ async def test_process_multiple_files_supports_multi_image_and_pdf():
     images = await process_multiple_files(files_data)
     assert len(images) == 4
     assert all(isinstance(item, bytes) and len(item) > 0 for item in images)
+
+
+@pytest.mark.asyncio
+async def test_process_multiple_files_respects_configured_max_side():
+    images = await process_multiple_files([(_jpeg_bytes(size=(4096, 3072)), "large.jpg")])
+
+    assert len(images) == 1
+    with Image.open(io.BytesIO(images[0])) as normalized:
+        assert max(normalized.size) <= settings.file_preprocess_max_side
 
 
 @pytest.mark.asyncio

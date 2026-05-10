@@ -7,6 +7,7 @@ from typing import Iterable, Optional
 from src.schemas.perception_ir import PerceptionOutput, PerceptionNode
 from src.schemas.question_ir import QuestionNumber
 from src.schemas.rubric_ir import GradingPoint, RubricBundle, RubricVisualEvidence, TeacherRubric
+from src.utils.question_id_utils import is_subquestion_token
 
 _CHINESE_SECTION_RE = re.compile(r"^(?P<label>[一二三四五六七八九十百千]+、)")
 _NUMBER_RE = re.compile(r"^(?P<label>(?:第\s*\d+\s*题|\d+[\.．、](?!\d)))")
@@ -383,7 +384,7 @@ class QuestionTreeExtractor:
         return normalize_question_label(raw_label)
 
     def _is_subquestion_token(self, token: str) -> bool:
-        return bool(_SUBQUESTION_RE.match(token))
+        return is_subquestion_token(token)
 
     def _sort_nodes(self, nodes: list[PerceptionNode]) -> list[PerceptionNode]:
         return sort_perception_nodes(nodes)

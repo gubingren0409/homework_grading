@@ -152,6 +152,145 @@ def test_question_anchor_detector_carries_section_parent_across_pages():
     assert [anchor.question_no for anchor in anchor_sets[1].anchors] == ["一/5", "二", "二/6"]
 
 
+def test_question_anchor_detector_carries_layout_parent_across_pages():
+    detector = QuestionAnchorDetector()
+    page_one = LayoutParseResult(
+        context_type="STUDENT_ANSWER",
+        page_index=0,
+        regions=[
+            LayoutRegion(
+                target_id="p0-s1",
+                region_type="title",
+                question_no="一、",
+                bbox={"x_min": 0.1, "y_min": 0.1, "x_max": 0.3, "y_max": 0.15},
+            ),
+            LayoutRegion(
+                target_id="p0-q4",
+                region_type="title",
+                question_no="4．",
+                bbox={"x_min": 0.1, "y_min": 0.7, "x_max": 0.3, "y_max": 0.75},
+            ),
+        ],
+    )
+    page_two = LayoutParseResult(
+        context_type="STUDENT_ANSWER",
+        page_index=1,
+        regions=[
+            LayoutRegion(
+                target_id="p1-q5",
+                region_type="title",
+                question_no="5．",
+                bbox={"x_min": 0.1, "y_min": 0.1, "x_max": 0.4, "y_max": 0.15},
+            ),
+            LayoutRegion(
+                target_id="p1-s2",
+                region_type="title",
+                question_no="二、",
+                bbox={"x_min": 0.1, "y_min": 0.3, "x_max": 0.4, "y_max": 0.35},
+            ),
+            LayoutRegion(
+                target_id="p1-q6",
+                region_type="title",
+                question_no="6．",
+                bbox={"x_min": 0.1, "y_min": 0.4, "x_max": 0.4, "y_max": 0.45},
+            ),
+        ],
+    )
+
+    anchor_sets = detector.detect_document_from_layouts([page_one, page_two])
+
+    assert [anchor.question_no for anchor in anchor_sets[0].anchors] == ["一", "一/4"]
+    assert [anchor.question_no for anchor in anchor_sets[1].anchors] == ["一/5", "二", "二/6"]
+
+
+def test_question_anchor_detector_fuses_layout_only_anchor():
+    detector = QuestionAnchorDetector()
+    perception = detector.detect_from_perception(
+        PerceptionOutput(
+            readability_status="CLEAR",
+            global_confidence=0.95,
+            is_blank=False,
+            trigger_short_circuit=False,
+            elements=[
+                PerceptionNode(
+                    element_id="q1",
+                    content_type="plain_text",
+                    raw_content="1．第一题",
+                    confidence_score=0.9,
+                    bbox=BoundingBox(x_min=0.1, y_min=0.1, x_max=0.3, y_max=0.15),
+                )
+            ],
+        )
+    )
+    layout = detector.detect_from_layout(
+        LayoutParseResult(
+            context_type="STUDENT_ANSWER",
+            page_index=0,
+            regions=[
+                LayoutRegion(
+                    target_id="q1",
+                    region_type="title",
+                    question_no="1．",
+                    bbox={"x_min": 0.1, "y_min": 0.1, "x_max": 0.3, "y_max": 0.15},
+                ),
+                LayoutRegion(
+                    target_id="q2",
+                    region_type="title",
+                    question_no="2．",
+                    bbox={"x_min": 0.1, "y_min": 0.5, "x_max": 0.3, "y_max": 0.55},
+                ),
+            ],
+        )
+    )
+
+    anchors = detector.fuse_anchor_sets(perception, layout)
+
+    assert [anchor.question_no for anchor in anchors.anchors] == ["1", "2"]
+    assert anchors.anchors[0].source == "perception"
+    assert anchors.anchors[1].source == "layout"
+    assert any("added layout-only anchor 2" in warning for warning in anchors.warnings)
+
+
+def test_question_anchor_detector_warns_on_conflicting_layout_anchor():
+    detector = QuestionAnchorDetector()
+    perception = detector.detect_from_perception(
+        PerceptionOutput(
+            readability_status="CLEAR",
+            global_confidence=0.95,
+            is_blank=False,
+            trigger_short_circuit=False,
+            elements=[
+                PerceptionNode(
+                    element_id="q1",
+                    content_type="plain_text",
+                    raw_content="1．第一题",
+                    confidence_score=0.9,
+                    bbox=BoundingBox(x_min=0.1, y_min=0.1, x_max=0.3, y_max=0.15),
+                )
+            ],
+        )
+    )
+    layout = detector.detect_from_layout(
+        LayoutParseResult(
+            context_type="STUDENT_ANSWER",
+            page_index=0,
+            regions=[
+                LayoutRegion(
+                    target_id="q7",
+                    region_type="title",
+                    question_no="7．",
+                    bbox={"x_min": 0.1, "y_min": 0.11, "x_max": 0.31, "y_max": 0.16},
+                )
+            ],
+        )
+    )
+
+    anchors = detector.fuse_anchor_sets(perception, layout)
+
+    assert [anchor.question_no for anchor in anchors.anchors] == ["1"]
+    assert any("conflict perception 1 vs layout 7" in warning for warning in anchors.warnings)
+
+
 def test_question_anchor_detector_ignores_false_large_numeric_jumps():
     detector = QuestionAnchorDetector()
     output = PerceptionOutput(
