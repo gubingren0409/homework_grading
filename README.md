@@ -1,321 +1,145 @@
 # AI 自动作业批改系统
 
-面向**中学理科教师**的 AI 阅卷与复核工作台。项目围绕“参考答案生成评分标准、学生作答自动识别与评分、异常样本进入人工复核、结果回传与沉淀”这条主链路构建，已经形成可本地运行、可容器部署、可持续迭代的完整后端系统。
+面向中学教师的 AI 阅卷与复核后端系统，覆盖 **评分标准生成、学生作答识别、异步批改、整卷切题、人工复核、结果沉淀** 这条完整链路。
 
-> **教师上传参考答案与学生作答 → 生成或复用 rubric → 异步批改 → SSE 实时回传 → 报告查看 → 低置信度样本复核**
-
----
-
-## 项目定位
-
-这不是单一的 OCR 脚本，也不是只调用一次模型接口的 demo，而是一套围绕教师批改场景设计的 AI 工作流系统：
-
-1. **面向教师，而不是学生练习端**
-2. **面向批量阅卷与复核，而不是单题问答**
-3. **面向可运行的工程链路，而不是概念验证**
-
-当前最适合的使用场景是：
-
-- 教师上传标准答案，系统自动生成或复用评分标准
-- 教师批量上传学生试卷或作业图片 / PDF
-- 系统自动识别手写内容、完成结构化评分并生成报告
-- 低置信度、不可读、异常样本自动进入人工复核队列
-- 系统沉淀 rubric、标注资产、运行时遥测与 prompt 运营数据
+> 教师参考答案 / 整卷参考卷
+> → Rubric / RubricBundle
+> → 学生单题 / 批量 / 整卷提交
+> → Qwen 感知层 + DeepSeek 认知层
+> → 结果落库、状态流推送、报告查看、人工复核
 
 ---
 
-## 核心能力
+## 1. 项目定位
 
-### 1. Rubric 驱动评分
+这不是一个单次调用模型的 demo，也不是单纯的 OCR 脚本，而是一套围绕教师批改场景构建的工程化系统：
 
-系统先基于教师参考答案生成评分标准，再用该标准评估学生作答，避免“只看对错”的粗糙判断，支持更细粒度的扣分说明和报告生成。
-
-### 2. 感知层 / 认知层解耦
-
-- **感知层**：Qwen-VL 负责图片/PDF 中手写内容和版面信息的识别与结构化输出
-- **认知层**：DeepSeek 负责基于 perception IR 与 rubric 的逻辑评估、报告生成和解释
-
-这种分层设计让模型替换、路由治理、故障降级和后续实验更容易收口。
-
-### 3. 异步批量处理
-
-系统采用 FastAPI + Celery + Redis 组合，将“上传入口”和“批改执行”解耦，支持：
-
-- 单学生多页提交
-- 多学生批量提交
-- 队列异步执行
-- Redis 不可用时的本地后台回退
-- 任务取消、进度更新、ETA 估算
-
-### 4. 实时状态回传
-
-前端可通过 **SSE + Redis Pub/Sub** 获取实时状态流，及时看到：
-
-- 当前任务状态
-- 批量进度
-- 已完成结果数
-- 最终报告是否可查看
-
-### 5. 教师复核闭环
-
-系统不是单纯给分，而是具备完整的复核链路：
-
-- 不可读 / 空白 / 异常样本拦截
-- 人工复核状态流转
-- 教师修正意见与评分写回
-- 标注资产沉淀，支持后续优化与数据集建设
-
-### 6. Prompt 与运行时治理
-
-项目内建了较完整的模型治理与 prompt 控制能力，包括：
-
-- Prompt 资产文件化管理
-- L1 / L2 缓存
-- A/B 配置与强制 variant
-- Last Known Good 回退
-- Runtime Router 自动模型路由
-- Circuit Breaker 熔断与恢复
-- 运行时遥测与 Ops 控制面
-
-### 7. 整卷切题与按题评分（新增）
-
-系统现在已经补上了“整卷参考答案 / 整卷学生作答”这条中间管道，核心新增能力包括：
-
-- `RubricBundle`：从整卷参考答案中提取题号树与每题 rubric
-- `QuestionAnchorDetector`：从整卷版面中定位印刷题号锚点
-- `MinerULayoutSkill`：适配本地 / 网关式 MinerU API，输出可复用的 layout blocks
-- `AnswerRegionSplitter`：把题号锚点之间的条带切成 `StudentAnswerRegion`
-- `PaperGradingWorkflow`：按题复用既有单题评分链路，输出 `PaperEvaluationReport`
+- **Rubric 驱动评分**：先生成评分标准，再基于评分标准判分
+- **感知 / 认知解耦**：将 OCR/版面识别与逻辑评分拆分为两层
+- **异步任务执行**：FastAPI 负责入口，Celery Worker 负责执行
+- **整卷链路可复用旧单题能力**：按父题粒度切题，再复用稳定评分基线
+- **具备复核与治理闭环**：异常任务、低置信度结果、运行时遥测可持续沉淀
 
 ---
 
-## 典型流程
+## 2. 当前支持的工作流
 
-```text
-教师上传参考答案 / 学生作答
-  -> FastAPI API Gateway
-  -> Storage Adapter（Local / S3）
-  -> 创建任务（PENDING）
-  -> Celery Worker 异步执行
-  -> 文件预处理（图片归一化 / PDF 转图）
-  -> 感知层（Qwen-VL）
-  -> 认知层（DeepSeek）
-  -> 结果落库（tasks / grading_results / telemetry / audit）
-  -> Redis Pub/Sub 推送状态
-  -> SSE / 轮询查询
-  -> 报告页 / 历史页 / 复核工作台展示
-```
+### 2.1 单题 / 多图参考答案生成 Rubric
+
+- 教师上传参考答案图片或 PDF
+- 感知层抽取文字与结构
+- 认知层生成 `TeacherRubric`
+- 持久化后可被后续学生批改任务复用
+
+### 2.2 单份学生作答批改
+
+- 教师上传单份学生作答
+- 系统异步入队并执行批改
+- 输出扣分项、反馈、证据片段、状态流
+
+### 2.3 批量学生作答批改
+
+- 支持多名学生单页作答批量提交
+- 支持进度、取消、状态查询、历史结果查看
+- Redis 不可用时可自动回退到本地后台执行
+
+### 2.4 整卷参考答案生成 RubricBundle
+
+- 从整卷参考答案中提取题号树、题目关系和题级 rubric
+- 输出并持久化 `RubricBundle`
+- 支持按题号选择子集进行后续批改
+
+### 2.5 整卷学生作答批改
+
+- 支持整页输入、题号锚点定位、答题区切分、父题级评分
+- 切题后仍复用既有单题 contract 与评分逻辑
+- 支持同步接口和异步任务接口两种入口
 
 ---
 
-## 系统组成
+## 3. 核心架构
 
-### 后端服务
+### 3.1 分层设计
 
-| 模块 | 说明 |
+| 层 | 主要职责 |
 | --- | --- |
-| `src/main.py` | FastAPI 入口、异常处理、中间件、静态页面路由 |
-| `src/api/routers/` | 按领域拆分的 API：auth / rubric / grade / review / meta / ops / skills |
-| `src/orchestration/workflow.py` | 感知 → 认知主业务编排 |
-| `src/perception/` | 多模态感知识别层 |
-| `src/cognitive/` | 评分、报告与 rubric 生成层 |
-| `src/worker/main.py` | Celery Worker 批改执行引擎 |
-| `src/prompts/` | Prompt Provider、缓存、A/B 与失效广播 |
-| `src/core/` | 配置、追踪、熔断、运行时路由、存储适配等基础设施 |
-| `src/db/` | SQLite schema 与数据访问层 |
-| `src/skills/` | 外部 layout / validation skill 扩展接口 |
+| API Gateway | 上传入口、任务创建、状态查询、结果聚合、静态控制台 |
+| Worker | 异步任务执行、状态写回、Pub/Sub 推送 |
+| Perception | Qwen OCR、答题区识别、题号锚点、版面结构解析 |
+| Orchestration | 单题工作流、整卷工作流、student answer contract、切题逻辑 |
+| Cognitive | DeepSeek 评分、Rubric 生成、反馈与解释 |
+| DB / Storage | 任务、结果、rubric、bundle、paper report、运行时遥测 |
+| Ops / Prompt | Prompt 资产管理、缓存、运行时路由、熔断与回退 |
 
-### 前端页面
+### 3.2 整卷主链路
 
-项目内置了一组用于教师工作流和运维演示的静态页面：
+整卷链路的关键模块如下：
 
-- `/student-console`：单份作答提交
-- `/student-console-batch`：批量提交
-- `/task-progress`：任务实时进度
-- `/tasks-list`：任务列表
-- `/history-results`：历史结果
-- `/report-view`：单份报告查看
-- `/review-console`：复核工作台
-- `/class-dashboard`：班级看板
-- `/ops-console`：运行时控制与观测台
+- `RubricBundleWorkflow`：整卷参考答案 → `RubricBundle`
+- `QuestionAnchorDetector`：从整页识别题号锚点
+- `AnswerRegionSplitter`：依据锚点与 layout 切出 `StudentAnswerRegion`
+- `StudentAnswerBundle`：把 printed / handwritten / student answer 收敛到统一 contract
+- `PaperGradingWorkflow`：以父题为最小认知单元执行整卷评分
 
----
+### 3.3 设计约束
 
-## API 分组
+当前整卷实现遵循以下约束：
 
-所有主接口统一挂载在 `/api/v1` 下，按业务拆分为以下几组：
-
-| 路由组 | 作用 |
-| --- | --- |
-| `auth` | 教师登录与身份探测 |
-| `rubric` | rubric 生成、查询与复用 |
-| `grade` | 批改任务提交、状态查询、结果获取、批量处理 |
-| `review` | 复核任务、标注资产、卫生拦截处理 |
-| `meta` | 运行时 dashboard、SLA、数据管线、能力目录 |
-| `ops` | 模型切换、prompt 控制、A/B、熔断演练、队列诊断 |
-| `skills` | 外部 layout / validation skill 网关 |
-
-### 新增整卷接口
-
-- `POST /api/v1/rubric/bundle/generate`：整卷参考答案 -> `RubricBundle`
-- `POST /api/v1/grade/paper`：整卷学生作答 + `bundle_id` -> `PaperEvaluationReport`
+1. **旧单题链路是质量基线**
+2. **父题是最小认知评分单元**
+3. **printed reference / handwritten reference / student answer 最终收敛到同一套 contract**
+4. **batch 只能是性能优化，不能改变 OCR prompt 语义、输入变量、输出结构或下游解释方式**
+5. **禁止把多道父题打包到一次认知调用**
 
 ---
 
-## 数据与状态沉淀
+## 4. 主要接口
 
-默认数据库为 SQLite，核心数据表覆盖了任务流转、结果、治理和数据资产：
+所有主接口统一挂载在 `/api/v1` 下。
 
-- `tasks`
-- `grading_results`
-- `rubric_bundles`
-- `paper_tasks`
-- `paper_question_results`
-- `rubrics`
-- `rubric_generate_audit`
-- `task_runtime_telemetry`
-- `prompt_control_state`
-- `prompt_ab_configs`
-- `prompt_ops_audit_log`
-- `hygiene_interception_log`
-- `golden_annotation_assets`
-- `teacher_review_decisions`
-- `skill_validation_records`
+### 4.1 Rubric 相关
 
-这意味着系统不仅能“出结果”，还能积累后续优化所需要的运行与标注数据。
+- `POST /api/v1/rubric/generate`：单题参考答案生成 `TeacherRubric`
+- `POST /api/v1/rubric/bundle/generate`：整卷参考答案生成 `RubricBundle`
 
----
+### 4.2 学生批改相关
 
-## 技术栈
+- `POST /api/v1/grade/submit`：单份学生作答异步提交
+- `POST /api/v1/grade/submit-batch`：批量单页异步提交
+- `POST /api/v1/grade/submit-batch-with-reference`：带参考答案的批量异步提交
+- `GET /api/v1/grade/{task_id}`：任务状态查询
+- `GET /api/v1/grade/{task_id}/report`：批改报告
+- `GET /api/v1/grade/{task_id}/insights`：任务洞察
+- `POST /api/v1/grade/{task_id}/cancel`：取消任务
 
-| 层次 | 技术 |
-| --- | --- |
-| Web API | FastAPI, Uvicorn |
-| 异步任务 | Celery, Redis |
-| 数据存储 | SQLite, aiosqlite |
-| 多模态 / LLM | Qwen-VL, DeepSeek, OpenAI-compatible SDK |
-| 图像 / PDF | Pillow, PyMuPDF |
-| 实时状态 | sse-starlette, Redis Pub/Sub |
-| 鉴权 / 限流 | PyJWT, SlowAPI |
-| 对象存储扩展 | boto3 |
-| 测试 | pytest, pytest-asyncio, fakeredis, moto |
-| 部署 | Docker, Docker Compose, Nginx |
+### 4.3 整卷相关
+
+- `POST /api/v1/grade/paper`：整卷同步评分
+- `POST /api/v1/grade/paper/submit`：整卷异步提交
+- `GET /api/v1/grade/paper/reports`：整卷报告查询
+- `GET /api/v1/grade/paper/inputs`：整卷输入回看
 
 ---
 
-## 快速开始
+## 5. 内置页面
 
-### 1. 安装依赖
+项目内置了一组用于教师演示、调试与运维的静态页面：
 
-```bash
-pip install -r requirements.txt
-```
-
-### 2. 配置环境变量
-
-复制 `.env.example` 为 `.env`，至少补齐以下配置：
-
-```env
-QWEN_API_KEYS=sk-xxx
-DEEPSEEK_API_KEYS=sk-xxx
-REDIS_HOST=localhost
-REDIS_PORT=6379
-SQLITE_DB_PATH=outputs/grading_database.db
-AUTH_ENABLED=false
-```
-
-如果要启用整卷切题建议同时开启 layout skill，最小配置示例：
-
-```env
-SKILL_LAYOUT_PARSER_ENABLED=true
-SKILL_LAYOUT_PARSER_PROVIDER=mineru
-SKILL_LAYOUT_PARSER_API_URL=http://127.0.0.1:30000
-SKILL_LAYOUT_PARSER_TIMEOUT_SECONDS=20
-```
-
-`.env.example` 中还包含：
-
-- 批处理并发参数
-- SSE 心跳参数
-- Prompt token 预算
-- Runtime Router 开关
-- Skills 网关配置
-- Nginx 端口配置
-
-## 当前整卷能力边界
-
-- 教师端整卷 rubric 提取、题号树抽取、bundle 持久化已可用
-- 学生端整卷切题、按题评分、worker 持久化链路已可用
-- 真实教师样卷已验证到参考答案侧
-- **真实学生整卷拍照回归样本仍缺失**，当前 student 侧回归以单元测试、合成版面和接口测试为主
-
-### 3. 启动 API
-
-```bash
-uvicorn src.main:app --host 0.0.0.0 --port 8000 --timeout-keep-alive 15
-```
-
-### 4. 启动 Worker
-
-```bash
-# Linux / macOS
-celery -A src.worker.main worker --loglevel=info --concurrency=4
-
-# Windows
-celery -A src.worker.main worker --loglevel=info --pool=solo --concurrency=1
-```
-
-### 5. 使用 Docker Compose
-
-```bash
-docker compose up --build
-```
-
-默认会启动 4 个服务：
-
-1. `nginx`：反向代理
-2. `grader-api`：FastAPI 主入口
-3. `grader-worker`：Celery Worker
-4. `redis`：消息队列与状态中转
+- `/student-console`
+- `/student-console-batch`
+- `/whole-paper-console`
+- `/whole-paper-report`
+- `/review-console`
+- `/ops-console`
+- `/tasks-list`
+- `/task-progress`
+- `/class-dashboard`
+- `/history-results`
+- `/report-view`
 
 ---
 
-## Docker 部署形态
-
-`docker-compose.yml` 提供了一套单机可运行的部署方式：
-
-- `nginx` 负责统一入口与反向代理
-- `grader-api` 仅在容器内部暴露 8000
-- `grader-worker` 执行实际批改任务
-- `redis` 同时承担 Celery broker、缓存与 Pub/Sub
-- `outputs/` 与 `data/` 通过 volume 挂载持久化
-
-`Dockerfile` 基于 `python:3.11-slim` 构建，默认启动命令为：
-
-```bash
-uvicorn src.main:app --host 0.0.0.0 --port 8000 --workers 1
-```
-
----
-
-## 测试
-
-```bash
-pytest -q
-```
-
-测试覆盖了：
-
-- API 集成
-- workflow 编排
-- perception / cognitive 工厂与 mock
-- prompt provider
-- runtime router
-- SSE / circuit breaker / serialization 等阶段特性
-
----
-
-## 目录结构
+## 6. 目录结构
 
 ```text
 homework_grader_system/
@@ -333,6 +157,7 @@ homework_grader_system/
 ├─ configs/
 │  └─ prompts/
 ├─ docs/
+├─ scripts/
 ├─ tests/
 ├─ docker-compose.yml
 ├─ Dockerfile
@@ -342,34 +167,164 @@ homework_grader_system/
 
 ---
 
-## 文档导航
+## 7. 技术栈
+
+| 类别 | 技术 |
+| --- | --- |
+| Web API | FastAPI, Uvicorn |
+| 异步任务 | Celery, Redis |
+| 数据存储 | SQLite, aiosqlite |
+| 模型接入 | Qwen-VL, DeepSeek, OpenAI-compatible SDK |
+| 图像 / PDF | Pillow, PyMuPDF |
+| 实时状态 | SSE, Redis Pub/Sub |
+| 鉴权 / 限流 | PyJWT, SlowAPI |
+| 对象存储扩展 | boto3 |
+| 测试 | pytest, pytest-asyncio, fakeredis, moto |
+| 部署 | Docker, Docker Compose, Nginx |
+
+---
+
+## 8. 快速开始
+
+### 8.1 安装依赖
+
+```bash
+pip install -r requirements.txt
+```
+
+### 8.2 配置环境变量
+
+复制 `.env.example` 为 `.env`，至少补齐以下配置：
+
+```env
+QWEN_API_KEYS=sk-xxx
+DEEPSEEK_API_KEYS=sk-xxx
+REDIS_HOST=localhost
+REDIS_PORT=6379
+SQLITE_DB_PATH=outputs/grading_database.db
+AUTH_ENABLED=false
+```
+
+如果要启用整卷切题，建议同时打开 layout skill：
+
+```env
+SKILL_LAYOUT_PARSER_ENABLED=true
+SKILL_LAYOUT_PARSER_PROVIDER=mineru
+SKILL_LAYOUT_PARSER_API_URL=http://127.0.0.1:30000
+SKILL_LAYOUT_PARSER_TIMEOUT_SECONDS=20
+```
+
+`.env.example` 还包含以下关键配置：
+
+- Qwen / DeepSeek key 池与模型名
+- 并发与批处理参数
+- SSE 超时与心跳
+- Runtime Router / Circuit Breaker
+- Skills 网关参数
+- Nginx 端口与鉴权开关
+
+### 8.3 启动 API
+
+```bash
+uvicorn src.main:app --host 0.0.0.0 --port 8000 --timeout-keep-alive 15
+```
+
+### 8.4 启动 Worker
+
+```bash
+# Linux / macOS
+celery -A src.worker.main worker --loglevel=info --concurrency=4
+
+# Windows
+celery -A src.worker.main worker --loglevel=info --pool=solo --concurrency=1
+```
+
+### 8.5 使用 Docker Compose
+
+```bash
+docker compose up --build
+```
+
+默认会启动：
+
+1. `nginx`
+2. `grader-api`
+3. `grader-worker`
+4. `redis`
+
+---
+
+## 9. 数据沉淀
+
+系统默认使用 SQLite，已覆盖以下几类核心对象：
+
+- 任务与状态：`tasks`
+- 单题结果：`grading_results`
+- 整卷任务与题级结果：`paper_tasks`、`paper_question_results`
+- Rubric / Bundle：`rubrics`、`rubric_bundles`
+- Prompt 与运行治理：`prompt_control_state`、`prompt_ab_configs`、`prompt_ops_audit_log`
+- 运行时遥测：`task_runtime_telemetry`
+- 复核与标注：`teacher_review_decisions`、`golden_annotation_assets`
+
+这意味着系统不只是“给出一次结果”，还会沉淀后续优化所需的任务、运行和复核数据。
+
+---
+
+## 10. 当前状态与边界
+
+### 10.1 已经具备的能力
+
+- 单题 rubric 生成与学生批改链路可用
+- 批量异步任务、状态流、取消、结果查询可用
+- 整卷 `RubricBundle` 生成可用
+- 整卷切题、父题级评分、worker 持久化链路已接通
+- `whole-paper-console` 与 `whole-paper-report` 页面已接入
+
+### 10.2 当前建议的使用定位
+
+整卷链路更适合 **内测、联调、灰度验证**，而不是直接视作完全稳定的正式交付版本。
+
+### 10.3 当前主要技术风险
+
+- 解答题 student tag / worked-solution block 召回仍不稳定
+- 填空题 OCR 噪声词可能直接进入 `slot_answers`
+- 整卷真实整页样本的稳定性验证仍需要继续补强
+- batch 路径目前更多是性能框架，仍需持续用真实样本回归
+
+---
+
+## 11. 测试
+
+```bash
+pytest -q
+```
+
+当前测试覆盖以下方面：
+
+- API 集成
+- Worker / DB 适配
+- Prompt Provider
+- Runtime Router / Circuit Breaker
+- Question Tree / Segmentation / Student Answer Bundle
+- Whole-paper Workflow / Bundle Workflow
+- Qwen / DeepSeek engine 的关键 contract
+
+---
+
+## 12. 文档导航
 
 | 文档 | 用途 |
 | --- | --- |
-| `README.md` | 项目总览、能力结构、启动方式 |
+| `README.md` | 项目总览、能力边界、启动方式 |
 | `EXECUTIVE_SUMMARY.md` | 快速了解项目全貌 |
-| `AUDIT_REPORT.md` | 详细技术审计 |
-| `INDEX.md` | 文档阅读入口 |
-| `docs/product_strategy_cn.md` | 产品定位与市场口径 |
-| `docs/deployment_guide_cn.md` | 部署与试点落地 |
-| `docs/production_readiness_cn.md` | 上线前检查项 |
-| `docs/postgresql_migration_plan_cn.md` | 数据库升级路线 |
-| `docs/demo_script_cn.md` | 演示话术与展示脚本 |
-| `docs/go_to_market_cn.md` | 对外沟通与试点策略 |
+| `AUDIT_REPORT.md` | 历史技术审计与结构风险说明 |
+| `INDEX.md` | 文档导航入口 |
+| `docs/` | 产品、部署、试点、复盘等专题文档 |
 
 ---
 
-## 适合谁使用 / 接手
+## 13. 说明
 
-这份仓库适合以下几类人快速上手：
-
-- 想搭建 AI 阅卷工作流的工程团队
-- 正在做教师侧作业批改 / 复核产品的开发者
-- 想研究多模态感知 + 评分编排的学生团队
-- 需要一个可运行的 AI 教育项目基础盘来继续产品化、前端化或试点落地的人
-
----
-
-## License
-
-MIT
+- `.env` 默认已被 `.gitignore` 忽略，不应提交到版本库
+- Windows 上运行 Celery Worker 时请使用 `--pool=solo`
+- 若 Redis 不可用，部分入口会回退到本地后台执行，但正式环境仍建议提供 Redis

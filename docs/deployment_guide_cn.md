@@ -197,6 +197,13 @@ docker compose up -d --build
    - 关键页面可访问
    - 提交一条最小样本任务
 
+建议把升级前检查固定成：
+
+```bash
+python scripts/backup_sqlite.py
+python scripts/check_trial_readiness.py --json
+```
+
 ---
 
 ## 7. 回滚流程
@@ -227,6 +234,7 @@ docker compose up -d --build
 2. `grader-worker` 是否在运行
 3. Worker 日志是否收到任务
 4. `.env` 中 `REDIS_HOST` 是否与 compose 网络一致
+5. 若 `ALLOW_LOCAL_TASK_FALLBACK=true`，确认当前只有 **单个 API 实例**
 
 ### 8.2 任务创建成功，但批改失败
 
@@ -236,6 +244,7 @@ docker compose up -d --build
 2. `LLM_EGRESS_ENABLED` 是否被关闭
 3. 外网是否能访问 Qwen / DeepSeek
 4. Worker 日志中是否出现上游报错
+5. 运行 `python scripts/check_trial_readiness.py`，确认 `qwen_keys` / `deepseek_keys` / `redis` 都通过
 
 ### 8.3 SSE 没有更新
 
@@ -244,6 +253,7 @@ docker compose up -d --build
 1. Redis 是否可用
 2. API 日志里是否有 SSE 连接错误
 3. 是否可退回 `/api/v1/grade/{task_id}` 轮询
+4. 检查 `python scripts/check_trial_readiness.py` 输出中的 `sse_config`
 
 ### 8.4 SQLite 写入异常或锁竞争
 
@@ -252,6 +262,7 @@ docker compose up -d --build
 1. 是否在同一台机器上高并发跑了太多批任务
 2. `outputs/` 所在磁盘是否可写
 3. 是否有人直接占用了数据库文件
+4. 使用 `python scripts/backup_sqlite.py` / `python scripts/restore_sqlite.py --backup <path> --force` 做备份恢复
 
 ### 8.5 Nginx 502/504 错误
 
