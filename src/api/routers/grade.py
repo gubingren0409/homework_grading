@@ -22,6 +22,13 @@ from redis.exceptions import RedisError
 from src.api.dependencies import get_db_path, limiter
 from src.api.sse import create_sse_response
 from src.api.auth import TeacherIdentity, get_current_teacher
+from src.api.utils import (
+    safe_get_dict,
+    safe_get_list,
+    iter_dict_values,
+    iter_list_items,
+    filter_students_with_paper_report,
+)
 from src.core.config import settings
 from src.db.client import (
     create_task,
@@ -142,12 +149,8 @@ async def _require_task_for_teacher(
 
 
 def _paper_report_answered_question_ids(paper_report: dict[str, Any]) -> set[str]:
-    bundle = paper_report.get("student_answer_bundle")
-    if not isinstance(bundle, dict):
-        return set()
-    answers = bundle.get("answers")
-    if not isinstance(answers, list):
-        return set()
+    bundle = safe_get_dict(paper_report, "student_answer_bundle")
+    answers = safe_get_list(bundle, "answers")
     return {
         str(answer.get("question_id"))
         for answer in answers
@@ -166,13 +169,8 @@ def _paper_report_question_stats(
         review_count = 0
         fully_correct_count = 0
         total_deduction = 0.0
-        for student in students:
-            paper_report = student.get("paper_report")
-            if not isinstance(paper_report, dict):
-                continue
-            per_question = paper_report.get("per_question")
-            if not isinstance(per_question, dict):
-                continue
+        for student, paper_report in filter_students_with_paper_report(students):
+            per_question = safe_get_dict(paper_report, "per_question")
             item = per_question.get(str(question_id))
             if not isinstance(item, dict):
                 continue
@@ -199,19 +197,9 @@ def _paper_report_question_stats(
 
 def _paper_report_review_reason_counts(students: list[dict[str, Any]]) -> dict[str, int]:
     counts: dict[str, int] = {}
-    for student in students:
-        paper_report = student.get("paper_report")
-        if not isinstance(paper_report, dict):
-            continue
-        per_question = paper_report.get("per_question")
-        if not isinstance(per_question, dict):
-            continue
-        for item in per_question.values():
-            if not isinstance(item, dict):
-                continue
-            review_reasons = item.get("review_reasons")
-            if not isinstance(review_reasons, list):
-                continue
+    for student, paper_report in filter_students_with_paper_report(students):
+        for item in iter_dict_values(paper_report, "per_question"):
+            review_reasons = safe_get_list(item, "review_reasons")
             for reason in review_reasons:
                 key = str(reason or "").strip()
                 if not key:
@@ -366,27 +354,19 @@ def _base_paper_student_id(student_id: Any) -> str:
 
 
 def _paper_report_evidence_lookup(paper_report: Dict[str, Any]) -> Dict[str, str]:
-    bundle = paper_report.get("student_answer_bundle")
-    if not isinstance(bundle, dict):
-        return {}
-    answers = bundle.get("answers")
-    if not isinstance(answers, list):
-        return {}
+    bundle = safe_get_dict(paper_report, "student_answer_bundle")
+    answers = safe_get_list(bundle, "answers")
 
     lookup: Dict[str, str] = {}
-    for answer in answers:
-        if not isinstance(answer, dict):
-            continue
+    for answer in iter_list_items({"answers": answers}, "answers"):
         question_id = str(answer.get("question_id") or "").strip()
-        parts = answer.get("parts")
-        if not question_id or not isinstance(parts, list):
+        parts = safe_get_list(answer, "parts")
+        if not question_id:
             continue
         for part_index, part in enumerate(parts):
             if not isinstance(part, dict):
                 continue
-            elements = part.get("elements")
-            if not isinstance(elements, list):
-                continue
+            elements = safe_get_list(part, "elements")
             for element_index, element in enumerate(elements):
                 if not isinstance(element, dict):
                     continue
@@ -406,15 +386,11 @@ def _enrich_paper_report_evidence(paper_report: Any) -> Any:
     if not isinstance(paper_report, dict):
         return paper_report
     evidence_lookup = _paper_report_evidence_lookup(paper_report)
-    per_question = paper_report.get("per_question")
-    if not evidence_lookup or not isinstance(per_question, dict):
+    per_question = safe_get_dict(paper_report, "per_question")
+    if not evidence_lookup:
         return paper_report
-    for question_report in per_question.values():
-        if not isinstance(question_report, dict):
-            continue
-        steps = question_report.get("step_evaluations")
-        if not isinstance(steps, list):
-            continue
+    for question_report in iter_dict_values({"per_question": per_question}, "per_question"):
+        steps = safe_get_list(question_report, "step_evaluations")
         for step in steps:
             if not isinstance(step, dict) or step.get("evidence_snippet"):
                 continue
@@ -486,20 +462,14 @@ def _paper_report_input_images(task_id: str, paper_report: Dict[str, Any]) -> Di
 
 
 def _paper_report_crop_files(paper_report: Dict[str, Any]) -> Dict[str, List[tuple[str, str]]]:
-    bundle = paper_report.get("student_answer_bundle")
-    if not isinstance(bundle, dict):
-        return {}
-    answers = bundle.get("answers")
-    if not isinstance(answers, list):
-        return {}
+    bundle = safe_get_dict(paper_report, "student_answer_bundle")
+    answers = safe_get_list(bundle, "answers")
 
     crops: Dict[str, List[tuple[str, str]]] = {}
-    for answer in answers:
-        if not isinstance(answer, dict):
-            continue
+    for answer in iter_list_items({"answers": answers}, "answers"):
         question_id = str(answer.get("question_id") or "").strip()
-        parts = answer.get("parts")
-        if not question_id or not isinstance(parts, list):
+        parts = safe_get_list(answer, "parts")
+        if not question_id:
             continue
 
         crop_items: List[tuple[str, str]] = []
