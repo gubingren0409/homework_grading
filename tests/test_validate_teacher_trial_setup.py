@@ -10,6 +10,7 @@ def test_validation_report_passes_without_inputs_when_config_is_ok(monkeypatch):
     assert report["ok"] is True
     checks = {item["name"]: item for item in report["checks"]}
     assert checks["config_issues"]["ok"] is True
+    assert report["checklist"] == ["运行 start_teacher_trial.bat 开始本地教师试用。"]
 
 
 def test_validation_report_requires_inputs_when_requested(monkeypatch):
@@ -23,3 +24,7 @@ def test_validation_report_requires_inputs_when_requested(monkeypatch):
     checks = {item["name"]: item for item in report["checks"]}
     assert checks["input_ready"]["ok"] is False
     assert "学生作答目录为空" in checks["input_ready"]["detail"]
+    assert report["checklist"] == [
+        "把参考答案 PDF/图片放到 teacher_trial\\reference。",
+        "把学生整卷 PDF/图片放到 teacher_trial\\students。",
+    ]

@@ -5,6 +5,7 @@ from scripts.configure_teacher_trial import (
     ensure_env_file,
     is_placeholder_secret,
     parse_env_values,
+    resolve_runtime_profile_updates,
     upsert_env_values,
 )
 
@@ -48,6 +49,22 @@ def test_collect_teacher_trial_config_issues_reports_placeholders(tmp_path):
 
     assert "QWEN_API_KEYS 未填写真实可用的 key。" in issues
     assert "LLM_EGRESS_ENABLED 当前不是 true，模型外呼会被阻断。" in issues
+
+
+def test_resolve_runtime_profile_updates_returns_fast_profile():
+    updates = resolve_runtime_profile_updates("fast")
+
+    assert updates == {
+        "QWEN_ANSWER_REGION_STRATEGY": "auto",
+        "QWEN_BATCH_MAX_IMAGES": "2",
+        "QWEN_SINGLE_IMAGE_CONCURRENCY": "2",
+        "QWEN_ANSWER_REGION_BATCH_CONCURRENCY": "4",
+        "PAPER_LAYOUT_ENABLED": "true",
+    }
+
+
+def test_resolve_runtime_profile_updates_returns_empty_for_none():
+    assert resolve_runtime_profile_updates(None) == {}
 
 
 def test_ensure_env_file_copies_example_once(tmp_path):

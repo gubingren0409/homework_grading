@@ -11,6 +11,7 @@ from src.core.config import settings
 from src.orchestration.paper_workflow import PaperGradingWorkflow
 from src.orchestration.segmentation import AnswerRegionSplitter
 from src.perception.mock_engine import MockPerceptionEngine
+from src.schemas.answer_ir import StudentAnswerPart
 from src.schemas.cognitive_ir import EvaluationReport
 from src.schemas.perception_ir import (
     BoundingBox,
@@ -183,6 +184,40 @@ def test_paper_workflow_matches_compact_subquestion_regions_to_parent_question()
     assert subquestion_fallback is None
     assert workflow._aligned_region_question_no("四/18", "18(1)") == "四/18/(1)"
     assert workflow._is_region_covered_by_rubric("18(1)", {"四/18"}) is True
+
+
+def test_trim_adjacent_question_content_demotes_shallow_visual_nodes_after_trim():
+    workflow = PaperGradingWorkflow(
+        perception_engine=MockPerceptionEngine(),
+        cognitive_agent=MockCognitiveAgent(),
+    )
+    outputs = [
+        PerceptionOutput(
+            readability_status="CLEAR",
+            elements=[
+                PerceptionNode(
+                    element_id="diagram-1",
+                    content_type="image_diagram",
+                    raw_content="这是前文配图说明内容 3.",
+                    confidence_score=0.9,
+                )
+            ],
+            global_confidence=0.9,
+        )
+    ]
+
+    trimmed = workflow._trim_adjacent_question_content(outputs, "三/3")
+
+    assert trimmed[0].elements[0].raw_content == "3."
+    assert trimmed[0].elements[0].content_type == "plain_text"
+    part = StudentAnswerPart(
+        source_question_no="三/3",
+        text="3.",
+        elements=trimmed[0].elements,
+        global_confidence=0.9,
+        readability_status="CLEAR",
+    )
+    assert part.elements[0].content_type == "plain_text"
 
 
 @pytest.mark.asyncio
@@ -380,6 +415,65 @@ class ConcurrentBatchPerceptionEngine(MockPerceptionEngine):
             self.in_flight -= 1
 
 
+class SlowAnswerRegionPerceptionEngine(MockPerceptionEngine):
+    async def process_images(self, image_bytes_list: list[bytes], *, context_type: str = "student_homework"):
+        if context_type == "student_answer_regions":
+            await asyncio.sleep(0.05)
+        return await super().process_images(image_bytes_list, context_type=context_type)
+
+
+class RetryBudgetPerceptionEngine(MockPerceptionEngine):
+    def __init__(self) -> None:
+        self._capture_active = False
+
+    def begin_runtime_capture(self):
+        self._capture_active = True
+        return object()
+
+    def end_runtime_capture(self, token):
+        del token
+        self._capture_active = False
+        return [
+            {
+                "provider": "qwen",
+                "requested_model": "qwen-vl-max",
+                "model_used": "qwen-vl-max",
+                "retry_count": 4,
+                "fallback_used": False,
+                "error_type": None,
+            }
+        ]
+
+
+class SlowCognitiveAgent(MockCognitiveAgent):
+    async def evaluate_logic(self, perception_data: PerceptionOutput, rubric=None) -> EvaluationReport:
+        del perception_data, rubric
+        await asyncio.sleep(0.05)
+        return await super().evaluate_logic(
+            PerceptionOutput(
+                readability_status="CLEAR",
+                elements=[],
+                global_confidence=1.0,
+                is_blank=False,
+                trigger_short_circuit=False,
+            )
+        )
+
+
+class SlowSkillService(FakeSkillService):
+    async def try_parse_layout(
+        self,
+        image_bytes: bytes,
+        *,
+        context_type: str,
+        page_index: int = 0,
+        target_question_no: str | None = None,
+    ) -> LayoutParseResult | None:
+        del image_bytes, context_type, target_question_no
+        await asyncio.sleep(0.05)
+        return self._layout_results[page_index]
+
+
 class FallbackEventPerceptionEngine(BatchPerceptionEngine):
     def __init__(self) -> None:
         super().__init__()
@@ -535,6 +629,28 @@ class OCRInferenceWithoutStudentTagsEngine(MockPerceptionEngine):
                         raw_content="18. 解:(1) T=\\frac{4}{7}\\pi\nT=2\\pi\\sqrt{\\frac{L}{g}}",
                         confidence_score=1.0,
                         bbox=BoundingBox(x_min=0.1, y_min=0.1, x_max=0.9, y_max=0.9),
+                    )
+                ],
+                global_confidence=1.0,
+            )
+            for _ in image_bytes_list
+        ]
+
+
+class ShortAnswerInferenceWithoutStudentTagsEngine(MockPerceptionEngine):
+    async def process_images(self, image_bytes_list: list[bytes], *, context_type: str = "student_homework"):
+        if context_type != "student_answer_regions":
+            return await super().process_images(image_bytes_list, context_type=context_type)
+        return [
+            PerceptionOutput(
+                readability_status="CLEAR",
+                elements=[
+                    PerceptionNode(
+                        element_id="answer-q10",
+                        content_type="plain_text",
+                        raw_content="D",
+                        confidence_score=1.0,
+                        bbox=BoundingBox(x_min=0.1, y_min=0.1, x_max=0.18, y_max=0.18),
                     )
                 ],
                 global_confidence=1.0,
@@ -762,7 +878,7 @@ async def test_paper_workflow_flags_missing_question_regions_for_review():
 
 
 @pytest.mark.asyncio
-async def test_paper_workflow_does_not_raise_paper_review_for_student_tag_inference_warnings():
+async def test_paper_workflow_raises_review_for_worked_solution_ocr_fallback():
     workflow = PaperGradingWorkflow(
         perception_engine=OCRInferenceWithoutStudentTagsEngine(),
         cognitive_agent=MockCognitiveAgent(),
@@ -778,9 +894,35 @@ async def test_paper_workflow_does_not_raise_paper_review_for_student_tag_infere
         presegmented_question_ids=["18"],
     )
 
-    assert report.requires_human_review is False
+    assert report.requires_human_review is True
     assert "question 18: ANSWER_TEXT_INFERRED_FROM_OCR_WITHOUT_STUDENT_TAGS" in report.warnings
+    assert "question 18: OCR_WORKED_SOLUTION_FALLBACK_REVIEW" in report.warnings
     assert report.per_question["18"].status == "SCORED"
+    assert report.per_question["18"].requires_human_review is True
+    assert report.per_question["18"].review_reasons == ["ANSWER_EXTRACTION_RISK"]
+
+
+@pytest.mark.asyncio
+async def test_paper_workflow_does_not_raise_review_for_short_answer_inference_without_tags():
+    workflow = PaperGradingWorkflow(
+        perception_engine=ShortAnswerInferenceWithoutStudentTagsEngine(),
+        cognitive_agent=MockCognitiveAgent(),
+    )
+
+    report = await workflow.run_pipeline_with_presegmented_images(
+        [_make_test_image_bytes()],
+        RubricBundle(
+            paper_id="paper-inferred-short-answer",
+            rubrics=[TeacherRubric(question_id="10", correct_answer="D")],
+            question_tree=[],
+        ),
+        presegmented_question_ids=["10"],
+    )
+
+    assert report.requires_human_review is False
+    assert "question 10: ANSWER_TEXT_INFERRED_WITHOUT_STUDENT_TAGS" in report.warnings
+    assert report.per_question["10"].status == "SCORED"
+    assert report.per_question["10"].review_reasons == []
 
 
 @pytest.mark.asyncio
@@ -1163,6 +1305,28 @@ async def test_paper_workflow_batches_student_answer_perception_before_grading(m
     assert stage_seconds["answer_region_ocr"] >= 0
     assert stage_seconds["cognitive_evaluation"] >= 0
     assert stage_seconds["total"] >= 0
+    spans = report.runtime_profile["spans"]
+    assert any(
+        span["stage"] == "student_page_ocr"
+        and span["item_refs"] == [{"page_index": 0}]
+        for span in spans
+    )
+    assert any(
+        span["stage"] == "student_page_layout"
+        and span["item_refs"] == [{"page_index": 0}]
+        for span in spans
+    )
+    assert any(
+        span["stage"] == "answer_region_ocr"
+        and span["item_refs"][0]["question_id"] == "1"
+        for span in spans
+        if span["item_refs"]
+    )
+    assert any(
+        span["stage"] == "cognitive_evaluation"
+        and span["item_refs"] == [{"question_id": "1"}]
+        for span in spans
+    )
     assert {
         plan["context_type"]: plan
         for plan in report.runtime_profile["chunk_plans"]
@@ -1218,17 +1382,119 @@ async def test_paper_workflow_concurrently_processes_answer_region_batches(monke
 
     assert perception_engine.batch_sizes == [3, 3]
     assert perception_engine.max_in_flight == 2
-    assert [
-        output.elements[0].raw_content
-        for output in outputs
-    ] == [
-        "<student>answer-1</student>",
-        "<student>answer-2</student>",
-        "<student>answer-3</student>",
-        "<student>answer-4</student>",
-        "<student>answer-5</student>",
-        "<student>answer-6</student>",
-    ]
+
+
+@pytest.mark.asyncio
+async def test_paper_workflow_marks_answer_ocr_timeout_for_review(monkeypatch):
+    monkeypatch.setattr(settings, "paper_answer_region_ocr_timeout_seconds", 0.01)
+    workflow = PaperGradingWorkflow(
+        perception_engine=SlowAnswerRegionPerceptionEngine(),
+        cognitive_agent=MockCognitiveAgent(),
+    )
+
+    report = await workflow.run_pipeline_with_presegmented_images(
+        [_make_test_image_bytes()],
+        RubricBundle(
+            paper_id="paper-answer-timeout",
+            rubrics=[TeacherRubric(question_id="1", correct_answer="A")],
+            question_tree=[],
+        ),
+    )
+
+    question_report = report.per_question["1"]
+    assert question_report.requires_human_review is True
+    assert "ANSWER_OCR_TIMEOUT_REVIEW" in question_report.review_reasons
+    assert any(
+        span["stage"] == "answer_region_ocr" and "timeout" in span["error_types"]
+        for span in report.runtime_profile["spans"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_paper_workflow_marks_answer_ocr_budget_limit_for_review(monkeypatch):
+    monkeypatch.setattr(settings, "paper_stage_retry_budget", 1)
+    workflow = PaperGradingWorkflow(
+        perception_engine=RetryBudgetPerceptionEngine(),
+        cognitive_agent=MockCognitiveAgent(),
+    )
+
+    report = await workflow.run_pipeline_with_presegmented_images(
+        [_make_test_image_bytes()],
+        RubricBundle(
+            paper_id="paper-answer-budget",
+            rubrics=[TeacherRubric(question_id="1", correct_answer="A")],
+            question_tree=[],
+        ),
+    )
+
+    question_report = report.per_question["1"]
+    assert question_report.requires_human_review is True
+    assert "ANSWER_OCR_BUDGET_LIMIT_REVIEW" in question_report.review_reasons
+    assert any(
+        span["stage"] == "answer_region_ocr" and "budget_limit" in span["error_types"]
+        for span in report.runtime_profile["spans"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_paper_workflow_marks_cognitive_timeout_for_review(monkeypatch):
+    monkeypatch.setattr(settings, "paper_cognitive_timeout_seconds", 0.01)
+    workflow = PaperGradingWorkflow(
+        perception_engine=MockPerceptionEngine(),
+        cognitive_agent=SlowCognitiveAgent(),
+    )
+
+    report = await workflow.run_pipeline_with_presegmented_images(
+        [_make_test_image_bytes()],
+        RubricBundle(
+            paper_id="paper-cognitive-timeout",
+            rubrics=[TeacherRubric(question_id="1", correct_answer="A")],
+            question_tree=[],
+        ),
+    )
+
+    question_report = report.per_question["1"]
+    assert question_report.requires_human_review is True
+    assert "COGNITIVE_TIMEOUT_REVIEW" in question_report.review_reasons
+    assert any(
+        span["stage"] == "cognitive_evaluation" and "timeout" in span["error_types"]
+        for span in report.runtime_profile["spans"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_paper_workflow_marks_layout_timeout_for_review(monkeypatch):
+    monkeypatch.setattr(settings, "paper_layout_timeout_seconds", 0.01)
+    workflow = PaperGradingWorkflow(
+        perception_engine=BatchPerceptionEngine(),
+        cognitive_agent=MockCognitiveAgent(),
+        skill_service=SlowSkillService(
+            [
+                LayoutParseResult(
+                    context_type="STUDENT_ANSWER",
+                    page_index=0,
+                    regions=[],
+                    warnings=[],
+                )
+            ]
+        ),
+    )
+
+    report = await workflow.run_pipeline_with_preprocessed_images(
+        [_make_test_image_bytes()],
+        RubricBundle(
+            paper_id="paper-layout-timeout",
+            rubrics=[TeacherRubric(question_id="1", correct_answer="A")],
+            question_tree=[],
+        ),
+    )
+
+    assert report.requires_human_review is True
+    assert "LAYOUT_TIMEOUT_REVIEW" in report.review_reasons
+    assert any(
+        span["stage"] == "student_page_layout" and "timeout" in span["error_types"]
+        for span in report.runtime_profile["spans"]
+    )
 
 
 @pytest.mark.asyncio

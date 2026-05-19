@@ -3,6 +3,7 @@ import logging
 import re
 import json
 import asyncio
+import contextvars
 from typing import Any, Dict, Optional, Sequence
 from io import BytesIO
 
@@ -15,7 +16,11 @@ from src.core.circuit_breaker import CircuitBreaker, CircuitBreakerOpenError  # 
 from src.core.trace_context import outbound_trace_headers, get_task_id, get_trace_id
 from src.perception.base import BasePerceptionEngine
 from src.orchestration.reference_image_description import reference_output_to_dense_description
-from src.schemas.perception_ir import PerceptionOutput, LayoutIR
+from src.schemas.perception_ir import (
+    LayoutIR,
+    PerceptionOutput,
+    normalize_shallow_visual_content_type,
+)
 from src.prompts.provider import get_prompt_provider
 from src.prompts.schemas import PromptResolveRequest, PromptVariable
 
@@ -67,11 +72,36 @@ class QwenVLMPerceptionEngine(BasePerceptionEngine):
             ),
         )
         self._batch_fallback_events: list[dict[str, Any]] = []
+        self._last_runtime_telemetry: dict[str, Any] | None = None
+        self._runtime_capture_events: contextvars.ContextVar[list[dict[str, Any]] | None] = (
+            contextvars.ContextVar("qwen_runtime_capture_events", default=None)
+        )
 
     def drain_batch_fallback_events(self) -> list[dict[str, Any]]:
         events = list(self._batch_fallback_events)
         self._batch_fallback_events.clear()
         return events
+
+    def begin_runtime_capture(self) -> object | None:
+        return self._runtime_capture_events.set([])
+
+    def end_runtime_capture(self, token: object | None) -> list[dict[str, Any]]:
+        events = list(self._runtime_capture_events.get() or [])
+        if token is not None:
+            self._runtime_capture_events.reset(token)
+        return events
+
+    def get_last_runtime_telemetry(self) -> dict[str, Any] | None:
+        if self._last_runtime_telemetry is None:
+            return None
+        return dict(self._last_runtime_telemetry)
+
+    def _record_runtime_event(self, telemetry: dict[str, Any]) -> None:
+        normalized = dict(telemetry)
+        self._last_runtime_telemetry = normalized
+        events = self._runtime_capture_events.get()
+        if isinstance(events, list):
+            events.append(normalized)
 
     def _encode_image(self, image_bytes: bytes) -> str:
         """Converts raw image bytes to a base64-encoded string."""
@@ -123,10 +153,9 @@ class QwenVLMPerceptionEngine(BasePerceptionEngine):
                 continue
             content = str(elem.get("raw_content") or "").strip()
             content_type = str(elem.get("content_type") or "")
-            if content_type in {"image_diagram", "image", "table"} and len(content) < 10:
-                if not content:
-                    continue
-                elem["content_type"] = "plain_text"
+            if not content and content_type in {"image_diagram", "image", "table"}:
+                continue
+            elem["content_type"] = normalize_shallow_visual_content_type(content_type, content)
             if "bbox" in elem and elem["bbox"]:
                 if isinstance(elem["bbox"], list):
                     elem["bbox"] = [max(0.0, min(1.0, float(c))) for c in elem["bbox"]]
@@ -155,6 +184,7 @@ class QwenVLMPerceptionEngine(BasePerceptionEngine):
         *,
         prompt_key: str,
         variables: Sequence[PromptVariable],
+        variant_hint: str | None = None,
     ) -> list[dict]:
         trace_id, bucket_key = self._prompt_context()
         prompt_bundle = await self._prompt_provider.resolve(
@@ -167,9 +197,17 @@ class QwenVLMPerceptionEngine(BasePerceptionEngine):
                 variables=list(variables),
                 max_input_tokens=settings.prompt_max_input_tokens,
                 reserve_output_tokens=settings.prompt_reserve_output_tokens,
+                variant_hint=variant_hint,
             )
         )
         return prompt_bundle.messages
+
+    def _variant_hint_for_prompt_key(self, prompt_key: str) -> str | None:
+        if prompt_key == "qwen.perception.extract":
+            return settings.qwen_perception_extract_variant_hint
+        if prompt_key == "qwen.perception.batch_extract":
+            return settings.qwen_perception_batch_extract_variant_hint
+        return None
 
     def _sanitize_layout_coordinates(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -242,7 +280,19 @@ class QwenVLMPerceptionEngine(BasePerceptionEngine):
         messages = await self._resolve_prompt_messages(
             prompt_key=prompt_key,
             variables=prompt_variables,
+            variant_hint=self._variant_hint_for_prompt_key(prompt_key),
         )
+        base_telemetry = {
+            "provider": "qwen",
+            "requested_model": settings.qwen_model_name,
+            "model_used": settings.qwen_model_name,
+            "prompt_key": prompt_key,
+            "prompt_asset_version": None,
+            "prompt_variant_id": None,
+            "prompt_cache_level": None,
+            "timeout_seconds": timeout_seconds,
+            "response_mode": "json",
+        }
 
         max_attempts = max(max_retries + 1, len(self._key_pool.keys_metadata))
         for attempt in range(max_attempts):
@@ -279,7 +329,20 @@ class QwenVLMPerceptionEngine(BasePerceptionEngine):
                     if not raw:
                         raise GradingSystemError("Received empty response from Qwen-VL.")
                     try:
-                        return self._decode_json_object(raw)
+                        parsed = self._decode_json_object(raw)
+                        self._record_runtime_event(
+                            {
+                                **base_telemetry,
+                                "attempt": attempt + 1,
+                                "retry_count": attempt,
+                                "network_error_count": connection_error_count,
+                                "fallback_used": False,
+                                "fallback_reason": None,
+                                "succeeded": True,
+                                "error_type": None,
+                            }
+                        )
+                        return parsed
                     except (json.JSONDecodeError, ValueError) as dec_err:
                         last_parse_error = str(dec_err)
                         logger.warning(
@@ -293,8 +356,32 @@ class QwenVLMPerceptionEngine(BasePerceptionEngine):
                         continue
 
             except AllKeysExhaustedError:
+                self._record_runtime_event(
+                    {
+                        **base_telemetry,
+                        "attempt": attempt + 1,
+                        "retry_count": attempt,
+                        "network_error_count": connection_error_count,
+                        "fallback_used": True,
+                        "fallback_reason": "all_keys_exhausted",
+                        "succeeded": False,
+                        "error_type": "all_keys_exhausted",
+                    }
+                )
                 raise
             except CircuitBreakerOpenError:
+                self._record_runtime_event(
+                    {
+                        **base_telemetry,
+                        "attempt": attempt + 1,
+                        "retry_count": attempt,
+                        "network_error_count": connection_error_count,
+                        "fallback_used": True,
+                        "fallback_reason": "circuit_open",
+                        "succeeded": False,
+                        "error_type": "circuit_open",
+                    }
+                )
                 raise
             except openai.RateLimitError:
                 connection_error_count = 0
@@ -308,20 +395,80 @@ class QwenVLMPerceptionEngine(BasePerceptionEngine):
                     logger.warning("qwen key access denied; cooling current key and trying next key")
                     await asyncio.sleep(0.5)
                     continue
+                self._record_runtime_event(
+                    {
+                        **base_telemetry,
+                        "attempt": attempt + 1,
+                        "retry_count": attempt,
+                        "network_error_count": connection_error_count,
+                        "fallback_used": False,
+                        "fallback_reason": None,
+                        "succeeded": False,
+                        "error_type": "bad_request",
+                    }
+                )
                 raise GradingSystemError(f"An unexpected error occurred during perception: {str(bad_req)}")
             except (openai.APIConnectionError, openai.APITimeoutError) as net_err:
                 connection_error_count += 1
                 if connection_error_count > max_connection_errors:
+                    self._record_runtime_event(
+                        {
+                            **base_telemetry,
+                            "attempt": attempt + 1,
+                            "retry_count": attempt,
+                            "network_error_count": connection_error_count,
+                            "fallback_used": False,
+                            "fallback_reason": None,
+                            "succeeded": False,
+                            "error_type": "network",
+                        }
+                    )
                     raise GradingSystemError(f"Persistent network instability for Qwen: {str(net_err)}")
                 await asyncio.sleep(2.0)
                 continue
             except Exception as e:
+                self._record_runtime_event(
+                    {
+                        **base_telemetry,
+                        "attempt": attempt + 1,
+                        "retry_count": attempt,
+                        "network_error_count": connection_error_count,
+                        "fallback_used": False,
+                        "fallback_reason": None,
+                        "succeeded": False,
+                        "error_type": "unexpected_error",
+                    }
+                )
                 raise GradingSystemError(f"An unexpected error occurred during perception: {str(e)}")
 
         if last_parse_error:
+            self._record_runtime_event(
+                {
+                    **base_telemetry,
+                    "attempt": max_attempts,
+                    "retry_count": max(0, max_attempts - 1),
+                    "network_error_count": connection_error_count,
+                    "fallback_used": False,
+                    "fallback_reason": None,
+                    "succeeded": False,
+                    "error_type": "parse_error",
+                }
+            )
             raise GradingSystemError(
                 f"VLM JSON decode failed after retries (prompt_key={prompt_key}): {last_parse_error}"
             )
+        self._record_runtime_event(
+            {
+                **base_telemetry,
+                "attempt": max_attempts,
+                "retry_count": max(0, max_attempts - 1),
+                "network_error_count": connection_error_count,
+                "fallback_used": False,
+                "fallback_reason": None,
+                "succeeded": False,
+                "error_type": "retry_exhausted",
+            }
+        )
         raise GradingSystemError("Qwen-VL request exhausted retries.")
 
     async def extract_layout(

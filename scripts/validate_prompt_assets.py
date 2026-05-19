@@ -119,8 +119,8 @@ def _validate_variants(
         seen_variant_ids.add(variant_id)
 
         weight = variant.get("weight")
-        if not isinstance(weight, int) or weight <= 0:
-            errors.append(f"{label}.weight must be positive int")
+        if not isinstance(weight, int) or weight < 0:
+            errors.append(f"{label}.weight must be non-negative int")
 
         system_template = variant.get("system_template")
         user_template = variant.get("user_template")

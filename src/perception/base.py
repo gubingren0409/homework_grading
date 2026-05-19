@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 import asyncio
+from typing import Any
 
 from src.schemas.perception_ir import PerceptionOutput
 
@@ -43,3 +44,16 @@ class BasePerceptionEngine(ABC):
         return await asyncio.gather(
             *[self.process_image(image_bytes) for image_bytes in image_bytes_list]
         )
+
+    def begin_runtime_capture(self) -> object | None:
+        return None
+
+    def end_runtime_capture(self, token: object | None) -> list[dict[str, Any]]:
+        del token
+        return []
+
+    def get_last_runtime_telemetry(self) -> dict[str, Any] | None:
+        return None
+
+    def drain_batch_fallback_events(self) -> list[dict[str, Any]]:
+        return []

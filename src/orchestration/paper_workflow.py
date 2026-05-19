@@ -21,7 +21,13 @@ from src.perception.base import BasePerceptionEngine
 from src.perception.question_anchor import QuestionAnchorDetector
 from src.schemas.answer_ir import StudentAnswerPart
 from src.schemas.cognitive_ir import EvaluationReport, PaperEvaluationReport
-from src.schemas.perception_ir import BoundingBox, PerceptionOutput, QuestionAnchorSet, StudentAnswerRegion
+from src.schemas.perception_ir import (
+    BoundingBox,
+    PerceptionOutput,
+    QuestionAnchorSet,
+    StudentAnswerRegion,
+    normalize_shallow_visual_content_type,
+)
 from src.schemas.rubric_ir import RubricBundle, TeacherRubric
 from src.skills.interfaces import LayoutParseResult, LayoutRegion
 from src.utils.file_parsers import process_multiple_files
@@ -60,6 +66,14 @@ _REVIEW_REASON_LOW_QUALITY_CROP = "LOW_QUALITY_CROP"
 _REVIEW_REASON_NUMERIC_EQUIVALENCE = "NUMERIC_EQUIVALENCE_CONTRADICTION"
 _REVIEW_REASON_MODEL_REQUESTED = "MODEL_REQUESTED_HUMAN_REVIEW"
 _REVIEW_REASON_UNMATCHED_REGION = "UNMATCHED_REGION_WITHOUT_RUBRIC"
+_REVIEW_REASON_LAYOUT_TIMEOUT = "LAYOUT_TIMEOUT_REVIEW"
+_REVIEW_REASON_LAYOUT_BUDGET_LIMIT = "LAYOUT_BUDGET_LIMIT_REVIEW"
+_REVIEW_REASON_PAGE_OCR_TIMEOUT = "PAGE_OCR_TIMEOUT_REVIEW"
+_REVIEW_REASON_PAGE_OCR_BUDGET_LIMIT = "PAGE_OCR_BUDGET_LIMIT_REVIEW"
+_REVIEW_REASON_ANSWER_OCR_TIMEOUT = "ANSWER_OCR_TIMEOUT_REVIEW"
+_REVIEW_REASON_ANSWER_OCR_BUDGET_LIMIT = "ANSWER_OCR_BUDGET_LIMIT_REVIEW"
+_REVIEW_REASON_COGNITIVE_TIMEOUT = "COGNITIVE_TIMEOUT_REVIEW"
+_REVIEW_REASON_COGNITIVE_BUDGET_LIMIT = "COGNITIVE_BUDGET_LIMIT_REVIEW"
 
 
 class PaperGradingWorkflow:
@@ -107,13 +121,18 @@ class PaperGradingWorkflow:
             image_bytes_list,
             context_type="student_paper_pages",
             runtime_profile=runtime_profile,
+            span_items=[{"page_index": page_index} for page_index in range(len(image_bytes_list))],
         )
         self._record_stage(runtime_profile, "student_page_ocr", time.perf_counter() - stage_start)
         warnings = self._drain_perception_fallback_warnings()
         stage_start = time.perf_counter()
         layout_results = await asyncio.gather(
             *[
-                self._parse_layout(page_bytes, page_index=page_index)
+                self._parse_layout_with_runtime(
+                    page_bytes,
+                    page_index=page_index,
+                    runtime_profile=runtime_profile,
+                )
                 for page_index, page_bytes in enumerate(image_bytes_list)
             ]
         )
@@ -139,6 +158,7 @@ class PaperGradingWorkflow:
         grading_inputs: list[tuple[TeacherRubric, list[StudentAnswerRegion]]] = []
         image_slices_by_question: dict[str, tuple[int, int]] = {}
         all_question_images: list[bytes] = []
+        answer_region_span_items: list[dict[str, Any]] = []
         image_observability_by_question: dict[str, list[tuple[list[str], dict[str, Any]]]] = {}
 
         stage_start = time.perf_counter()
@@ -160,8 +180,17 @@ class PaperGradingWorkflow:
             start = len(all_question_images)
             question_metrics: list[tuple[list[str], dict[str, Any]]] = []
             for region in question_regions:
+                crop_index = len(question_metrics) + 1
                 prepared_image = self._prepare_answer_region_image(region.cropped_image_bytes)
                 all_question_images.append(prepared_image)
+                answer_region_span_items.append(
+                    {
+                        "question_id": rubric.question_id,
+                        "page_index": region.page_index,
+                        "crop_index": crop_index,
+                        "source_question_no": region.question_no,
+                    }
+                )
                 question_metrics.append(
                     self._build_image_observability(
                         source_page_bytes=image_bytes_list[region.page_index],
@@ -179,6 +208,7 @@ class PaperGradingWorkflow:
             all_question_images,
             context_type="student_answer_regions",
             runtime_profile=runtime_profile,
+            span_items=answer_region_span_items,
         )
         self._record_stage(runtime_profile, "answer_region_ocr", time.perf_counter() - stage_start)
         warnings.extend(self._drain_perception_fallback_warnings())
@@ -281,6 +311,10 @@ class PaperGradingWorkflow:
             prepared_images,
             context_type="student_answer_regions",
             runtime_profile=runtime_profile,
+            span_items=[
+                {"question_id": question_id, "page_index": index, "crop_index": 1}
+                for index, question_id in enumerate(question_ids)
+            ],
         )
         self._record_stage(runtime_profile, "answer_region_ocr", time.perf_counter() - stage_start)
         warnings = self._drain_perception_fallback_warnings()
@@ -387,6 +421,10 @@ class PaperGradingWorkflow:
             for answer in answer_bundle.answers
         }
         per_question_review_reasons: dict[str, list[str]] = {}
+        runtime_question_review_reasons, runtime_paper_review_reasons, runtime_warnings = (
+            self._runtime_review_reasons(runtime_profile)
+        )
+        warnings.extend(runtime_warnings)
         pending_rubrics: list[TeacherRubric] = []
         pending_perceptions: list[PerceptionOutput] = []
         for rubric in rubric_bundle.rubrics:
@@ -409,6 +447,15 @@ class PaperGradingWorkflow:
                     rubric.question_id,
                     self._review_reasons_from_answer_warnings(answer.extraction_warnings),
                 )
+            if self._answer_requires_extraction_review(answer):
+                warnings.append(
+                    f"question {rubric.question_id}: OCR_WORKED_SOLUTION_FALLBACK_REVIEW"
+                )
+                self._extend_question_review_reasons(
+                    per_question_review_reasons,
+                    rubric.question_id,
+                    [_REVIEW_REASON_EXTRACTION_RISK],
+                )
             if answer.image_warnings:
                 warnings.extend(
                     f"question {rubric.question_id}: {warning}"
@@ -419,6 +466,11 @@ class PaperGradingWorkflow:
                     rubric.question_id,
                     [_REVIEW_REASON_LOW_QUALITY_CROP],
                 )
+            self._extend_question_review_reasons(
+                per_question_review_reasons,
+                rubric.question_id,
+                runtime_question_review_reasons.get(rubric.question_id, []),
+            )
             pending_rubrics.append(rubric)
             pending_perceptions.append(answer_perception)
 
@@ -426,17 +478,31 @@ class PaperGradingWorkflow:
             stage_start = time.perf_counter()
             reports = await asyncio.gather(
                 *[
-                    self._evaluate_question_from_perceptions([answer_perception], rubric=rubric)
+                    self._evaluate_question_with_runtime(
+                        [answer_perception],
+                        rubric=rubric,
+                        runtime_profile=runtime_profile,
+                    )
                     for rubric, answer_perception in zip(pending_rubrics, pending_perceptions)
                 ]
             )
             self._record_stage(runtime_profile, "cognitive_evaluation", time.perf_counter() - stage_start)
             for rubric, report in zip(pending_rubrics, reports):
+                if _REVIEW_REASON_EXTRACTION_RISK in per_question_review_reasons.get(
+                    rubric.question_id, []
+                ):
+                    report.requires_human_review = True
+                    report.review_reasons = self._merge_review_reasons(
+                        report.review_reasons,
+                        [_REVIEW_REASON_EXTRACTION_RISK],
+                    )
                 report.review_reasons = self._merge_review_reasons(
                     report.review_reasons,
                     per_question_review_reasons.get(rubric.question_id, []),
                     self._review_reasons_from_report(report),
                 )
+                if runtime_question_review_reasons.get(rubric.question_id):
+                    report.requires_human_review = True
                 per_question[rubric.question_id] = report
 
         rubric_question_ids = {rubric.question_id for rubric in rubric_bundle.rubrics}
@@ -450,6 +516,7 @@ class PaperGradingWorkflow:
             for question_no in extra_questions:
                 warnings.append(f"question {question_no}: answer region has no matching rubric")
                 paper_review_reasons.append(_REVIEW_REASON_UNMATCHED_REGION)
+        paper_review_reasons.extend(runtime_paper_review_reasons)
 
         for question_id, report in per_question.items():
             report.review_reasons = self._merge_review_reasons(
@@ -494,6 +561,18 @@ class PaperGradingWorkflow:
                 reasons.append(_REVIEW_REASON_EXTRACTION_RISK)
         return self._merge_review_reasons(reasons)
 
+    def _answer_requires_extraction_review(self, answer: Any) -> bool:
+        extraction_debug = getattr(answer, "extraction_debug", {})
+        if not isinstance(extraction_debug, dict):
+            return False
+        part_text_sources = extraction_debug.get("part_text_sources")
+        if not isinstance(part_text_sources, dict):
+            return False
+        return any(
+            str(source or "").strip() == "ocr_worked_solution_inference"
+            for source in part_text_sources.values()
+        )
+
     def _review_reasons_from_report(self, report: EvaluationReport) -> list[str]:
         reasons = list(report.review_reasons)
         if report.requires_human_review and report.status == "REJECTED_UNREADABLE" and not reasons:
@@ -530,9 +609,12 @@ class PaperGradingWorkflow:
         *,
         context_type: str,
         runtime_profile: dict[str, Any] | None = None,
+        span_items: list[dict[str, Any]] | None = None,
     ) -> list[PerceptionOutput]:
         if not image_bytes_list:
             return []
+        if span_items is not None and len(span_items) != len(image_bytes_list):
+            raise ValueError("span_items length must match image_bytes_list length")
         chunk_size, chunk_concurrency = self._image_chunk_plan(
             image_count=len(image_bytes_list),
             context_type=context_type,
@@ -556,20 +638,32 @@ class PaperGradingWorkflow:
                 chunks,
                 context_type=context_type,
                 concurrency=chunk_concurrency,
+                runtime_profile=runtime_profile,
+                span_items=span_items,
             )
 
         outputs: list[PerceptionOutput] = []
-        for chunk in chunks:
+        offset = 0
+        for chunk_index, chunk in enumerate(chunks):
+            chunk_items = (
+                span_items[offset : offset + len(chunk)]
+                if span_items is not None
+                else None
+            )
             outputs.extend(
-                await self._perception_engine.process_images(
+                await self._process_perception_chunk(
                     chunk,
                     context_type=context_type,
+                    runtime_profile=runtime_profile,
+                    chunk_index=chunk_index,
+                    span_items=chunk_items,
                 )
             )
+            offset += len(chunk)
         return outputs
 
     def _new_runtime_profile(self) -> dict[str, Any]:
-        return {"stage_seconds": {}, "chunk_plans": []}
+        return {"stage_seconds": {}, "chunk_plans": [], "spans": []}
 
     def _record_stage(self, runtime_profile: dict[str, Any], stage: str, elapsed: float) -> None:
         stage_seconds = runtime_profile.setdefault("stage_seconds", {})
@@ -614,23 +708,630 @@ class PaperGradingWorkflow:
         *,
         context_type: str,
         concurrency: int,
+        runtime_profile: dict[str, Any] | None = None,
+        span_items: list[dict[str, Any]] | None = None,
     ) -> list[PerceptionOutput]:
         semaphore = asyncio.Semaphore(concurrency)
 
-        async def process_chunk(chunk: list[bytes]) -> list[PerceptionOutput]:
+        async def process_chunk(chunk_index: int, chunk: list[bytes], chunk_items: list[dict[str, Any]] | None) -> list[PerceptionOutput]:
             async with semaphore:
-                return await self._perception_engine.process_images(
+                return await self._process_perception_chunk(
                     chunk,
                     context_type=context_type,
+                    runtime_profile=runtime_profile,
+                    chunk_index=chunk_index,
+                    span_items=chunk_items,
                 )
 
-        chunk_outputs = await asyncio.gather(*(process_chunk(chunk) for chunk in chunks))
+        chunk_outputs = await asyncio.gather(
+            *(
+                process_chunk(
+                    chunk_index,
+                    chunk,
+                    (
+                        span_items[
+                            sum(len(prev) for prev in chunks[:chunk_index]) : sum(len(prev) for prev in chunks[: chunk_index + 1])
+                        ]
+                        if span_items is not None
+                        else None
+                    ),
+                )
+                for chunk_index, chunk in enumerate(chunks)
+            )
+        )
         outputs: list[PerceptionOutput] = []
         for output_group in chunk_outputs:
             outputs.extend(output_group)
         if len(outputs) != sum(len(chunk) for chunk in chunks):
             raise ValueError("chunked perception calls must return one output per input image")
         return outputs
+
+    async def _process_perception_chunk(
+        self,
+        chunk: list[bytes],
+        *,
+        context_type: str,
+        runtime_profile: dict[str, Any] | None,
+        chunk_index: int,
+        span_items: list[dict[str, Any]] | None,
+    ) -> list[PerceptionOutput]:
+        started_at_unix = time.time()
+        started_at = time.perf_counter()
+        capture_token = self._perception_engine.begin_runtime_capture()
+        try:
+            outputs = await asyncio.wait_for(
+                self._perception_engine.process_images(
+                    chunk,
+                    context_type=context_type,
+                ),
+                timeout=self._perception_timeout_seconds_for_context_type(context_type),
+            )
+        except asyncio.TimeoutError:
+            calls = self._perception_engine.end_runtime_capture(capture_token)
+            self._append_runtime_span(
+                runtime_profile,
+                stage=self._stage_name_for_context_type(context_type),
+                started_at_unix=started_at_unix,
+                elapsed=time.perf_counter() - started_at,
+                chunk_index=chunk_index,
+                span_items=span_items,
+                image_bytes_list=chunk,
+                calls=calls,
+                succeeded=False,
+                error_type="timeout",
+            )
+            return self._unreadable_perception_outputs(len(chunk))
+        except Exception as exc:
+            calls = self._perception_engine.end_runtime_capture(capture_token)
+            self._append_runtime_span(
+                runtime_profile,
+                stage=self._stage_name_for_context_type(context_type),
+                started_at_unix=started_at_unix,
+                elapsed=time.perf_counter() - started_at,
+                chunk_index=chunk_index,
+                span_items=span_items,
+                image_bytes_list=chunk,
+                calls=calls,
+                succeeded=False,
+                error_type=self._classify_runtime_error(exc),
+            )
+            raise
+        calls = self._perception_engine.end_runtime_capture(capture_token)
+        budget_error = self._retry_budget_error(runtime_profile, calls)
+        if budget_error is not None:
+            self._append_runtime_span(
+                runtime_profile,
+                stage=self._stage_name_for_context_type(context_type),
+                started_at_unix=started_at_unix,
+                elapsed=time.perf_counter() - started_at,
+                chunk_index=chunk_index,
+                span_items=span_items,
+                image_bytes_list=chunk,
+                calls=calls,
+                succeeded=False,
+                error_type=budget_error,
+            )
+            return self._unreadable_perception_outputs(len(chunk))
+        self._append_runtime_span(
+            runtime_profile,
+            stage=self._stage_name_for_context_type(context_type),
+            started_at_unix=started_at_unix,
+            elapsed=time.perf_counter() - started_at,
+            chunk_index=chunk_index,
+            span_items=span_items,
+            image_bytes_list=chunk,
+            calls=calls,
+            succeeded=True,
+            error_type=None,
+        )
+        return outputs
+
+    async def _evaluate_question_with_runtime(
+        self,
+        perceptions: list[PerceptionOutput],
+        *,
+        rubric: TeacherRubric,
+        runtime_profile: dict[str, Any] | None,
+    ) -> EvaluationReport:
+        started_at_unix = time.time()
+        started_at = time.perf_counter()
+        capture_token = self._cognitive_agent.begin_runtime_capture()
+        try:
+            report = await asyncio.wait_for(
+                self._evaluate_question_from_perceptions(perceptions, rubric=rubric),
+                timeout=float(settings.paper_cognitive_timeout_seconds),
+            )
+        except asyncio.TimeoutError:
+            calls = self._cognitive_agent.end_runtime_capture(capture_token)
+            self._append_runtime_span(
+                runtime_profile,
+                stage="cognitive_evaluation",
+                started_at_unix=started_at_unix,
+                elapsed=time.perf_counter() - started_at,
+                span_items=[{"question_id": rubric.question_id}],
+                image_bytes_list=[],
+                calls=calls,
+                succeeded=False,
+                error_type="timeout",
+            )
+            return self._runtime_review_report(
+                rubric=rubric,
+                review_reason=_REVIEW_REASON_COGNITIVE_TIMEOUT,
+                feedback="认知评分阶段超时，已转入人工复核。",
+            )
+        except Exception as exc:
+            calls = self._cognitive_agent.end_runtime_capture(capture_token)
+            self._append_runtime_span(
+                runtime_profile,
+                stage="cognitive_evaluation",
+                started_at_unix=started_at_unix,
+                elapsed=time.perf_counter() - started_at,
+                span_items=[{"question_id": rubric.question_id}],
+                image_bytes_list=[],
+                calls=calls,
+                succeeded=False,
+                error_type=self._classify_runtime_error(exc),
+            )
+            raise
+        calls = self._cognitive_agent.end_runtime_capture(capture_token)
+        budget_error = self._retry_budget_error(runtime_profile, calls)
+        if budget_error is not None:
+            self._append_runtime_span(
+                runtime_profile,
+                stage="cognitive_evaluation",
+                started_at_unix=started_at_unix,
+                elapsed=time.perf_counter() - started_at,
+                span_items=[{"question_id": rubric.question_id}],
+                image_bytes_list=[],
+                calls=calls,
+                succeeded=False,
+                error_type=budget_error,
+            )
+            return self._runtime_review_report(
+                rubric=rubric,
+                review_reason=_REVIEW_REASON_COGNITIVE_BUDGET_LIMIT,
+                feedback="认知评分阶段超过重试预算，已转入人工复核。",
+            )
+        self._append_runtime_span(
+            runtime_profile,
+            stage="cognitive_evaluation",
+            started_at_unix=started_at_unix,
+            elapsed=time.perf_counter() - started_at,
+            span_items=[{"question_id": rubric.question_id}],
+            image_bytes_list=[],
+            calls=calls,
+            succeeded=True,
+            error_type=None,
+        )
+        return report
+
+    async def _parse_layout_with_runtime(
+        self,
+        image_bytes: bytes,
+        *,
+        page_index: int,
+        runtime_profile: dict[str, Any] | None,
+    ) -> LayoutParseResult:
+        started_at_unix = time.time()
+        started_at = time.perf_counter()
+        if not settings.paper_layout_enabled:
+            layout_result = LayoutParseResult(
+                context_type="STUDENT_ANSWER",
+                page_index=page_index,
+                regions=[],
+                warnings=["paper layout disabled"],
+            )
+            self._append_runtime_span(
+                runtime_profile,
+                stage="student_page_layout",
+                started_at_unix=started_at_unix,
+                elapsed=time.perf_counter() - started_at,
+                span_items=[{"page_index": page_index}],
+                image_bytes_list=[image_bytes],
+                calls=[],
+                succeeded=True,
+                error_type="layout_disabled",
+                provider=None,
+                model=None,
+                fallback_from=None,
+                fallback_to=None,
+                warnings=layout_result.warnings,
+            )
+            return layout_result
+        initial_provider = None
+        if self._skill_service is not None:
+            initial_provider = str(settings.skill_layout_parser_provider or "layout_skill")
+            try:
+                layout_result = await asyncio.wait_for(
+                    self._skill_service.try_parse_layout(
+                        image_bytes,
+                        context_type="STUDENT_ANSWER",
+                        page_index=page_index,
+                    ),
+                    timeout=float(settings.paper_layout_timeout_seconds),
+                )
+            except asyncio.TimeoutError:
+                layout_result = LayoutParseResult(
+                    context_type="STUDENT_ANSWER",
+                    page_index=page_index,
+                    regions=[],
+                    warnings=[_REVIEW_REASON_LAYOUT_TIMEOUT],
+                )
+                self._append_runtime_span(
+                    runtime_profile,
+                    stage="student_page_layout",
+                    started_at_unix=started_at_unix,
+                    elapsed=time.perf_counter() - started_at,
+                    span_items=[{"page_index": page_index}],
+                    image_bytes_list=[image_bytes],
+                    calls=[],
+                    succeeded=False,
+                    error_type="timeout",
+                    provider=initial_provider,
+                    model=None,
+                    fallback_from=None,
+                    fallback_to=None,
+                    warnings=layout_result.warnings,
+                )
+                return layout_result
+            if layout_result is not None:
+                self._append_runtime_span(
+                    runtime_profile,
+                    stage="student_page_layout",
+                    started_at_unix=started_at_unix,
+                    elapsed=time.perf_counter() - started_at,
+                    span_items=[{"page_index": page_index}],
+                    image_bytes_list=[image_bytes],
+                    calls=[],
+                    succeeded=True,
+                    error_type=None,
+                    provider=initial_provider,
+                    model=None,
+                    fallback_from=None,
+                    fallback_to=None,
+                    warnings=layout_result.warnings,
+                )
+                return layout_result
+
+        extract_layout = getattr(self._perception_engine, "extract_layout", None)
+        if callable(extract_layout):
+            capture_token = self._perception_engine.begin_runtime_capture()
+            try:
+                layout_ir = await asyncio.wait_for(
+                    extract_layout(
+                        image_bytes,
+                        context_type="STUDENT_ANSWER",
+                        page_index=page_index,
+                    ),
+                    timeout=float(settings.paper_layout_timeout_seconds),
+                )
+            except asyncio.TimeoutError:
+                calls = self._perception_engine.end_runtime_capture(capture_token)
+                layout_result = LayoutParseResult(
+                    context_type="STUDENT_ANSWER",
+                    page_index=page_index,
+                    regions=[],
+                    warnings=[_REVIEW_REASON_LAYOUT_TIMEOUT],
+                )
+                self._append_runtime_span(
+                    runtime_profile,
+                    stage="student_page_layout",
+                    started_at_unix=started_at_unix,
+                    elapsed=time.perf_counter() - started_at,
+                    span_items=[{"page_index": page_index}],
+                    image_bytes_list=[image_bytes],
+                    calls=calls,
+                    succeeded=False,
+                    error_type="timeout",
+                    fallback_from=initial_provider,
+                    fallback_to=str(settings.perception_provider or "perception_engine"),
+                    warnings=layout_result.warnings,
+                )
+                return layout_result
+            except Exception as exc:
+                calls = self._perception_engine.end_runtime_capture(capture_token)
+                self._append_runtime_span(
+                    runtime_profile,
+                    stage="student_page_layout",
+                    started_at_unix=started_at_unix,
+                    elapsed=time.perf_counter() - started_at,
+                    span_items=[{"page_index": page_index}],
+                    image_bytes_list=[image_bytes],
+                    calls=calls,
+                    succeeded=False,
+                    error_type=self._classify_runtime_error(exc),
+                    fallback_from=initial_provider,
+                    fallback_to=str(settings.perception_provider or "perception_engine"),
+                )
+                raise
+            calls = self._perception_engine.end_runtime_capture(capture_token)
+            budget_error = self._retry_budget_error(runtime_profile, calls)
+            if budget_error is not None:
+                layout_result = LayoutParseResult(
+                    context_type="STUDENT_ANSWER",
+                    page_index=page_index,
+                    regions=[],
+                    warnings=[_REVIEW_REASON_LAYOUT_BUDGET_LIMIT],
+                )
+                self._append_runtime_span(
+                    runtime_profile,
+                    stage="student_page_layout",
+                    started_at_unix=started_at_unix,
+                    elapsed=time.perf_counter() - started_at,
+                    span_items=[{"page_index": page_index}],
+                    image_bytes_list=[image_bytes],
+                    calls=calls,
+                    succeeded=False,
+                    error_type=budget_error,
+                    fallback_from=initial_provider,
+                    fallback_to=str(settings.perception_provider or "perception_engine") if initial_provider else None,
+                    warnings=layout_result.warnings,
+                )
+                return layout_result
+            self._append_runtime_span(
+                runtime_profile,
+                stage="student_page_layout",
+                started_at_unix=started_at_unix,
+                elapsed=time.perf_counter() - started_at,
+                span_items=[{"page_index": page_index}],
+                image_bytes_list=[image_bytes],
+                calls=calls,
+                succeeded=True,
+                error_type=None,
+                fallback_from=initial_provider,
+                fallback_to=str(settings.perception_provider or "perception_engine") if initial_provider else None,
+                warnings=layout_ir.warnings,
+            )
+            return LayoutParseResult(
+                context_type=layout_ir.context_type,
+                page_index=layout_ir.page_index,
+                regions=[
+                    LayoutRegion(
+                        target_id=region.target_id,
+                        region_type=region.region_type,
+                        question_no=region.question_no,
+                        bbox=region.bbox.model_dump(),
+                    )
+                    for region in layout_ir.regions
+                ],
+                target_question_no=layout_ir.target_question_no,
+                warnings=layout_ir.warnings,
+            )
+
+        layout_result = LayoutParseResult(
+            context_type="STUDENT_ANSWER",
+            page_index=page_index,
+            regions=[],
+            warnings=["layout skill unavailable"],
+        )
+        self._append_runtime_span(
+            runtime_profile,
+            stage="student_page_layout",
+            started_at_unix=started_at_unix,
+            elapsed=time.perf_counter() - started_at,
+            span_items=[{"page_index": page_index}],
+            image_bytes_list=[image_bytes],
+            calls=[],
+            succeeded=True,
+            error_type="layout_unavailable",
+            provider=None,
+            model=None,
+            fallback_from=initial_provider,
+            fallback_to=None,
+            warnings=layout_result.warnings,
+        )
+        return layout_result
+
+    def _stage_name_for_context_type(self, context_type: str) -> str:
+        if context_type == "student_paper_pages":
+            return "student_page_ocr"
+        if context_type == "student_answer_regions":
+            return "answer_region_ocr"
+        return context_type
+
+    def _append_runtime_span(
+        self,
+        runtime_profile: dict[str, Any] | None,
+        *,
+        stage: str,
+        started_at_unix: float,
+        elapsed: float,
+        span_items: list[dict[str, Any]] | None,
+        image_bytes_list: list[bytes],
+        calls: list[dict[str, Any]],
+        succeeded: bool,
+        error_type: str | None,
+        chunk_index: int | None = None,
+        provider: str | None = None,
+        model: str | None = None,
+        fallback_from: str | None = None,
+        fallback_to: str | None = None,
+        warnings: list[str] | None = None,
+    ) -> None:
+        if runtime_profile is None:
+            return
+        span_calls = [dict(call) for call in calls]
+        span = {
+            "stage": stage,
+            "started_at_unix": round(float(started_at_unix), 6),
+            "ended_at_unix": round(float(started_at_unix + max(0.0, elapsed)), 6),
+            "elapsed_seconds": round(max(0.0, elapsed), 6),
+            "succeeded": bool(succeeded),
+            "chunk_index": chunk_index,
+            "item_refs": span_items or [],
+            "input_bytes": sum(len(image_bytes) for image_bytes in image_bytes_list),
+            "image_count": len(image_bytes_list),
+            "image_sizes": [self._runtime_image_size(image_bytes) for image_bytes in image_bytes_list],
+            "call_count": len(span_calls),
+            "retry_count": sum(int(call.get("retry_count") or 0) for call in span_calls),
+            "fallback_count": sum(1 for call in span_calls if call.get("fallback_used")),
+            "error_types": sorted(
+                {
+                    str(value)
+                    for value in ([error_type] + [call.get("error_type") for call in span_calls])
+                    if value
+                }
+            ),
+            "provider": provider,
+            "model": model,
+            "fallback_from": fallback_from,
+            "fallback_to": fallback_to,
+            "warnings": warnings or [],
+            "calls": span_calls,
+        }
+        if span_calls:
+            span["provider"] = span["provider"] or self._first_non_empty(call.get("provider") for call in span_calls)
+            span["model"] = span["model"] or self._first_non_empty(
+                call.get("model_used") or call.get("requested_model")
+                for call in span_calls
+            )
+        runtime_profile.setdefault("spans", []).append(span)
+
+    def _runtime_image_size(self, image_bytes: bytes) -> dict[str, int]:
+        with Image.open(BytesIO(image_bytes)) as image:
+            width, height = image.size
+        return {
+            "width": int(width),
+            "height": int(height),
+            "byte_size": int(len(image_bytes)),
+        }
+
+    def _first_non_empty(self, values: Any) -> str | None:
+        for value in values:
+            normalized = str(value or "").strip()
+            if normalized:
+                return normalized
+        return None
+
+    def _classify_runtime_error(self, exc: Exception) -> str:
+        if isinstance(exc, asyncio.TimeoutError):
+            return "timeout"
+        text = str(exc).lower()
+        if "timeout" in text:
+            return "timeout"
+        if "network" in text or "connection" in text or "transport" in text:
+            return "network"
+        if "parse" in text or "json" in text or "schema" in text:
+            return "parse_error"
+        if "429" in text or "rate limit" in text:
+            return "rate_limit"
+        if "5" in text and "status" in text:
+            return "provider_5xx"
+        return "unexpected_error"
+
+    def _perception_timeout_seconds_for_context_type(self, context_type: str) -> float:
+        if context_type == "student_paper_pages":
+            return float(settings.paper_student_page_ocr_timeout_seconds)
+        if context_type == "student_answer_regions":
+            return float(settings.paper_answer_region_ocr_timeout_seconds)
+        return float(settings.paper_answer_region_ocr_timeout_seconds)
+
+    def _unreadable_perception_outputs(self, count: int) -> list[PerceptionOutput]:
+        return [
+            PerceptionOutput(
+                readability_status="UNREADABLE",
+                elements=[],
+                global_confidence=0.0,
+                is_blank=False,
+                trigger_short_circuit=True,
+            )
+            for _ in range(count)
+        ]
+
+    def _runtime_review_report(
+        self,
+        *,
+        rubric: TeacherRubric,
+        review_reason: str,
+        feedback: str,
+    ) -> EvaluationReport:
+        return EvaluationReport(
+            status="REJECTED_UNREADABLE",
+            is_fully_correct=False,
+            total_score_deduction=0.0,
+            step_evaluations=[],
+            overall_feedback=f"题目 {rubric.question_id}：{feedback}",
+            system_confidence=0.0,
+            requires_human_review=True,
+            review_reasons=[review_reason],
+        )
+
+    def _retry_budget_error(
+        self,
+        runtime_profile: dict[str, Any] | None,
+        calls: list[dict[str, Any]],
+    ) -> str | None:
+        stage_retry_count = sum(int(call.get("retry_count") or 0) for call in calls)
+        if stage_retry_count <= 0:
+            return None
+        if stage_retry_count > int(settings.paper_stage_retry_budget):
+            return "budget_limit"
+        if self._runtime_retry_count(runtime_profile) + stage_retry_count > int(settings.paper_sample_retry_budget):
+            return "budget_limit"
+        return None
+
+    def _runtime_retry_count(self, runtime_profile: dict[str, Any] | None) -> int:
+        if not isinstance(runtime_profile, dict):
+            return 0
+        spans = runtime_profile.get("spans")
+        if not isinstance(spans, list):
+            return 0
+        return sum(int(span.get("retry_count") or 0) for span in spans if isinstance(span, dict))
+
+    def _runtime_review_reasons(
+        self,
+        runtime_profile: dict[str, Any],
+    ) -> tuple[dict[str, list[str]], list[str], list[str]]:
+        question_reasons: dict[str, list[str]] = {}
+        paper_reasons: list[str] = []
+        warnings: list[str] = []
+        spans = runtime_profile.get("spans")
+        if not isinstance(spans, list):
+            return question_reasons, paper_reasons, warnings
+        for span in spans:
+            if not isinstance(span, dict):
+                continue
+            reason = self._runtime_review_reason_for_span(span)
+            if reason is None:
+                continue
+            warnings.append(
+                f"runtime {span.get('stage')}: {reason}"
+            )
+            item_refs = span.get("item_refs")
+            assigned = False
+            if isinstance(item_refs, list):
+                for item in item_refs:
+                    if not isinstance(item, dict):
+                        continue
+                    question_id = str(item.get("question_id") or "").strip()
+                    if question_id:
+                        question_reasons[question_id] = self._merge_review_reasons(
+                            question_reasons.get(question_id, []),
+                            [reason],
+                        )
+                        assigned = True
+            if not assigned:
+                paper_reasons = self._merge_review_reasons(paper_reasons, [reason])
+        return question_reasons, paper_reasons, warnings
+
+    def _runtime_review_reason_for_span(self, span: dict[str, Any]) -> str | None:
+        error_types = {str(error) for error in (span.get("error_types") or []) if error}
+        stage = str(span.get("stage") or "")
+        if "timeout" in error_types:
+            return {
+                "student_page_layout": _REVIEW_REASON_LAYOUT_TIMEOUT,
+                "student_page_ocr": _REVIEW_REASON_PAGE_OCR_TIMEOUT,
+                "answer_region_ocr": _REVIEW_REASON_ANSWER_OCR_TIMEOUT,
+                "cognitive_evaluation": _REVIEW_REASON_COGNITIVE_TIMEOUT,
+            }.get(stage)
+        if "budget_limit" in error_types:
+            return {
+                "student_page_layout": _REVIEW_REASON_LAYOUT_BUDGET_LIMIT,
+                "student_page_ocr": _REVIEW_REASON_PAGE_OCR_BUDGET_LIMIT,
+                "answer_region_ocr": _REVIEW_REASON_ANSWER_OCR_BUDGET_LIMIT,
+                "cognitive_evaluation": _REVIEW_REASON_COGNITIVE_BUDGET_LIMIT,
+            }.get(stage)
+        return None
 
     def _prepare_answer_region_image(self, image_bytes: bytes) -> bytes:
         with Image.open(BytesIO(image_bytes)) as image:
@@ -879,6 +1580,10 @@ class PaperGradingWorkflow:
                     raw_content = self._trim_text_for_question(element.raw_content, question_number)
                 if not raw_content.strip():
                     continue
+                element.content_type = normalize_shallow_visual_content_type(
+                    element.content_type,
+                    raw_content,
+                )
                 element.raw_content = raw_content.strip()
                 trimmed_elements.append(element)
             trimmed_output.elements = trimmed_elements

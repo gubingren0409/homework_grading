@@ -1,6 +1,15 @@
 from typing import List, Optional, Literal
 from pydantic import BaseModel, Field, ValidationInfo, model_validator
 
+VISUAL_CONTENT_TYPES = frozenset({"image_diagram", "table", "image"})
+
+
+def normalize_shallow_visual_content_type(content_type: str, raw_content: str) -> str:
+    content = (raw_content or "").strip()
+    if content_type in VISUAL_CONTENT_TYPES and 0 < len(content) < 10:
+        return "plain_text"
+    return content_type
+
 
 class BoundingBox(BaseModel):
     """Normalized coordinates [0.0, 1.0] for the detected element."""
@@ -37,7 +46,7 @@ class PerceptionNode(BaseModel):
         """
         forbidden_placeholders = ["[图片]", "[图表]", "[表格]", "image", "diagram", "table"]
         
-        if self.content_type in ["image_diagram", "table", "image"]:
+        if self.content_type in VISUAL_CONTENT_TYPES:
             content_stripped = self.raw_content.strip()
             
             # 1. 拦截已知占位符

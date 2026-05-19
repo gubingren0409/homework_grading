@@ -28,6 +28,9 @@ def main() -> None:
         print(f"[{status}] {check['name']}: {check['detail']}")
     for note in report["notes"]:
         print(f"- {note}")
+    print("下一步：")
+    for item in report["checklist"]:
+        print(f"- {item}")
 
 
 if __name__ == "__main__":

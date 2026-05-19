@@ -33,7 +33,7 @@ def build_student_answer_bundle(
     for part in parts:
         grouped.setdefault(_parent_question_id(part.source_question_no), []).append(part)
 
-    answers: list[StudentAnswer] = []
+        answers: list[StudentAnswer] = []
     for question_id, grouped_parts in grouped.items():
         normalized_parts = [_with_extracted_answer_text(part) for part in grouped_parts]
         answer_text = _merge_answer_text(normalized_parts)
@@ -81,6 +81,7 @@ def build_student_answer_bundle(
                 readability_status=worst_readability_status,
                 trigger_short_circuit=any(part.trigger_short_circuit for part in normalized_parts),
                 extraction_warnings=extraction_warnings,
+                extraction_debug=_merge_extraction_debug(normalized_parts),
                 image_warnings=image_warnings,
                 worked_solution_block_detected=any(
                     part.worked_solution_block_detected for part in normalized_parts
@@ -451,15 +452,26 @@ def _merge_ocr_text(parts: list[StudentAnswerPart]) -> str:
 
 def _with_extracted_answer_text(part: StudentAnswerPart) -> StudentAnswerPart:
     if part.answer_text.strip():
-        return part
+        return part.model_copy(
+            update={
+                "extraction_debug": _build_extraction_debug(
+                    text_source="provided_answer_text",
+                    filter_reasons=[],
+                    previous=part.extraction_debug,
+                )
+            }
+        )
 
     extracted = ""
     worked_solution_block_detected = False
+    text_source = "missing"
+    filter_reasons: list[str] = []
 
     tag_segments = _extract_student_tag_segments(part.text)
     if tag_segments:
         extracted = "\n".join(tag_segments)
         worked_solution_block_detected = _is_worked_solution_block_tag(tag_segments)
+        text_source = "student_tags"
     else:
         tag_segments = _extract_student_tag_segments(
             "\n".join(element.raw_content for element in part.elements)
@@ -467,22 +479,30 @@ def _with_extracted_answer_text(part: StudentAnswerPart) -> StudentAnswerPart:
         if tag_segments:
             extracted = "\n".join(tag_segments)
             worked_solution_block_detected = _is_worked_solution_block_tag(tag_segments)
+            text_source = "element_student_tags"
 
     warnings = list(part.extraction_warnings)
     if not extracted:
         extracted = _infer_short_answer_from_elements(part)
         if extracted:
             warnings.append("ANSWER_TEXT_INFERRED_WITHOUT_STUDENT_TAGS")
+            text_source = "element_short_answer_inference"
     if not extracted:
-        extracted = _infer_worked_solution_from_ocr(part)
+        extracted, filter_reasons = _infer_worked_solution_from_ocr(part)
         if extracted:
             warnings.append("ANSWER_TEXT_INFERRED_FROM_OCR_WITHOUT_STUDENT_TAGS")
+            text_source = "ocr_worked_solution_inference"
     if not extracted and part.text.strip() and not part.is_blank:
         warnings.append("NO_STUDENT_TAGS_FOUND")
     return part.model_copy(
         update={
             "answer_text": extracted,
             "extraction_warnings": warnings,
+            "extraction_debug": _build_extraction_debug(
+                text_source=text_source,
+                filter_reasons=filter_reasons,
+                previous=part.extraction_debug,
+            ),
             "worked_solution_block_detected": worked_solution_block_detected,
         }
     )
@@ -548,23 +568,65 @@ def _infer_short_answer_from_elements(part: StudentAnswerPart) -> str:
     return "\n".join(candidates)
 
 
-def _infer_worked_solution_from_ocr(part: StudentAnswerPart) -> str:
+def _infer_worked_solution_from_ocr(part: StudentAnswerPart) -> tuple[str, list[str]]:
     text = part.text.strip()
     if not text or not _looks_like_worked_solution(text):
-        return ""
+        return "", []
     lines: list[str] = []
+    filter_reasons: list[str] = []
     for raw_line in text.splitlines():
         line = raw_line.strip()
         if not line:
             continue
         if re.fullmatch(r"\d+\s*[\.．、]?", line):
+            _append_unique(filter_reasons, "DROPPED_QUESTION_NUMBER_LINE")
             continue
         if line.lower().startswith("the right half of the image is blank"):
+            _append_unique(filter_reasons, "DROPPED_BLANK_SENTINEL_LINE")
             continue
-        line = re.sub(r"^\d+\s*[\.．、]\s*", "", line).strip()
+        stripped = re.sub(r"^\d+\s*[\.．、]\s*", "", line).strip()
+        if stripped != line:
+            _append_unique(filter_reasons, "STRIPPED_QUESTION_PREFIX")
+        line = stripped
         if line:
             lines.append(line)
-    return "\n".join(lines).strip()
+    return "\n".join(lines).strip(), filter_reasons
+
+
+def _build_extraction_debug(
+    *,
+    text_source: str,
+    filter_reasons: list[str],
+    previous: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    debug = dict(previous or {})
+    debug["text_source"] = text_source
+    debug["focus_decision"] = "full_width_baseline_retained"
+    debug["filter_reasons"] = list(filter_reasons)
+    return debug
+
+
+def _merge_extraction_debug(parts: list[StudentAnswerPart]) -> dict[str, object]:
+    merged_filter_reasons: list[str] = []
+    part_text_sources: OrderedDict[str, str] = OrderedDict()
+    for part in parts:
+        debug = part.extraction_debug if isinstance(part.extraction_debug, Mapping) else {}
+        source = str(debug.get("text_source") or "unknown")
+        part_text_sources[part.source_question_no] = source
+        for reason in debug.get("filter_reasons", []):
+            normalized = str(reason or "").strip()
+            if normalized:
+                _append_unique(merged_filter_reasons, normalized)
+    return {
+        "focus_decision": "full_width_baseline_retained",
+        "part_text_sources": dict(part_text_sources),
+        "filter_reasons": merged_filter_reasons,
+    }
+
+
+def _append_unique(target: list[str], value: str) -> None:
+    if value and value not in target:
+        target.append(value)
 
 
 def _looks_like_worked_solution(text: str) -> bool:

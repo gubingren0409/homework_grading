@@ -10,6 +10,67 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
+RUNTIME_PROFILE_UPDATES: dict[str, dict[str, str]] = {
+    "fast": {
+        "QWEN_ANSWER_REGION_STRATEGY": "auto",
+        "QWEN_BATCH_MAX_IMAGES": "2",
+        "QWEN_SINGLE_IMAGE_CONCURRENCY": "2",
+        "QWEN_ANSWER_REGION_BATCH_CONCURRENCY": "4",
+        "PAPER_LAYOUT_ENABLED": "true",
+    },
+    "full": {
+        "QWEN_ANSWER_REGION_STRATEGY": "auto",
+        "QWEN_BATCH_MAX_IMAGES": "2",
+        "QWEN_SINGLE_IMAGE_CONCURRENCY": "1",
+        "QWEN_ANSWER_REGION_BATCH_CONCURRENCY": "2",
+        "PAPER_LAYOUT_ENABLED": "true",
+    },
+    "fast-with-layout-disabled": {
+        "QWEN_ANSWER_REGION_STRATEGY": "auto",
+        "QWEN_BATCH_MAX_IMAGES": "2",
+        "QWEN_SINGLE_IMAGE_CONCURRENCY": "2",
+        "QWEN_ANSWER_REGION_BATCH_CONCURRENCY": "4",
+        "PAPER_LAYOUT_ENABLED": "false",
+    },
+    "fast-with-strict-timeouts": {
+        "QWEN_ANSWER_REGION_STRATEGY": "auto",
+        "QWEN_BATCH_MAX_IMAGES": "2",
+        "QWEN_SINGLE_IMAGE_CONCURRENCY": "2",
+        "QWEN_ANSWER_REGION_BATCH_CONCURRENCY": "4",
+        "PAPER_LAYOUT_ENABLED": "true",
+        "PAPER_LAYOUT_TIMEOUT_SECONDS": "12",
+        "PAPER_STUDENT_PAGE_OCR_TIMEOUT_SECONDS": "45",
+        "PAPER_ANSWER_REGION_OCR_TIMEOUT_SECONDS": "45",
+        "PAPER_COGNITIVE_TIMEOUT_SECONDS": "60",
+    },
+    "dev-smoke": {
+        "QWEN_ANSWER_REGION_STRATEGY": "auto",
+        "QWEN_BATCH_MAX_IMAGES": "2",
+        "QWEN_SINGLE_IMAGE_CONCURRENCY": "2",
+        "QWEN_ANSWER_REGION_BATCH_CONCURRENCY": "4",
+        "PAPER_LAYOUT_ENABLED": "true",
+        "PAPER_LAYOUT_TIMEOUT_SECONDS": "12",
+        "PAPER_STUDENT_PAGE_OCR_TIMEOUT_SECONDS": "45",
+        "PAPER_ANSWER_REGION_OCR_TIMEOUT_SECONDS": "45",
+        "PAPER_COGNITIVE_TIMEOUT_SECONDS": "60",
+    },
+    "teacher-trial": {
+        "QWEN_ANSWER_REGION_STRATEGY": "auto",
+        "QWEN_BATCH_MAX_IMAGES": "2",
+        "QWEN_SINGLE_IMAGE_CONCURRENCY": "1",
+        "QWEN_ANSWER_REGION_BATCH_CONCURRENCY": "2",
+        "PAPER_LAYOUT_ENABLED": "true",
+    },
+    "full-regression": {
+        "QWEN_ANSWER_REGION_STRATEGY": "auto",
+        "QWEN_BATCH_MAX_IMAGES": "2",
+        "QWEN_SINGLE_IMAGE_CONCURRENCY": "1",
+        "QWEN_ANSWER_REGION_BATCH_CONCURRENCY": "2",
+        "PAPER_LAYOUT_ENABLED": "true",
+    },
+}
+
+
 def load_env_lines(env_path: Path) -> list[str]:
     if not env_path.exists():
         return []
@@ -49,6 +110,12 @@ def collect_teacher_trial_config_issues(env_path: Path) -> list[str]:
     if llm_egress != "true":
         issues.append("LLM_EGRESS_ENABLED 当前不是 true，模型外呼会被阻断。")
     return issues
+
+
+def resolve_runtime_profile_updates(profile: str | None) -> dict[str, str]:
+    if profile is None:
+        return {}
+    return dict(RUNTIME_PROFILE_UPDATES[profile])
 
 
 def upsert_env_values(env_path: Path, updates: dict[str, str]) -> None:
@@ -97,6 +164,12 @@ def main() -> int:
     parser.add_argument("--qwen", default=None, help="Qwen API keys, comma-separated.")
     parser.add_argument("--deepseek", default=None, help="DeepSeek API keys, comma-separated.")
     parser.add_argument(
+        "--runtime-profile",
+        choices=sorted(RUNTIME_PROFILE_UPDATES.keys()),
+        default=None,
+        help="Apply OCR throughput preset: fast for quick smoke, full for conservative full runs.",
+    )
+    parser.add_argument(
         "--llm-egress-enabled",
         choices=["true", "false"],
         default=None,
@@ -120,20 +193,28 @@ def main() -> int:
         if args.llm_egress_enabled is not None
         else _prompt_or_keep("是否允许模型外呼（true/false）", current.get("LLM_EGRESS_ENABLED", "true")).lower()
     )
+    runtime_updates = resolve_runtime_profile_updates(args.runtime_profile)
 
-    upsert_env_values(
-        env_path,
-        {
-            "QWEN_API_KEYS": qwen,
-            "DEEPSEEK_API_KEYS": deepseek,
-            "LLM_EGRESS_ENABLED": llm_egress,
-        },
-    )
+    updates = {
+        "QWEN_API_KEYS": qwen,
+        "DEEPSEEK_API_KEYS": deepseek,
+        "LLM_EGRESS_ENABLED": llm_egress,
+    }
+    updates.update(runtime_updates)
+    upsert_env_values(env_path, updates)
 
     print("本地教师版配置已更新。")
     print(f"配置文件：{env_path}")
     if created:
         print("已根据 .env.example 创建新的 .env。")
+    if args.runtime_profile:
+        print(
+            "已应用运行模式："
+            f"{args.runtime_profile}"
+            f"（QWEN_BATCH_MAX_IMAGES={runtime_updates['QWEN_BATCH_MAX_IMAGES']}, "
+            f"QWEN_SINGLE_IMAGE_CONCURRENCY={runtime_updates['QWEN_SINGLE_IMAGE_CONCURRENCY']}, "
+            f"QWEN_ANSWER_REGION_BATCH_CONCURRENCY={runtime_updates['QWEN_ANSWER_REGION_BATCH_CONCURRENCY']}）"
+        )
 
     issues = collect_teacher_trial_config_issues(env_path)
     if issues:

@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 from typing import List
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 
 
 class Settings(BaseSettings):
@@ -57,6 +57,7 @@ class Settings(BaseSettings):
 
     # Phase 35: Layout preprocessing switch (must stay enabled to enforce spatial contract)
     enable_layout_preprocess: bool = True
+    paper_layout_enabled: bool = True
 
     # HTTP ingress hard limits (E05)
     max_request_body_bytes: int = 20 * 1024 * 1024  # 20MB hard cap
@@ -80,6 +81,8 @@ class Settings(BaseSettings):
     prompt_invalidation_bus_enabled: bool = False
     prompt_max_input_tokens: int = 32768
     prompt_reserve_output_tokens: int = 1024
+    qwen_perception_extract_variant_hint: str | None = None
+    qwen_perception_batch_extract_variant_hint: str | None = None
 
     # Phase 45: runtime router/circuit controller
     auto_circuit_controller_enabled: bool = True
@@ -131,6 +134,12 @@ class Settings(BaseSettings):
     qwen_single_image_concurrency: int = 1
     qwen_answer_region_batch_concurrency: int = 2
     qwen_answer_region_max_side: int = 1100
+    paper_layout_timeout_seconds: float = 30.0
+    paper_student_page_ocr_timeout_seconds: float = 180.0
+    paper_answer_region_ocr_timeout_seconds: float = 180.0
+    paper_cognitive_timeout_seconds: float = 180.0
+    paper_stage_retry_budget: int = 3
+    paper_sample_retry_budget: int = 8
     paper_previous_question_bbox_tolerance: float = 0.04
     paper_next_question_bbox_tolerance: float = 0.005
     segmentation_current_anchor_overlap_band: float = 0.05
@@ -242,6 +251,11 @@ class Settings(BaseSettings):
             raise ValueError("skill timeout must be positive")
         return value
 
+    @field_validator("paper_layout_enabled")
+    @classmethod
+    def _validate_paper_layout_enabled(cls, value: bool) -> bool:
+        return bool(value)
+
     @field_validator("sse_heartbeat_interval_seconds")
     @classmethod
     def _validate_sse_heartbeat_interval(cls, value: float) -> float:
@@ -283,7 +297,15 @@ class Settings(BaseSettings):
             raise ValueError("qwen_api_max_concurrency must be non-negative")
         return value
 
-    @field_validator("batch_progress_min_interval_seconds", "qwen_api_timeout_seconds", "qwen_batch_api_timeout_seconds")
+    @field_validator(
+        "batch_progress_min_interval_seconds",
+        "qwen_api_timeout_seconds",
+        "qwen_batch_api_timeout_seconds",
+        "paper_layout_timeout_seconds",
+        "paper_student_page_ocr_timeout_seconds",
+        "paper_answer_region_ocr_timeout_seconds",
+        "paper_cognitive_timeout_seconds",
+    )
     @classmethod
     def _validate_positive_float(cls, value: float) -> float:
         if value <= 0:
@@ -332,6 +354,34 @@ class Settings(BaseSettings):
         if normalized not in {"dev", "staging", "prod"}:
             raise ValueError("deployment_environment must be one of: dev, staging, prod")
         return normalized
+
+    @model_validator(mode="after")
+    def _validate_production_security(self):
+        """Enforce security requirements in production environment"""
+        if self.deployment_environment == "prod":
+            # Check auth is enabled
+            if not self.auth_enabled:
+                raise ValueError(
+                    "AUTH_ENABLED must be true in production environment. "
+                    "Set AUTH_ENABLED=true in your .env file."
+                )
+
+            # Check secret key is not default
+            if self.auth_secret_key == "change-me-in-production":
+                raise ValueError(
+                    "AUTH_SECRET_KEY must be changed in production environment. "
+                    "Generate a secure key with: python -c 'import secrets; print(secrets.token_urlsafe(32))' "
+                    "and set AUTH_SECRET_KEY in your .env file."
+                )
+
+            # Check secret key is strong enough (at least 32 characters)
+            if len(self.auth_secret_key) < 32:
+                raise ValueError(
+                    "AUTH_SECRET_KEY must be at least 32 characters in production. "
+                    "Generate a secure key with: python -c 'import secrets; print(secrets.token_urlsafe(32))'"
+                )
+
+        return self
 
     model_config = SettingsConfigDict(
         env_file=".env",

@@ -2,6 +2,7 @@ import logging
 import re
 import json
 import asyncio
+import contextvars
 from typing import Any
 
 import openai
@@ -67,6 +68,9 @@ class DeepSeekCognitiveEngine(BaseCognitiveAgent):
         )
         self._prompt_provider = get_prompt_provider()
         self._last_runtime_telemetry: dict[str, Any] | None = None
+        self._runtime_capture_events: contextvars.ContextVar[list[dict[str, Any]] | None] = (
+            contextvars.ContextVar("deepseek_runtime_capture_events", default=None)
+        )
 
     def _prompt_context(self) -> tuple[str, str]:
         trace_id = get_trace_id()
@@ -127,6 +131,22 @@ class DeepSeekCognitiveEngine(BaseCognitiveAgent):
         if self._last_runtime_telemetry is None:
             return None
         return dict(self._last_runtime_telemetry)
+
+    def begin_runtime_capture(self) -> object | None:
+        return self._runtime_capture_events.set([])
+
+    def end_runtime_capture(self, token: object | None) -> list[dict[str, Any]]:
+        events = list(self._runtime_capture_events.get() or [])
+        if token is not None:
+            self._runtime_capture_events.reset(token)
+        return events
+
+    def _record_runtime_event(self, telemetry: dict[str, Any]) -> None:
+        normalized = dict(telemetry)
+        self._last_runtime_telemetry = normalized
+        events = self._runtime_capture_events.get()
+        if isinstance(events, list):
+            events.append(normalized)
 
     async def evaluate_logic(
         self, 
@@ -277,7 +297,7 @@ class DeepSeekCognitiveEngine(BaseCognitiveAgent):
                     fallback_used=(model_to_use == settings.deepseek_fallback_model_name),
                     reason="ok",
                 )
-                self._last_runtime_telemetry = {
+                telemetry = {
                     "requested_model": settings.deepseek_model_name,
                     "model_used": model_to_use,
                     "route_reason": fallback_reason if should_degrade else "default",
@@ -288,8 +308,14 @@ class DeepSeekCognitiveEngine(BaseCognitiveAgent):
                     "prompt_variant_id": str(prompt_bundle.variant_id),
                     "prompt_cache_level": str(prompt_bundle.cache_level),
                     "prompt_token_estimate": int(prompt_bundle.token_estimate),
+                    "provider": "deepseek",
+                    "attempt": attempt + 1,
+                    "retry_count": attempt,
+                    "network_error_count": connection_error_count,
+                    "error_type": None,
                     "succeeded": True,
                 }
+                self._record_runtime_event(telemetry)
                 return EvaluationReport.model_validate(parsed_data)
 
             except AllKeysExhaustedError as e:
@@ -301,7 +327,7 @@ class DeepSeekCognitiveEngine(BaseCognitiveAgent):
                     fallback_used=True,
                     reason="all_keys_exhausted",
                 )
-                self._last_runtime_telemetry = {
+                telemetry = {
                     "requested_model": settings.deepseek_model_name,
                     "model_used": settings.deepseek_model_name,
                     "route_reason": "all_keys_exhausted",
@@ -312,8 +338,14 @@ class DeepSeekCognitiveEngine(BaseCognitiveAgent):
                     "prompt_variant_id": str(prompt_bundle.variant_id),
                     "prompt_cache_level": str(prompt_bundle.cache_level),
                     "prompt_token_estimate": int(prompt_bundle.token_estimate),
+                    "provider": "deepseek",
+                    "attempt": attempt + 1,
+                    "retry_count": attempt,
+                    "network_error_count": connection_error_count,
+                    "error_type": "all_keys_exhausted",
                     "succeeded": False,
                 }
+                self._record_runtime_event(telemetry)
                 raise GradingSystemError("All DeepSeek API keys are rate-limited. System saturated.")
             
             except CircuitBreakerOpenError as e:
@@ -326,7 +358,7 @@ class DeepSeekCognitiveEngine(BaseCognitiveAgent):
                     fallback_used=True,
                     reason="circuit_open",
                 )
-                self._last_runtime_telemetry = {
+                telemetry = {
                     "requested_model": settings.deepseek_model_name,
                     "model_used": settings.deepseek_model_name,
                     "route_reason": "circuit_open",
@@ -337,8 +369,14 @@ class DeepSeekCognitiveEngine(BaseCognitiveAgent):
                     "prompt_variant_id": str(prompt_bundle.variant_id),
                     "prompt_cache_level": str(prompt_bundle.cache_level),
                     "prompt_token_estimate": int(prompt_bundle.token_estimate),
+                    "provider": "deepseek",
+                    "attempt": attempt + 1,
+                    "retry_count": attempt,
+                    "network_error_count": connection_error_count,
+                    "error_type": "circuit_open",
                     "succeeded": False,
                 }
+                self._record_runtime_event(telemetry)
                 raise GradingSystemError(
                     f"DeepSeek API service degraded. Circuit breaker active. {str(e)}"
                 )
@@ -389,7 +427,7 @@ class DeepSeekCognitiveEngine(BaseCognitiveAgent):
                         fallback_used=False,
                         reason=reason,
                     )
-                    self._last_runtime_telemetry = {
+                    telemetry = {
                         "requested_model": settings.deepseek_model_name,
                         "model_used": model_to_use,
                         "route_reason": reason,
@@ -400,8 +438,14 @@ class DeepSeekCognitiveEngine(BaseCognitiveAgent):
                         "prompt_variant_id": str(prompt_bundle.variant_id),
                         "prompt_cache_level": str(prompt_bundle.cache_level),
                         "prompt_token_estimate": int(prompt_bundle.token_estimate),
+                        "provider": "deepseek",
+                        "attempt": attempt + 1,
+                        "retry_count": attempt,
+                        "network_error_count": connection_error_count,
+                        "error_type": reason,
                         "succeeded": False,
                     }
+                    self._record_runtime_event(telemetry)
                     raise GradingSystemError(
                         f"DeepSeek API non-retryable error (status={status_code}): {api_err}"
                     )
@@ -492,6 +536,26 @@ class DeepSeekCognitiveEngine(BaseCognitiveAgent):
                 )
                 raise GradingSystemError(f"Cognitive evaluation error: {error_text}")
 
+        self._record_runtime_event(
+            {
+                "requested_model": settings.deepseek_model_name,
+                "model_used": settings.deepseek_fallback_model_name if connection_error_count >= MAX_CONNECTION_ERRORS else settings.deepseek_model_name,
+                "route_reason": "retry_exhausted",
+                "fallback_used": bool(connection_error_count >= MAX_CONNECTION_ERRORS),
+                "fallback_reason": "retry_exhausted",
+                "prompt_key": "deepseek.cognitive.evaluate",
+                "prompt_asset_version": str(prompt_bundle.asset_version),
+                "prompt_variant_id": str(prompt_bundle.variant_id),
+                "prompt_cache_level": str(prompt_bundle.cache_level),
+                "prompt_token_estimate": int(prompt_bundle.token_estimate),
+                "provider": "deepseek",
+                "attempt": max_retries + 1,
+                "retry_count": max_retries,
+                "network_error_count": connection_error_count,
+                "error_type": "retry_exhausted",
+                "succeeded": False,
+            }
+        )
         raise GradingSystemError(
             "Cognitive evaluation failed after retries "
             f"(net_failures={connection_error_count}, last_error={last_error_message})"

@@ -15,6 +15,27 @@ from scripts.launch_teacher_trial import collect_missing_inputs, ensure_local_tr
 from teacher_batch_runner import OUTPUTS_DIR, REFERENCE_DIR, RUNTIME_ROOT, STUDENTS_DIR, TRIAL_DIR
 
 
+def _build_teacher_trial_checklist(
+    *,
+    created_env: bool,
+    env_path: Path,
+    config_issues: list[str],
+    input_issues: list[str],
+    require_inputs: bool,
+) -> list[str]:
+    checklist: list[str] = []
+    if created_env or not env_path.exists():
+        checklist.append("运行 configure_teacher_trial.bat，填写 QWEN / DeepSeek API key。")
+    if config_issues:
+        checklist.append("修复 .env 中列出的配置问题，再重新执行 validate_teacher_trial_setup.bat。")
+    if require_inputs and input_issues:
+        checklist.append("把参考答案 PDF/图片放到 teacher_trial\\reference。")
+        checklist.append("把学生整卷 PDF/图片放到 teacher_trial\\students。")
+    if not checklist:
+        checklist.append("运行 start_teacher_trial.bat 开始本地教师试用。")
+    return checklist
+
+
 def build_teacher_trial_validation_report(*, require_inputs: bool = False) -> dict[str, Any]:
     created_env = ensure_local_trial_workspace()
     env_path = RUNTIME_ROOT / ".env"
@@ -48,6 +69,13 @@ def build_teacher_trial_validation_report(*, require_inputs: bool = False) -> di
             "默认校验只检查本地教师版启动条件，不强制要求已放入真实样例。",
             "使用 --require-inputs 可以在阶段验收时把参考卷/学生卷目录也纳入校验。",
         ],
+        "checklist": _build_teacher_trial_checklist(
+            created_env=created_env,
+            env_path=env_path,
+            config_issues=config_issues,
+            input_issues=input_issues,
+            require_inputs=require_inputs,
+        ),
     }
 
 
@@ -71,6 +99,9 @@ def main() -> int:
             print(f"[{status}] {check['name']}: {check['detail']}")
         for note in report["notes"]:
             print(f"- {note}")
+        print("下一步：")
+        for item in report["checklist"]:
+            print(f"- {item}")
 
     return 0 if report["ok"] else 1
 

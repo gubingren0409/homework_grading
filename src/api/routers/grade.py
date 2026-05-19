@@ -1392,7 +1392,7 @@ async def get_job_status_and_results(
                     # Try to parse report_json back into a dict for cleaner API output
                     try:
                         item["report_json"] = json.loads(item["report_json"])
-                    except:
+                    except (json.JSONDecodeError, TypeError, ValueError):
                         pass
                     results.append(item)
                 if results:

@@ -22,6 +22,10 @@ class StudentAnswerPart(BaseModel):
     is_blank: bool = False
     trigger_short_circuit: bool = False
     extraction_warnings: List[str] = Field(default_factory=list)
+    extraction_debug: Dict[str, object] = Field(
+        default_factory=dict,
+        description="Extraction/source metadata for audit, including text source and filter reasons.",
+    )
     image_warnings: List[str] = Field(default_factory=list, description="Image-quality warnings for this crop.")
     image_debug: Dict[str, object] = Field(
         default_factory=dict,
@@ -54,6 +58,10 @@ class StudentAnswer(BaseModel):
     readability_status: Literal["CLEAR", "MINOR_ALTERATION", "HEAVILY_ALTERED", "UNREADABLE"] = "CLEAR"
     trigger_short_circuit: bool = False
     extraction_warnings: List[str] = Field(default_factory=list)
+    extraction_debug: Dict[str, object] = Field(
+        default_factory=dict,
+        description="Merged extraction/source metadata across contributing parts for audit.",
+    )
     image_warnings: List[str] = Field(default_factory=list)
     worked_solution_block_detected: bool = Field(
         default=False,

@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from typing import Any
 from src.schemas.perception_ir import PerceptionOutput
 from src.schemas.cognitive_ir import EvaluationReport
 from src.schemas.rubric_ir import TeacherRubric
@@ -36,3 +37,13 @@ class BaseCognitiveAgent(ABC):
             TeacherRubric: A structured breakdown of grading points and scores.
         """
         pass
+
+    def begin_runtime_capture(self) -> object | None:
+        return None
+
+    def end_runtime_capture(self, token: object | None) -> list[dict[str, Any]]:
+        del token
+        return []
+
+    def get_last_runtime_telemetry(self) -> dict[str, Any] | None:
+        return None

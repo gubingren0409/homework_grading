@@ -88,6 +88,11 @@ def test_student_answer_bundle_warns_when_no_student_tags_found():
     assert bundle.answers[0].ocr_text == "【来源题号】1\n1. printed stem only"
     assert bundle.answers[0].is_blank is True
     assert bundle.answers[0].extraction_warnings == ["NO_STUDENT_TAGS_FOUND"]
+    assert bundle.answers[0].extraction_debug == {
+        "focus_decision": "full_width_baseline_retained",
+        "part_text_sources": {"1": "missing"},
+        "filter_reasons": [],
+    }
 
 
 def test_student_answer_bundle_keeps_missing_slot_explicit_without_shifting():
@@ -448,6 +453,11 @@ def test_student_answer_bundle_infers_short_left_margin_answer_without_student_t
     assert bundle.answers[0].answer_text == "【来源题号】10\nD"
     assert bundle.answers[0].extraction_warnings == ["ANSWER_TEXT_INFERRED_WITHOUT_STUDENT_TAGS"]
     assert bundle.answers[0].is_blank is False
+    assert bundle.answers[0].parts[0].extraction_debug == {
+        "text_source": "element_short_answer_inference",
+        "focus_decision": "full_width_baseline_retained",
+        "filter_reasons": [],
+    }
 
 
 def test_student_answer_bundle_infers_worked_solution_without_student_tags():
@@ -473,6 +483,22 @@ def test_student_answer_bundle_infers_worked_solution_without_student_tags():
     assert bundle.answers[0].extraction_warnings == [
         "ANSWER_TEXT_INFERRED_FROM_OCR_WITHOUT_STUDENT_TAGS"
     ]
+    assert bundle.answers[0].parts[0].extraction_debug == {
+        "text_source": "ocr_worked_solution_inference",
+        "focus_decision": "full_width_baseline_retained",
+        "filter_reasons": [
+            "STRIPPED_QUESTION_PREFIX",
+            "DROPPED_BLANK_SENTINEL_LINE",
+        ],
+    }
+    assert bundle.answers[0].extraction_debug == {
+        "focus_decision": "full_width_baseline_retained",
+        "part_text_sources": {"18": "ocr_worked_solution_inference"},
+        "filter_reasons": [
+            "STRIPPED_QUESTION_PREFIX",
+            "DROPPED_BLANK_SENTINEL_LINE",
+        ],
+    }
     assert bundle.answers[0].is_blank is False
 
 
