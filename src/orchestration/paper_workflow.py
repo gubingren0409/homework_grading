@@ -12,6 +12,34 @@ from PIL import Image
 
 from src.cognitive.base import BaseCognitiveAgent
 from src.core.config import settings
+from src.core.constants import (
+    MIN_QWEN_OCR_SHORT_SIDE,
+    LOW_QUALITY_CROP_MIN_SHORT_SIDE,
+    LOW_QUALITY_CROP_MAX_ASPECT_RATIO,
+    NUMERIC_TOKEN_RE,
+    NUMERIC_CONTRADICTION_CUES,
+    FILL_BLANK_RE,
+    NON_REVIEW_EXTRACTION_WARNING_CUES,
+    REVIEW_REASON_MISSING_REGION,
+    REVIEW_REASON_ANCESTOR_REGION_FALLBACK,
+    REVIEW_REASON_EXTRACTION_RISK,
+    REVIEW_REASON_FILL_BLANK_ALIGNMENT_RISK,
+    REVIEW_REASON_UNREADABLE_ANSWER,
+    REVIEW_REASON_LOW_OCR_CONFIDENCE,
+    REVIEW_REASON_LOW_QUALITY_CROP,
+    REVIEW_REASON_NUMERIC_EQUIVALENCE,
+    REVIEW_REASON_MODEL_REQUESTED,
+    REVIEW_REASON_UNMATCHED_REGION,
+    REVIEW_REASON_LAYOUT_TIMEOUT,
+    REVIEW_REASON_LAYOUT_BUDGET_LIMIT,
+    REVIEW_REASON_PAGE_OCR_TIMEOUT,
+    REVIEW_REASON_PAGE_OCR_BUDGET_LIMIT,
+    REVIEW_REASON_ANSWER_OCR_TIMEOUT,
+    REVIEW_REASON_ANSWER_OCR_BUDGET_LIMIT,
+    REVIEW_REASON_COGNITIVE_TIMEOUT,
+    REVIEW_REASON_COGNITIVE_BUDGET_LIMIT,
+    MAX_EVIDENCE_SNIPPET_LENGTH,
+)
 from src.orchestration.segmentation import AnswerRegionSplitter
 from src.orchestration.student_answer_bundle import (
     build_student_answer_bundle,
@@ -45,35 +73,6 @@ NUMERIC_EQUIVALENCE_REVIEW_NOTE = (
     "系统质量门禁：批改反馈中出现将等值数值 {left} 与 {right} 判为不等或不成立的矛盾，"
     "已标记人工复核，建议使用更强模型重评。"
 )
-_NUMERIC_TOKEN_RE = re.compile(r"(?<![\d.])\d+(?:\.\d+)?")
-_NUMERIC_CONTRADICTION_CUES = ("不等", "不相等", "不成立", "不正确", "错误", "不符")
-_FILL_BLANK_RE = re.compile(r"_{2,}|＿{2,}")
-_MIN_QWEN_OCR_SHORT_SIDE = 400
-_LOW_QUALITY_CROP_MIN_SHORT_SIDE = 48
-_LOW_QUALITY_CROP_MAX_ASPECT_RATIO = 12.0
-_NON_REVIEW_EXTRACTION_WARNING_CUES = (
-    "ANSWER_TEXT_INFERRED_WITHOUT_STUDENT_TAGS",
-    "ANSWER_TEXT_INFERRED_FROM_OCR_WITHOUT_STUDENT_TAGS",
-    "NO_STUDENT_TAGS_FOUND",
-)
-_REVIEW_REASON_MISSING_REGION = "MISSING_ANSWER_REGION"
-_REVIEW_REASON_ANCESTOR_REGION_FALLBACK = "ANCESTOR_REGION_FALLBACK"
-_REVIEW_REASON_EXTRACTION_RISK = "ANSWER_EXTRACTION_RISK"
-_REVIEW_REASON_FILL_BLANK_ALIGNMENT_RISK = "FILL_BLANK_ALIGNMENT_RISK"
-_REVIEW_REASON_UNREADABLE_ANSWER = "UNREADABLE_ANSWER"
-_REVIEW_REASON_LOW_OCR_CONFIDENCE = "LOW_OCR_CONFIDENCE"
-_REVIEW_REASON_LOW_QUALITY_CROP = "LOW_QUALITY_CROP"
-_REVIEW_REASON_NUMERIC_EQUIVALENCE = "NUMERIC_EQUIVALENCE_CONTRADICTION"
-_REVIEW_REASON_MODEL_REQUESTED = "MODEL_REQUESTED_HUMAN_REVIEW"
-_REVIEW_REASON_UNMATCHED_REGION = "UNMATCHED_REGION_WITHOUT_RUBRIC"
-_REVIEW_REASON_LAYOUT_TIMEOUT = "LAYOUT_TIMEOUT_REVIEW"
-_REVIEW_REASON_LAYOUT_BUDGET_LIMIT = "LAYOUT_BUDGET_LIMIT_REVIEW"
-_REVIEW_REASON_PAGE_OCR_TIMEOUT = "PAGE_OCR_TIMEOUT_REVIEW"
-_REVIEW_REASON_PAGE_OCR_BUDGET_LIMIT = "PAGE_OCR_BUDGET_LIMIT_REVIEW"
-_REVIEW_REASON_ANSWER_OCR_TIMEOUT = "ANSWER_OCR_TIMEOUT_REVIEW"
-_REVIEW_REASON_ANSWER_OCR_BUDGET_LIMIT = "ANSWER_OCR_BUDGET_LIMIT_REVIEW"
-_REVIEW_REASON_COGNITIVE_TIMEOUT = "COGNITIVE_TIMEOUT_REVIEW"
-_REVIEW_REASON_COGNITIVE_BUDGET_LIMIT = "COGNITIVE_BUDGET_LIMIT_REVIEW"
 
 
 class PaperGradingWorkflow:
@@ -378,7 +377,7 @@ class PaperGradingWorkflow:
         return slots_by_question
 
     def _infer_fill_blank_slots(self, rubric_answer: str) -> list[str]:
-        blank_count = len(_FILL_BLANK_RE.findall(rubric_answer))
+        blank_count = len(FILL_BLANK_RE.findall(rubric_answer))
         if blank_count < 2:
             return []
         return [f"blank_{index}" for index in range(1, blank_count + 1)]
@@ -454,7 +453,7 @@ class PaperGradingWorkflow:
                 self._extend_question_review_reasons(
                     per_question_review_reasons,
                     rubric.question_id,
-                    [_REVIEW_REASON_EXTRACTION_RISK],
+                    [REVIEW_REASON_EXTRACTION_RISK],
                 )
             if answer.image_warnings:
                 warnings.extend(
@@ -464,7 +463,7 @@ class PaperGradingWorkflow:
                 self._extend_question_review_reasons(
                     per_question_review_reasons,
                     rubric.question_id,
-                    [_REVIEW_REASON_LOW_QUALITY_CROP],
+                    [REVIEW_REASON_LOW_QUALITY_CROP],
                 )
             self._extend_question_review_reasons(
                 per_question_review_reasons,
@@ -488,13 +487,13 @@ class PaperGradingWorkflow:
             )
             self._record_stage(runtime_profile, "cognitive_evaluation", time.perf_counter() - stage_start)
             for rubric, report in zip(pending_rubrics, reports):
-                if _REVIEW_REASON_EXTRACTION_RISK in per_question_review_reasons.get(
+                if REVIEW_REASON_EXTRACTION_RISK in per_question_review_reasons.get(
                     rubric.question_id, []
                 ):
                     report.requires_human_review = True
                     report.review_reasons = self._merge_review_reasons(
                         report.review_reasons,
-                        [_REVIEW_REASON_EXTRACTION_RISK],
+                        [REVIEW_REASON_EXTRACTION_RISK],
                     )
                 report.review_reasons = self._merge_review_reasons(
                     report.review_reasons,
@@ -515,7 +514,7 @@ class PaperGradingWorkflow:
             )
             for question_no in extra_questions:
                 warnings.append(f"question {question_no}: answer region has no matching rubric")
-                paper_review_reasons.append(_REVIEW_REASON_UNMATCHED_REGION)
+                paper_review_reasons.append(REVIEW_REASON_UNMATCHED_REGION)
         paper_review_reasons.extend(runtime_paper_review_reasons)
 
         for question_id, report in per_question.items():
@@ -546,7 +545,7 @@ class PaperGradingWorkflow:
         )
 
     def _warning_requires_human_review(self, warning: str) -> bool:
-        return not any(cue in warning for cue in _NON_REVIEW_EXTRACTION_WARNING_CUES)
+        return not any(cue in warning for cue in NON_REVIEW_EXTRACTION_WARNING_CUES)
 
     def _review_reasons_from_answer_warnings(self, warnings: list[str]) -> list[str]:
         reasons: list[str] = []
@@ -554,11 +553,11 @@ class PaperGradingWorkflow:
             if not self._warning_requires_human_review(warning):
                 continue
             if "FILL_BLANK_ALIGNMENT_UNRESOLVED" in warning:
-                reasons.append(_REVIEW_REASON_FILL_BLANK_ALIGNMENT_RISK)
+                reasons.append(REVIEW_REASON_FILL_BLANK_ALIGNMENT_RISK)
             elif warning.startswith("CROP_IMAGE_") or warning.startswith("PREPARED_IMAGE_"):
-                reasons.append(_REVIEW_REASON_LOW_QUALITY_CROP)
+                reasons.append(REVIEW_REASON_LOW_QUALITY_CROP)
             else:
-                reasons.append(_REVIEW_REASON_EXTRACTION_RISK)
+                reasons.append(REVIEW_REASON_EXTRACTION_RISK)
         return self._merge_review_reasons(reasons)
 
     def _answer_requires_extraction_review(self, answer: Any) -> bool:
@@ -576,9 +575,9 @@ class PaperGradingWorkflow:
     def _review_reasons_from_report(self, report: EvaluationReport) -> list[str]:
         reasons = list(report.review_reasons)
         if report.requires_human_review and report.status == "REJECTED_UNREADABLE" and not reasons:
-            reasons.append(_REVIEW_REASON_UNREADABLE_ANSWER)
+            reasons.append(REVIEW_REASON_UNREADABLE_ANSWER)
         if report.requires_human_review and not reasons:
-            reasons.append(_REVIEW_REASON_MODEL_REQUESTED)
+            reasons.append(REVIEW_REASON_MODEL_REQUESTED)
         return self._merge_review_reasons(reasons)
 
     def _extend_question_review_reasons(
@@ -856,7 +855,7 @@ class PaperGradingWorkflow:
             )
             return self._runtime_review_report(
                 rubric=rubric,
-                review_reason=_REVIEW_REASON_COGNITIVE_TIMEOUT,
+                review_reason=REVIEW_REASON_COGNITIVE_TIMEOUT,
                 feedback="认知评分阶段超时，已转入人工复核。",
             )
         except Exception as exc:
@@ -889,7 +888,7 @@ class PaperGradingWorkflow:
             )
             return self._runtime_review_report(
                 rubric=rubric,
-                review_reason=_REVIEW_REASON_COGNITIVE_BUDGET_LIMIT,
+                review_reason=REVIEW_REASON_COGNITIVE_BUDGET_LIMIT,
                 feedback="认知评分阶段超过重试预算，已转入人工复核。",
             )
         self._append_runtime_span(
@@ -955,7 +954,7 @@ class PaperGradingWorkflow:
                     context_type="STUDENT_ANSWER",
                     page_index=page_index,
                     regions=[],
-                    warnings=[_REVIEW_REASON_LAYOUT_TIMEOUT],
+                    warnings=[REVIEW_REASON_LAYOUT_TIMEOUT],
                 )
                 self._append_runtime_span(
                     runtime_profile,
@@ -1011,7 +1010,7 @@ class PaperGradingWorkflow:
                     context_type="STUDENT_ANSWER",
                     page_index=page_index,
                     regions=[],
-                    warnings=[_REVIEW_REASON_LAYOUT_TIMEOUT],
+                    warnings=[REVIEW_REASON_LAYOUT_TIMEOUT],
                 )
                 self._append_runtime_span(
                     runtime_profile,
@@ -1051,7 +1050,7 @@ class PaperGradingWorkflow:
                     context_type="STUDENT_ANSWER",
                     page_index=page_index,
                     regions=[],
-                    warnings=[_REVIEW_REASON_LAYOUT_BUDGET_LIMIT],
+                    warnings=[REVIEW_REASON_LAYOUT_BUDGET_LIMIT],
                 )
                 self._append_runtime_span(
                     runtime_profile,
@@ -1291,7 +1290,7 @@ class PaperGradingWorkflow:
         for span in spans:
             if not isinstance(span, dict):
                 continue
-            reason = self._runtime_review_reason_for_span(span)
+            reason = self._runtimeREVIEW_REASON_for_span(span)
             if reason is None:
                 continue
             warnings.append(
@@ -1314,22 +1313,22 @@ class PaperGradingWorkflow:
                 paper_reasons = self._merge_review_reasons(paper_reasons, [reason])
         return question_reasons, paper_reasons, warnings
 
-    def _runtime_review_reason_for_span(self, span: dict[str, Any]) -> str | None:
+    def _runtimeREVIEW_REASON_for_span(self, span: dict[str, Any]) -> str | None:
         error_types = {str(error) for error in (span.get("error_types") or []) if error}
         stage = str(span.get("stage") or "")
         if "timeout" in error_types:
             return {
-                "student_page_layout": _REVIEW_REASON_LAYOUT_TIMEOUT,
-                "student_page_ocr": _REVIEW_REASON_PAGE_OCR_TIMEOUT,
-                "answer_region_ocr": _REVIEW_REASON_ANSWER_OCR_TIMEOUT,
-                "cognitive_evaluation": _REVIEW_REASON_COGNITIVE_TIMEOUT,
+                "student_page_layout": REVIEW_REASON_LAYOUT_TIMEOUT,
+                "student_page_ocr": REVIEW_REASON_PAGE_OCR_TIMEOUT,
+                "answer_region_ocr": REVIEW_REASON_ANSWER_OCR_TIMEOUT,
+                "cognitive_evaluation": REVIEW_REASON_COGNITIVE_TIMEOUT,
             }.get(stage)
         if "budget_limit" in error_types:
             return {
-                "student_page_layout": _REVIEW_REASON_LAYOUT_BUDGET_LIMIT,
-                "student_page_ocr": _REVIEW_REASON_PAGE_OCR_BUDGET_LIMIT,
-                "answer_region_ocr": _REVIEW_REASON_ANSWER_OCR_BUDGET_LIMIT,
-                "cognitive_evaluation": _REVIEW_REASON_COGNITIVE_BUDGET_LIMIT,
+                "student_page_layout": REVIEW_REASON_LAYOUT_BUDGET_LIMIT,
+                "student_page_ocr": REVIEW_REASON_PAGE_OCR_BUDGET_LIMIT,
+                "answer_region_ocr": REVIEW_REASON_ANSWER_OCR_BUDGET_LIMIT,
+                "cognitive_evaluation": REVIEW_REASON_COGNITIVE_BUDGET_LIMIT,
             }.get(stage)
         return None
 
@@ -1343,7 +1342,7 @@ class PaperGradingWorkflow:
                 scale = min(max_side / width, max_side / height)
                 projected_width = max(1, int(width * scale))
                 projected_height = max(1, int(height * scale))
-                if min(projected_width, projected_height) >= _MIN_QWEN_OCR_SHORT_SIDE:
+                if min(projected_width, projected_height) >= MIN_QWEN_OCR_SHORT_SIDE:
                     image.thumbnail((max_side, max_side), Image.Resampling.LANCZOS)
                     resized = True
             buffer = BytesIO()
@@ -1372,12 +1371,12 @@ class PaperGradingWorkflow:
         crop_short_side = min(crop_width, crop_height)
         prepared_short_side = min(prepared_width, prepared_height)
         warnings: list[str] = []
-        if crop_short_side < _LOW_QUALITY_CROP_MIN_SHORT_SIDE:
+        if crop_short_side < LOW_QUALITY_CROP_MIN_SHORT_SIDE:
             warnings.append("CROP_IMAGE_TOO_SMALL")
         dominant_side = max(1, crop_short_side)
-        if max(crop_width, crop_height) / dominant_side > _LOW_QUALITY_CROP_MAX_ASPECT_RATIO:
+        if max(crop_width, crop_height) / dominant_side > LOW_QUALITY_CROP_MAX_ASPECT_RATIO:
             warnings.append("CROP_IMAGE_TOO_NARROW")
-        if prepared_short_side < _LOW_QUALITY_CROP_MIN_SHORT_SIDE:
+        if prepared_short_side < LOW_QUALITY_CROP_MIN_SHORT_SIDE:
             warnings.append("PREPARED_IMAGE_SHORT_SIDE_LOW")
 
         return warnings, {
@@ -1457,7 +1456,7 @@ class PaperGradingWorkflow:
                     overall_feedback=f"题目 {rubric.question_id} 的第 {page_idx + 1} 个作答区域无法可靠识别。",
                     system_confidence=0.0,
                     requires_human_review=True,
-                    review_reasons=[_REVIEW_REASON_UNREADABLE_ANSWER],
+                    review_reasons=[REVIEW_REASON_UNREADABLE_ANSWER],
                 )
 
         if all(perception_output.is_blank for perception_output in perception_outputs):
@@ -1494,7 +1493,7 @@ class PaperGradingWorkflow:
             evaluation_report.requires_human_review = True
             evaluation_report.review_reasons = self._merge_review_reasons(
                 evaluation_report.review_reasons,
-                [_REVIEW_REASON_LOW_OCR_CONFIDENCE],
+                [REVIEW_REASON_LOW_OCR_CONFIDENCE],
             )
         self._apply_numeric_equivalence_quality_gate(evaluation_report)
         return evaluation_report
@@ -1509,7 +1508,7 @@ class PaperGradingWorkflow:
         report.system_confidence = min(report.system_confidence, 0.5)
         report.review_reasons = self._merge_review_reasons(
             report.review_reasons,
-            [_REVIEW_REASON_NUMERIC_EQUIVALENCE],
+            [REVIEW_REASON_NUMERIC_EQUIVALENCE],
         )
         if note not in report.overall_feedback:
             report.overall_feedback = f"{report.overall_feedback}\n{note}".strip()
@@ -1520,7 +1519,7 @@ class PaperGradingWorkflow:
             if step.correction_suggestion:
                 chunks.append(step.correction_suggestion)
         text = "\n".join(chunks)
-        tokens = list(_NUMERIC_TOKEN_RE.finditer(text))
+        tokens = list(NUMERIC_TOKEN_RE.finditer(text))
         for left_idx, left_match in enumerate(tokens):
             for right_match in tokens[left_idx + 1:]:
                 if right_match.start() - left_match.end() > 80:
@@ -1532,7 +1531,7 @@ class PaperGradingWorkflow:
                 window_start = max(0, left_match.start() - 24)
                 window_end = min(len(text), right_match.end() + 24)
                 window = text[window_start:window_end]
-                if any(cue in window for cue in _NUMERIC_CONTRADICTION_CUES):
+                if any(cue in window for cue in NUMERIC_CONTRADICTION_CUES):
                     return left, right
         return None
 
@@ -1823,5 +1822,5 @@ class PaperGradingWorkflow:
             overall_feedback=f"未找到题目 {rubric.question_id} 的对应作答区域。",
             system_confidence=0.0,
             requires_human_review=True,
-            review_reasons=[_REVIEW_REASON_MISSING_REGION],
+            review_reasons=[REVIEW_REASON_MISSING_REGION],
         )

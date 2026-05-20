@@ -29,6 +29,7 @@ from src.api.utils import (
     iter_list_items,
     filter_students_with_paper_report,
 )
+from src.core.constants import MAX_EVIDENCE_SNIPPET_LENGTH
 from src.core.config import settings
 from src.db.client import (
     create_task,
@@ -374,7 +375,7 @@ def _paper_report_evidence_lookup(paper_report: Dict[str, Any]) -> Dict[str, str
                 raw = str(element.get("raw_content") or "").strip()
                 if not element_id or not raw:
                     continue
-                snippet = raw[:240]
+                snippet = raw[:MAX_EVIDENCE_SNIPPET_LENGTH]
                 lookup[element_id] = snippet
                 transformed_id = f"answer_{question_id}_part{part_index}_{element_index}_{element_id}"
                 lookup[transformed_id] = snippet
