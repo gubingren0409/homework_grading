@@ -43,7 +43,18 @@ class Settings(BaseSettings):
     sse_heartbeat_interval_seconds: float = 3.0
 
     # Database configuration
+    database_type: str = "sqlite"  # Options: "sqlite", "postgresql"
     sqlite_db_path: str = "outputs/grading_database.db"
+    postgresql_url: str | None = None  # e.g., "postgresql://user:pass@localhost:5432/grading"
+
+    @property
+    def db_connection_string(self) -> str:
+        """Get database connection string based on database type."""
+        if self.database_type == "postgresql":
+            if not self.postgresql_url:
+                raise ValueError("postgresql_url must be set when database_type is 'postgresql'")
+            return self.postgresql_url
+        return self.sqlite_db_path
     
     # File Storage Configuration (Phase 31: Claim Check Pattern)
     uploads_dir: str = "data/uploads"  # Temporary file storage (LocalStorage)

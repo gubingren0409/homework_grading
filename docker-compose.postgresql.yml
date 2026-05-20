@@ -1,0 +1,48 @@
+# PostgreSQL for Homework Grader System
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: homework_grader_postgres
+    environment:
+      POSTGRES_DB: grading
+      POSTGRES_USER: grader
+      POSTGRES_PASSWORD: grader_password_change_in_production
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./src/db/schema_postgresql.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U grader -d grading"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Redis (existing service, kept for reference)
+  redis:
+    image: redis:7-alpine
+    container_name: homework_grader_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+
+networks:
+  default:
+    name: homework_grader_network
