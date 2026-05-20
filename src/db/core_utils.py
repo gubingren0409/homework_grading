@@ -6,6 +6,8 @@ from typing import Any, AsyncIterator
 
 import aiosqlite
 
+from src.core.config import Settings
+
 
 _WRITE_LOCK_MAX_RETRIES: int = 6
 _WRITE_BACKOFF_BASE_SECONDS: float = 0.05
@@ -21,6 +23,12 @@ async def _apply_connection_pragmas(db: aiosqlite.Connection) -> None:
 
 @asynccontextmanager
 async def _open_connection(db_path: str) -> AsyncIterator[aiosqlite.Connection]:
+    """
+    Open SQLite connection with pragmas.
+
+    Note: This is legacy function for SQLite only.
+    For new code, use get_db_adapter() from src.db.adapter.
+    """
     db = await aiosqlite.connect(db_path)
     try:
         await _apply_connection_pragmas(db)
@@ -38,6 +46,12 @@ async def _execute_write_with_retry(
     db_path: str,
     write_operation: Any,
 ) -> None:
+    """
+    Execute write operation with retry logic for SQLite.
+
+    Note: This is legacy function for SQLite only.
+    PostgreSQL does not need retry logic due to MVCC.
+    """
     for attempt in range(1, _WRITE_LOCK_MAX_RETRIES + 1):
         try:
             async with _open_connection(db_path) as db:
@@ -54,4 +68,25 @@ async def _execute_write_with_retry(
             )
             jitter = random.uniform(0.0, _WRITE_BACKOFF_BASE_SECONDS)
             await asyncio.sleep(backoff + jitter)
+
+
+@asynccontextmanager
+async def get_db_connection() -> AsyncIterator:
+    """
+    Get database connection based on configuration.
+
+    Returns appropriate connection for SQLite or PostgreSQL.
+    """
+    settings = Settings()
+
+    if settings.database_type == "postgresql":
+        # Use PostgreSQL adapter
+        from src.db.adapter import get_db_adapter
+        async with get_db_adapter("postgresql", settings.postgresql_url) as adapter:
+            yield adapter
+    else:
+        # Use SQLite (legacy)
+        async with _open_connection(settings.sqlite_db_path) as db:
+            yield db
+
 
