@@ -21,19 +21,24 @@ def warning_requires_human_review(warning: str) -> bool:
     return not any(cue in warning for cue in NON_REVIEW_EXTRACTION_WARNING_CUES)
 
 
+def _add_unique_reason(reasons: list[str], reason: str) -> None:
+    """Add a reason to the list if not already present."""
+    if reason not in reasons:
+        reasons.append(reason)
+
+
 def review_reasons_from_answer_warnings(warnings: list[str]) -> list[str]:
     """Extract review reasons from answer extraction warnings."""
     reasons: list[str] = []
+
     for warning in warnings:
         if "FILL_BLANK_ALIGNMENT" in warning:
-            if REVIEW_REASON_FILL_BLANK_ALIGNMENT_RISK not in reasons:
-                reasons.append(REVIEW_REASON_FILL_BLANK_ALIGNMENT_RISK)
+            _add_unique_reason(reasons, REVIEW_REASON_FILL_BLANK_ALIGNMENT_RISK)
         elif "LOW_QUALITY_CROP" in warning:
-            if REVIEW_REASON_LOW_QUALITY_CROP not in reasons:
-                reasons.append(REVIEW_REASON_LOW_QUALITY_CROP)
+            _add_unique_reason(reasons, REVIEW_REASON_LOW_QUALITY_CROP)
         elif warning_requires_human_review(warning):
-            if REVIEW_REASON_EXTRACTION_RISK not in reasons:
-                reasons.append(REVIEW_REASON_EXTRACTION_RISK)
+            _add_unique_reason(reasons, REVIEW_REASON_EXTRACTION_RISK)
+
     return reasons
 
 

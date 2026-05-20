@@ -101,6 +101,56 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 _LOCAL_FALLBACK_REASON = "LOCAL_FALLBACK_SINGLE_NODE_ONLY"
 
+def _parse_grading_result_row(row) -> dict:
+    """Parse a grading result row, attempting to deserialize JSON fields."""
+    item = dict(row)
+    try:
+        item["report_json"] = json.loads(item["report_json"])
+    except (json.JSONDecodeError, TypeError, ValueError):
+        pass
+    return item
+
+
+def _parse_question_result_row(row) -> None:
+    """Parse question result row in-place, deserializing JSON fields."""
+    try:
+        row["report_json"] = _json_response_safe(json.loads(row["report_json"]))
+    except Exception:
+        pass
+    try:
+        row["page_indexes_json"] = json.loads(row["page_indexes_json"] or "[]")
+    except Exception:
+        pass
+
+
+async def _build_paper_task_results(db_path: str, task_id: str) -> list:
+    """Build results from paper task when no grading results exist."""
+    paper_task = await get_paper_task(db_path, task_id)
+    if not paper_task:
+        return []
+
+    question_rows = await list_paper_question_results(db_path, task_id)
+    for row in question_rows:
+        _parse_question_result_row(row)
+
+    try:
+        paper_report = _json_response_safe(json.loads(paper_task["report_json"]))
+    except Exception:
+        paper_report = _json_response_safe(paper_task["report_json"])
+
+    paper_task_payload = dict(paper_task)
+    paper_task_payload["report_json"] = paper_report
+    paper_task_payload = _json_response_safe(paper_task_payload)
+
+    return [
+        {
+            "paper_task": paper_task_payload,
+            "paper_report": paper_report,
+            "question_results": _json_response_safe(question_rows),
+        }
+    ]
+
+
 def _derive_paper_student_id(files: List[UploadFile], explicit_student_id: Optional[str]) -> str:
     if explicit_student_id and explicit_student_id.strip():
         return explicit_student_id.strip()
@@ -1170,44 +1220,12 @@ async def get_job_status_and_results(
             db.row_factory = aiosqlite.Row
             async with db.execute("SELECT * FROM grading_results WHERE task_id = ?", (task_id,)) as cursor:
                 rows = await cursor.fetchall()
-                results = []
-                for row in rows:
-                    item = dict(row)
-                    # Try to parse report_json back into a dict for cleaner API output
-                    try:
-                        item["report_json"] = json.loads(item["report_json"])
-                    except (json.JSONDecodeError, TypeError, ValueError):
-                        pass
-                    results.append(item)
+                results = [_parse_grading_result_row(row) for row in rows]
+
                 if results:
                     response_data["results"] = results
                 else:
-                    paper_task = await get_paper_task(db_path, task_id)
-                    if paper_task:
-                        question_rows = await list_paper_question_results(db_path, task_id)
-                        for row in question_rows:
-                            try:
-                                row["report_json"] = _json_response_safe(json.loads(row["report_json"]))
-                            except Exception:
-                                pass
-                            try:
-                                row["page_indexes_json"] = json.loads(row["page_indexes_json"] or "[]")
-                            except Exception:
-                                pass
-                        try:
-                            paper_report = _json_response_safe(json.loads(paper_task["report_json"]))
-                        except Exception:
-                            paper_report = _json_response_safe(paper_task["report_json"])
-                        paper_task_payload = dict(paper_task)
-                        paper_task_payload["report_json"] = paper_report
-                        paper_task_payload = _json_response_safe(paper_task_payload)
-                        response_data["results"] = [
-                            {
-                                "paper_task": paper_task_payload,
-                                "paper_report": paper_report,
-                                "question_results": _json_response_safe(question_rows),
-                            }
-                        ]
+                    response_data["results"] = await _build_paper_task_results(db_path, task_id)
     
     # Phase 32: Generate ETag from task state
     # ETag = hash(status + updated_at + error_message)

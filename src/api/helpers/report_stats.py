@@ -64,6 +64,26 @@ def paper_report_review_reason_counts(students: list[dict[str, Any]]) -> dict[st
     return dict(sorted(counts.items()))
 
 
+def _collect_unique_review_reasons(per_question: dict) -> list[str]:
+    """Collect unique review reasons from all questions."""
+    summary_review_reasons = []
+
+    if not isinstance(per_question, dict):
+        return summary_review_reasons
+
+    for item in per_question.values():
+        if not isinstance(item, dict):
+            continue
+
+        review_reasons = safe_get_list(item, "review_reasons")
+        for reason in review_reasons:
+            key = str(reason or "").strip()
+            if key and key not in summary_review_reasons:
+                summary_review_reasons.append(key)
+
+    return summary_review_reasons
+
+
 def paper_reports_csv(payload: dict[str, Any]) -> str:
     """Generate CSV export of paper grading reports."""
     buffer = io.StringIO()
@@ -91,16 +111,7 @@ def paper_reports_csv(payload: dict[str, Any]) -> str:
     for student in payload.get("students", []):
         paper_report = student.get("paper_report")
         per_question = paper_report.get("per_question") if isinstance(paper_report, dict) else {}
-        summary_review_reasons: list[str] = []
-        if isinstance(per_question, dict):
-            for item in per_question.values():
-                if not isinstance(item, dict):
-                    continue
-                review_reasons = safe_get_list(item, "review_reasons")
-                for reason in review_reasons:
-                    key = str(reason or "").strip()
-                    if key and key not in summary_review_reasons:
-                        summary_review_reasons.append(key)
+        summary_review_reasons = _collect_unique_review_reasons(per_question)
 
         row = [
             student.get("student_id", ""),

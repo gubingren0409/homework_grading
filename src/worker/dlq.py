@@ -187,57 +187,86 @@ if __name__ == "__main__":
         print("  python -m src.worker.dlq purge")
         sys.exit(1)
     
+def _handle_stats_command():
+    """Handle 'stats' command."""
+    stats = get_dlq_stats()
+    print(f"DLQ Stats:")
+    print(f"  Queue: {stats['queue_name']}")
+    print(f"  Total Items: {stats['total_items']}")
+
+    if stats['sample_entries']:
+        print(f"\nSample Entries:")
+        for entry in stats['sample_entries']:
+            print(f"  - Task: {entry['task_id']}")
+            print(f"    Error: {entry['error'][:100]}")
+            print(f"    Failed At: {entry['failed_at']}")
+
+
+def _handle_list_command():
+    """Handle 'list' command."""
+    limit = int(sys.argv[2]) if len(sys.argv) > 2 else 100
+    tasks = list_dlq_tasks(limit)
+    print(f"DLQ Tasks ({len(tasks)}):")
+    for task in tasks:
+        print(f"  - {task['task_id']} | {task['failed_at']} | {task['error'][:50]}")
+
+
+def _handle_inspect_command():
+    """Handle 'inspect' command."""
+    if len(sys.argv) < 3:
+        print("Error: task_id required")
+        sys.exit(1)
+
+    task_id = sys.argv[2]
+    entry = inspect_dlq_task(task_id)
+
+    if entry:
+        print(json.dumps(entry, indent=2))
+    else:
+        print(f"Task {task_id} not found in DLQ")
+
+
+def _handle_replay_command():
+    """Handle 'replay' command."""
+    if len(sys.argv) < 3:
+        print("Error: task_id required")
+        sys.exit(1)
+
+    task_id = sys.argv[2]
+    new_task_id = replay_dlq_task(task_id, remove_from_dlq=True)
+    print(f"Task {task_id} replayed as {new_task_id}")
+
+
+def _handle_purge_command():
+    """Handle 'purge' command."""
+    response = input("Are you sure you want to purge ALL tasks from DLQ? (yes/no): ")
+    if response.lower() == "yes":
+        count = purge_dlq(confirm=True)
+        print(f"Purged {count} tasks from DLQ")
+    else:
+        print("Purge cancelled")
+
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        print("Usage: python -m src.worker.dlq <command>")
+        print("Commands: stats, list [limit], inspect <task_id>, replay <task_id>, purge")
+        sys.exit(1)
+
     command = sys.argv[1]
-    
-    if command == "stats":
-        stats = get_dlq_stats()
-        print(f"DLQ Stats:")
-        print(f"  Queue: {stats['queue_name']}")
-        print(f"  Total Items: {stats['total_items']}")
-        if stats['sample_entries']:
-            print(f"\nSample Entries:")
-            for entry in stats['sample_entries']:
-                print(f"  - Task: {entry['task_id']}")
-                print(f"    Error: {entry['error'][:100]}")
-                print(f"    Failed At: {entry['failed_at']}")
-    
-    elif command == "list":
-        limit = int(sys.argv[2]) if len(sys.argv) > 2 else 100
-        tasks = list_dlq_tasks(limit)
-        print(f"DLQ Tasks ({len(tasks)}):")
-        for task in tasks:
-            print(f"  - {task['task_id']} | {task['failed_at']} | {task['error'][:50]}")
-    
-    elif command == "inspect":
-        if len(sys.argv) < 3:
-            print("Error: task_id required")
-            sys.exit(1)
-        
-        task_id = sys.argv[2]
-        entry = inspect_dlq_task(task_id)
-        
-        if entry:
-            print(json.dumps(entry, indent=2))
-        else:
-            print(f"Task {task_id} not found in DLQ")
-    
-    elif command == "replay":
-        if len(sys.argv) < 3:
-            print("Error: task_id required")
-            sys.exit(1)
-        
-        task_id = sys.argv[2]
-        new_task_id = replay_dlq_task(task_id, remove_from_dlq=True)
-        print(f"Task {task_id} replayed as {new_task_id}")
-    
-    elif command == "purge":
-        response = input("Are you sure you want to purge ALL tasks from DLQ? (yes/no): ")
-        if response.lower() == "yes":
-            count = purge_dlq(confirm=True)
-            print(f"Purged {count} tasks from DLQ")
-        else:
-            print("Purge cancelled")
-    
+
+    # Command dispatch table
+    commands = {
+        'stats': _handle_stats_command,
+        'list': _handle_list_command,
+        'inspect': _handle_inspect_command,
+        'replay': _handle_replay_command,
+        'purge': _handle_purge_command,
+    }
+
+    handler = commands.get(command)
+    if handler:
+        handler()
     else:
         print(f"Unknown command: {command}")
         sys.exit(1)
