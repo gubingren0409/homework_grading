@@ -22,14 +22,18 @@ from redis.exceptions import RedisError
 from src.api.dependencies import get_db_path, limiter
 from src.api.sse import create_sse_response
 from src.api.auth import TeacherIdentity, get_current_teacher
-from src.api.utils import (
-    safe_get_dict,
-    safe_get_list,
-    iter_dict_values,
-    iter_list_items,
-    filter_students_with_paper_report,
+from src.api.helpers import (
+    paper_report_answered_question_ids as _paper_report_answered_question_ids,
+    paper_report_evidence_lookup as _paper_report_evidence_lookup,
+    enrich_paper_report_evidence as _enrich_paper_report_evidence,
+    paper_report_input_images as _paper_report_input_images,
+    paper_report_crop_files as _paper_report_crop_files,
+    base_paper_student_id as _base_paper_student_id,
+    paper_report_question_stats as _paper_report_question_stats,
+    paper_report_review_reason_counts as _paper_report_review_reason_counts,
+    paper_reports_csv as _paper_reports_csv,
+    paper_reports_markdown as _paper_reports_markdown,
 )
-from src.core.constants import MAX_EVIDENCE_SNIPPET_LENGTH
 from src.core.config import settings
 from src.db.client import (
     create_task,
@@ -93,11 +97,9 @@ from src.api.route_models import (
 )
 from src.utils.file_parsers import UnsupportedFormatError, process_multiple_files
 
-
 logger = logging.getLogger(__name__)
 router = APIRouter()
 _LOCAL_FALLBACK_REASON = "LOCAL_FALLBACK_SINGLE_NODE_ONLY"
-
 
 def _derive_paper_student_id(files: List[UploadFile], explicit_student_id: Optional[str]) -> str:
     if explicit_student_id and explicit_student_id.strip():
@@ -105,7 +107,6 @@ def _derive_paper_student_id(files: List[UploadFile], explicit_student_id: Optio
     first_name = files[0].filename if files and files[0].filename else ""
     stem = Path(first_name).stem.strip()
     return stem or "paper-student"
-
 
 def _json_response_safe(value: Any) -> Any:
     if isinstance(value, str):
@@ -119,7 +120,6 @@ def _json_response_safe(value: Any) -> Any:
         }
     return value
 
-
 def _task_not_found() -> HTTPException:
     return HTTPException(
         status_code=404,
@@ -131,12 +131,10 @@ def _task_not_found() -> HTTPException:
         ),
     )
 
-
 def _teacher_can_access_task(task: Dict[str, Any], teacher: TeacherIdentity) -> bool:
     if not settings.auth_enabled:
         return True
     return str(task.get("teacher_id") or "").strip() == teacher.teacher_id
-
 
 async def _require_task_for_teacher(
     db_path: str,
@@ -147,90 +145,6 @@ async def _require_task_for_teacher(
     if not task or not _teacher_can_access_task(task, teacher):
         raise _task_not_found()
     return task
-
-
-def _paper_report_answered_question_ids(paper_report: dict[str, Any]) -> set[str]:
-    bundle = safe_get_dict(paper_report, "student_answer_bundle")
-    answers = safe_get_list(bundle, "answers")
-    return {
-        str(answer.get("question_id"))
-        for answer in answers
-        if isinstance(answer, dict) and str(answer.get("question_id") or "").strip()
-    }
-
-
-def _paper_report_question_stats(
-    students: list[dict[str, Any]],
-    question_ids: list[str],
-) -> list[dict[str, Any]]:
-    stats: list[dict[str, Any]] = []
-    for question_id in question_ids:
-        student_count = 0
-        answered_count = 0
-        review_count = 0
-        fully_correct_count = 0
-        total_deduction = 0.0
-        for student, paper_report in filter_students_with_paper_report(students):
-            per_question = safe_get_dict(paper_report, "per_question")
-            item = per_question.get(str(question_id))
-            if not isinstance(item, dict):
-                continue
-            student_count += 1
-            if str(question_id) in _paper_report_answered_question_ids(paper_report):
-                answered_count += 1
-            if bool(item.get("requires_human_review")):
-                review_count += 1
-            if item.get("is_fully_correct") is True:
-                fully_correct_count += 1
-            total_deduction += float(item.get("total_score_deduction") or 0.0)
-        stats.append(
-            {
-                "question_id": str(question_id),
-                "student_count": student_count,
-                "answered_count": answered_count,
-                "review_count": review_count,
-                "fully_correct_count": fully_correct_count,
-                "average_deduction": (total_deduction / student_count) if student_count else 0.0,
-            }
-        )
-    return stats
-
-
-def _paper_report_review_reason_counts(students: list[dict[str, Any]]) -> dict[str, int]:
-    counts: dict[str, int] = {}
-    for student, paper_report in filter_students_with_paper_report(students):
-        for item in iter_dict_values(paper_report, "per_question"):
-            review_reasons = safe_get_list(item, "review_reasons")
-            for reason in review_reasons:
-                key = str(reason or "").strip()
-                if not key:
-                    continue
-                counts[key] = counts.get(key, 0) + 1
-    return dict(sorted(counts.items()))
-
-
-def _paper_reports_csv(payload: dict[str, Any]) -> str:
-    buffer = io.StringIO()
-    writer = csv.writer(buffer)
-    question_ids = [str(question_id) for question_id in payload.get("question_ids", [])]
-    header = [
-        "student_id",
-        "task_id",
-        "task_status",
-        "total_score_deduction",
-        "requires_human_review",
-        "review_reasons",
-    ]
-    for question_id in question_ids:
-        header.extend(
-            [
-                f"{question_id}_status",
-                f"{question_id}_deduction",
-                f"{question_id}_review",
-                f"{question_id}_review_reasons",
-            ]
-        )
-    writer.writerow(header)
 
     for student in payload.get("students", []):
         paper_report = student.get("paper_report")
@@ -270,37 +184,6 @@ def _paper_reports_csv(payload: dict[str, Any]) -> str:
             )
         writer.writerow(row)
     return buffer.getvalue()
-
-
-def _paper_reports_markdown(payload: dict[str, Any]) -> str:
-    lines = [
-        f"# 整卷汇总：{payload.get('bundle_id') or '-'}",
-        "",
-        f"- 学生数：{payload.get('student_count', 0)}",
-        f"- 已完成：{payload.get('completed_count', 0)}",
-        f"- 需复核：{payload.get('review_count', 0)}",
-        f"- 平均扣分：{float(payload.get('average_deduction') or 0.0):.2f}",
-        "",
-        "## 题目汇总",
-        "",
-        "| 题号 | 已作答 | 需复核 | 全对数 | 平均扣分 |",
-        "| --- | ---: | ---: | ---: | ---: |",
-    ]
-    for item in payload.get("question_stats", []):
-        lines.append(
-            f"| {item.get('question_id')} | {item.get('answered_count', 0)} | "
-            f"{item.get('review_count', 0)} | {item.get('fully_correct_count', 0)} | "
-            f"{float(item.get('average_deduction') or 0.0):.2f} |"
-        )
-    lines.extend(["", "## 学生明细", "", "| 学生 | 状态 | 总扣分 | 需复核 |", "| --- | --- | ---: | --- |"])
-    for student in payload.get("students", []):
-        lines.append(
-            f"| {student.get('student_id') or '-'} | {student.get('task_status') or '-'} | "
-            f"{float(student.get('total_score_deduction') or 0.0):.2f} | "
-            f"{'是' if student.get('requires_human_review') else '否'} |"
-        )
-    return "\n".join(lines) + "\n"
-
 
 def _paper_question_row_to_report_card(row: Dict[str, Any]) -> ReportCardItem:
     try:
@@ -348,16 +231,6 @@ def _paper_question_row_to_report_card(row: Dict[str, Any]) -> ReportCardItem:
         input_images=[],
     )
 
-
-def _base_paper_student_id(student_id: Any) -> str:
-    value = str(student_id or "").strip()
-    return re.sub(r"(?:_rerun)+$", "", value) or value
-
-
-def _paper_report_evidence_lookup(paper_report: Dict[str, Any]) -> Dict[str, str]:
-    bundle = safe_get_dict(paper_report, "student_answer_bundle")
-    answers = safe_get_list(bundle, "answers")
-
     lookup: Dict[str, str] = {}
     for answer in iter_list_items({"answers": answers}, "answers"):
         question_id = str(answer.get("question_id") or "").strip()
@@ -381,50 +254,6 @@ def _paper_report_evidence_lookup(paper_report: Dict[str, Any]) -> Dict[str, str
                 lookup[transformed_id] = snippet
                 lookup[f"p0_{transformed_id}"] = snippet
     return lookup
-
-
-def _enrich_paper_report_evidence(paper_report: Any) -> Any:
-    if not isinstance(paper_report, dict):
-        return paper_report
-    evidence_lookup = _paper_report_evidence_lookup(paper_report)
-    per_question = safe_get_dict(paper_report, "per_question")
-    if not evidence_lookup:
-        return paper_report
-    for question_report in iter_dict_values({"per_question": per_question}, "per_question"):
-        steps = safe_get_list(question_report, "step_evaluations")
-        for step in steps:
-            if not isinstance(step, dict) or step.get("evidence_snippet"):
-                continue
-            ref_id = str(step.get("reference_element_id") or "").strip()
-            if not ref_id:
-                continue
-            evidence = evidence_lookup.get(ref_id)
-            if evidence is None:
-                evidence = evidence_lookup.get(re.sub(r"^p\d+_", "", ref_id))
-            if evidence:
-                step["evidence_snippet"] = evidence
-    return paper_report
-
-
-def _paper_report_input_images(task_id: str, paper_report: Dict[str, Any]) -> Dict[str, List[Dict[str, str]]]:
-    crop_files_by_question = _paper_report_crop_files(paper_report)
-    if crop_files_by_question:
-        images: Dict[str, List[Dict[str, str]]] = {}
-        for question_id, crop_files in crop_files_by_question.items():
-            image_items = [
-                {
-                    "name": name,
-                    "url": (
-                        f"/api/v1/grade/paper/inputs?task_id={quote(task_id)}"
-                        f"&question_id={quote(question_id, safe='')}&index={idx}&asset_kind=crop"
-                    ),
-                }
-                for idx, (name, _) in enumerate(crop_files)
-            ]
-            if image_items:
-                images[question_id] = image_items
-        if images:
-            return images
 
     refs_by_question = paper_report.get("input_file_refs_by_question")
     names_by_question = paper_report.get("input_filenames_by_question")
@@ -461,11 +290,6 @@ def _paper_report_input_images(task_id: str, paper_report: Dict[str, Any]) -> Di
             images[question_key] = image_items
     return images
 
-
-def _paper_report_crop_files(paper_report: Dict[str, Any]) -> Dict[str, List[tuple[str, str]]]:
-    bundle = safe_get_dict(paper_report, "student_answer_bundle")
-    answers = safe_get_list(bundle, "answers")
-
     crops: Dict[str, List[tuple[str, str]]] = {}
     for answer in iter_list_items({"answers": answers}, "answers"):
         question_id = str(answer.get("question_id") or "").strip()
@@ -492,7 +316,6 @@ def _paper_report_crop_files(paper_report: Dict[str, Any]) -> Dict[str, List[tup
             crops[question_id] = crop_items
     return crops
 
-
 def _local_file_response_from_ref(file_ref: str) -> FileResponse:
     parsed = urlparse(file_ref)
     if parsed.scheme != "file":
@@ -513,7 +336,6 @@ def _local_file_response_from_ref(file_ref: str) -> FileResponse:
     media_type = mimetypes.guess_type(asset_path.name)[0] or "application/octet-stream"
     return FileResponse(asset_path, media_type=media_type, filename=asset_path.name)
 
-
 def _run_task_locally(task_id: str, payload: Dict[str, Any], db_path: str, trace_id: str) -> None:
     grade_homework_task.apply(
         args=[task_id, payload, db_path],
@@ -522,13 +344,11 @@ def _run_task_locally(task_id: str, payload: Dict[str, Any], db_path: str, trace
         throw=False,
     )
 
-
 def _mark_local_fallback_payload(payload: Dict[str, Any], reason_detail: str | None) -> None:
     payload["dispatch_mode"] = "local_fallback"
     payload["fallback_reason"] = _LOCAL_FALLBACK_REASON
     if reason_detail:
         payload["fallback_detail"] = str(reason_detail)
-
 
 def _dispatch_grading_task(
     *,
@@ -609,7 +429,6 @@ def _dispatch_grading_task(
         _mark_local_fallback_payload(payload, str(exc))
         background_tasks.add_task(_run_task_locally, task_id, payload, db_path, trace_id)
         return f"local:{task_id}", "local_fallback"
-
 
 @router.post("/grade/submit", response_model=TaskResponse, status_code=202)
 @limiter.limit("100/minute")  # Phase 35: Increased for batch grading (100+ students)
@@ -707,7 +526,6 @@ async def submit_grading_job(
         stream_endpoint=f"/api/v1/tasks/{task_id}/stream",
         suggested_poll_interval_seconds=2,
     )
-
 
 @router.post("/grade/paper", response_model=PaperGradeResponse)
 @limiter.limit("10/minute")
@@ -853,7 +671,6 @@ async def grade_whole_paper(
         report_json=report.model_dump(),
     )
 
-
 @router.post("/grade/paper/submit", response_model=TaskResponse, status_code=202)
 @limiter.limit("20/minute")
 async def submit_whole_paper_grading_job(
@@ -976,7 +793,6 @@ async def submit_whole_paper_grading_job(
         suggested_poll_interval_seconds=2,
     )
 
-
 @router.post("/grade/submit-batch", response_model=TaskResponse, status_code=202)
 @limiter.limit("60/minute")
 async def submit_batch_grading_job(
@@ -1073,7 +889,6 @@ async def submit_batch_grading_job(
         suggested_poll_interval_seconds=2,
     )
 
-
 @router.post("/grade/submit-batch-with-reference", response_model=TaskResponse, status_code=202)
 @limiter.limit("40/minute")
 async def submit_batch_with_reference_grading_job(
@@ -1167,7 +982,6 @@ async def submit_batch_with_reference_grading_job(
         suggested_poll_interval_seconds=2,
     )
 
-
 @router.get("/grade/flow-guide", response_model=GradeFlowGuideResponse)
 async def get_grade_flow_guide():
     """
@@ -1206,7 +1020,6 @@ async def get_grade_flow_guide():
             "Rubric 生成走整页感知聚合链路，不依赖布局切片 gate。",
         ],
     )
-
 
 @router.get("/grade/{task_id}", response_model=TaskStatusResponse)
 @limiter.limit("30/minute")
@@ -1420,7 +1233,6 @@ async def get_job_status_and_results(
     
     return TaskStatusResponse(**response_data)
 
-
 @router.get("/grade-batch/{task_id}", response_model=TaskStatusResponse)
 @limiter.limit("30/minute")
 async def get_batch_job_status_and_results(
@@ -1437,7 +1249,6 @@ async def get_batch_job_status_and_results(
         db_path=db_path,
         teacher=teacher,
     )
-
 
 @router.get("/grade/paper/reports")
 async def list_paper_reports(
@@ -1635,7 +1446,6 @@ async def list_paper_reports(
         )
     return payload
 
-
 @router.get("/grade/paper/inputs")
 async def get_paper_input_asset(
     task_id: str = Query(...),
@@ -1687,7 +1497,6 @@ async def get_paper_input_asset(
         raise HTTPException(status_code=404, detail="input asset not found")
     return _local_file_response_from_ref(file_ref)
 
-
 @router.get("/tasks/{task_id}/stream")
 async def stream_task_status(
     task_id: str,
@@ -1725,7 +1534,6 @@ async def stream_task_status(
     task = await _require_task_for_teacher(db_path, task_id, teacher)
     
     return create_sse_response(db_path, task_id)
-
 
 @router.get("/results", response_model=List[GradingResultItem])
 async def get_all_results(
@@ -1789,7 +1597,6 @@ async def get_all_results(
         results = await fetch_results(db_path, limit, offset)
     return [GradingResultItem(**r) for r in results]
 
-
 @router.get("/results/{result_id}/inputs/{index}")
 async def get_result_input_asset(
     result_id: int,
@@ -1831,7 +1638,6 @@ async def get_result_input_asset(
 
     file_ref = str(file_refs[index] or "").strip()
     return _local_file_response_from_ref(file_ref)
-
 
 @router.get("/tasks/history", response_model=TaskHistoryResponse)
 async def get_task_history(
@@ -1885,7 +1691,6 @@ async def get_task_history(
             items = [TaskHistoryItem(**dict(r)) for r in rows]
     return TaskHistoryResponse(page=page, limit=limit, items=items)
 
-
 @router.get("/grade/{task_id}/report", response_model=TaskReportResponse)
 async def get_task_report(
     task_id: str,
@@ -1930,7 +1735,6 @@ async def get_task_report(
         cards=cards,
     )
 
-
 @router.get("/grade/{task_id}/insights", response_model=TaskInsightsResponse)
 async def get_task_insights(
     task_id: str,
@@ -1950,7 +1754,6 @@ async def get_task_insights(
         hotspots=insights["hotspots"],
         lecture_suggestions=insights["lecture_suggestions"],
     )
-
 
 # ---------------------------------------------------------------------------
 # Task Cancellation
@@ -2033,7 +1836,6 @@ async def cancel_task(
         "message": "任务已取消",
     }
 
-
 # ---------------------------------------------------------------------------
 # Redis Health Check (used by submit endpoints)
 # ---------------------------------------------------------------------------
@@ -2056,5 +1858,4 @@ def _check_redis_health() -> tuple[bool, str]:
     except Exception as exc:
         logger.warning(f"Redis health FAIL at {target}: {exc}")
         return False, str(exc)[:200]
-
 
