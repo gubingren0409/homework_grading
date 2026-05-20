@@ -60,7 +60,6 @@ from src.worker.helpers import (
 )
 from src.worker.pubsub import publish_status, route_to_dlq
 
-
 logger = logging.getLogger(__name__)
 configure_json_logging(level=logging.INFO)
 _SKILL_SERVICE = SkillService(db_path=settings.sqlite_db_path)
@@ -72,52 +71,6 @@ _derive_interception_node = derive_interception_node
 _compute_effective_batch_concurrency = compute_effective_batch_concurrency
 _compute_source_fingerprint = compute_source_fingerprint
 _should_emit_batch_progress = should_emit_batch_progress
-
-
-def _get_worker_task_loop() -> asyncio.AbstractEventLoop:
-    global _WORKER_TASK_LOOP
-    if _WORKER_TASK_LOOP is None or _WORKER_TASK_LOOP.is_closed():
-        _WORKER_TASK_LOOP = asyncio.new_event_loop()
-    return _WORKER_TASK_LOOP
-
-
-def _parse_db_timestamp(value: Any) -> datetime | None:
-    text = str(value or "").strip()
-    if not text:
-        return None
-    normalized = text.replace("Z", "+00:00")
-    try:
-        return datetime.fromisoformat(normalized)
-    except ValueError:
-        return None
-
-
-def _task_processing_is_fresh(task: Dict[str, Any]) -> bool:
-    last_seen = _parse_db_timestamp(task.get("last_heartbeat_at") or task.get("updated_at"))
-    if last_seen is None:
-        return False
-    if last_seen.tzinfo is None:
-        last_seen = last_seen.replace(tzinfo=timezone.utc)
-    return (datetime.now(timezone.utc) - last_seen).total_seconds() < max(
-        1,
-        int(settings.processing_orphan_timeout_seconds),
-    )
-
-
-def _run_coroutine_in_isolated_thread(coro):
-    def _runner():
-        loop = asyncio.new_event_loop()
-        try:
-            asyncio.set_event_loop(loop)
-            return loop.run_until_complete(coro)
-        finally:
-            loop.run_until_complete(loop.shutdown_asyncgens())
-            asyncio.set_event_loop(None)
-            loop.close()
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        return executor.submit(_runner).result()
-
 
 # Celery Application Initialization
 app = Celery(
@@ -163,7 +116,6 @@ app.conf.update(**_worker_conf)
 DLQ_QUEUE_NAME = "grading_tasks_dlq"
 DLQ_EXCHANGE = "dlq"
 
-
 @app.task(bind=True, name="src.worker.main.emit_trace_probe")
 def emit_trace_probe(self, task_id: str) -> dict:
     """Phase 34 trace/log probe task for observability verification."""
@@ -182,31 +134,6 @@ def emit_trace_probe(self, task_id: str) -> dict:
         return {"status": "ok", "task_id": task_id}
     finally:
         reset_context(tokens)
-
-
-def _build_workflow() -> GradingWorkflow:
-    """
-    Factory function: Instantiate GradingWorkflow with fresh engine instances.
-    Each worker process maintains independent engine pools.
-    """
-    perception_engine = create_perception_engine()
-    cognitive_agent = DeepSeekCognitiveEngine()
-    return GradingWorkflow(
-        perception_engine=perception_engine,
-        cognitive_agent=cognitive_agent,
-        skill_service=_SKILL_SERVICE,
-    )
-
-
-def _build_paper_workflow(db_path: str) -> PaperGradingWorkflow:
-    perception_engine = create_perception_engine()
-    cognitive_agent = DeepSeekCognitiveEngine()
-    return PaperGradingWorkflow(
-        perception_engine=perception_engine,
-        cognitive_agent=cognitive_agent,
-        skill_service=SkillService(db_path=db_path),
-    )
-
 
 @app.task(bind=True, max_retries=2, default_retry_delay=10,
           soft_time_limit=settings.celery_task_soft_time_limit_seconds,
@@ -978,11 +905,8 @@ def grade_homework_task(
     finally:
         reset_context(ctx_tokens)
 
-
-
 async def _publish_status(task_id: str, status: str, **kwargs) -> None:
     await publish_status(task_id, status, **kwargs)
-
 
 def _route_to_dlq(task_id: str, payload: Dict[str, Any], db_path: str, error: str) -> None:
     route_to_dlq(
