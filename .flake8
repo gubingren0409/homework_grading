@@ -1,0 +1,47 @@
+[flake8]
+max-line-length = 120
+max-complexity = 15
+exclude =
+    .git,
+    __pycache__,
+    .venv,
+    venv,
+    build,
+    dist,
+    *.egg-info,
+    .tox,
+    .pytest_cache,
+    migrations
+
+# Error codes to ignore
+ignore =
+    # E203: whitespace before ':' (conflicts with black)
+    E203,
+    # W503: line break before binary operator (conflicts with black)
+    W503,
+    # E501: line too long (handled by black)
+    E501,
+
+# Select specific error codes to check
+select =
+    # Pyflakes errors
+    F,
+    # Pycodestyle errors
+    E,
+    # Pycodestyle warnings
+    W,
+    # McCabe complexity
+    C90,
+
+per-file-ignores =
+    # Ignore unused imports in __init__.py files
+    __init__.py:F401,F403
+    # Ignore complexity in tests
+    tests/*:C901
+
+# Show source code for each error
+show-source = True
+# Show statistics at the end
+statistics = True
+# Count errors
+count = True
