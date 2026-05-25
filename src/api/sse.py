@@ -73,7 +73,7 @@ async def task_status_stream(
     last_status: Optional[str] = None
     last_event_fingerprint: Optional[str] = None
 
-    task = await get_task(db_path, task_id)
+    task = await get_task(task_id)
     if not task:
         yield {"event": "error", "data": json.dumps({"error": "Task not found"})}
         return
